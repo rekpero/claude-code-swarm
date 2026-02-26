@@ -1,0 +1,352 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Claude Code Swarm Dashboard</title>
+<style>
+  :root {
+    --bg: #0f1117;
+    --surface: #1a1d27;
+    --border: #2a2d3a;
+    --text: #e1e4ed;
+    --text-dim: #8b8fa3;
+    --accent: #6c5ce7;
+    --green: #00b894;
+    --yellow: #fdcb6e;
+    --red: #e17055;
+    --blue: #74b9ff;
+  }
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+  body {
+    font-family: 'SF Mono', 'Fira Code', 'Cascadia Code', monospace;
+    background: var(--bg);
+    color: var(--text);
+    padding: 20px;
+    font-size: 14px;
+  }
+  header {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    padding-bottom: 16px;
+    border-bottom: 1px solid var(--border);
+    margin-bottom: 20px;
+  }
+  header h1 { font-size: 18px; font-weight: 600; }
+  .header-meta { color: var(--text-dim); font-size: 12px; }
+  .metrics-bar {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(140px, 1fr));
+    gap: 12px;
+    margin-bottom: 24px;
+  }
+  .metric-card {
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    padding: 14px;
+    text-align: center;
+  }
+  .metric-card .value {
+    font-size: 28px;
+    font-weight: 700;
+    margin-bottom: 4px;
+  }
+  .metric-card .label { font-size: 11px; color: var(--text-dim); text-transform: uppercase; letter-spacing: 0.5px; }
+  .metric-green .value { color: var(--green); }
+  .metric-yellow .value { color: var(--yellow); }
+  .metric-red .value { color: var(--red); }
+  .metric-blue .value { color: var(--blue); }
+  .metric-accent .value { color: var(--accent); }
+
+  section { margin-bottom: 24px; }
+  section h2 {
+    font-size: 13px;
+    text-transform: uppercase;
+    letter-spacing: 1px;
+    color: var(--text-dim);
+    margin-bottom: 12px;
+  }
+
+  .agent-card {
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    padding: 16px;
+    margin-bottom: 10px;
+  }
+  .agent-header {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    margin-bottom: 8px;
+  }
+  .agent-name { font-weight: 600; }
+  .status-badge {
+    display: inline-block;
+    padding: 2px 8px;
+    border-radius: 4px;
+    font-size: 11px;
+    font-weight: 600;
+    text-transform: uppercase;
+  }
+  .status-running { background: rgba(108, 92, 231, 0.2); color: var(--accent); }
+  .status-completed { background: rgba(0, 184, 148, 0.2); color: var(--green); }
+  .status-failed { background: rgba(225, 112, 85, 0.2); color: var(--red); }
+  .status-timeout { background: rgba(253, 203, 110, 0.2); color: var(--yellow); }
+  .status-pending { background: rgba(139, 143, 163, 0.2); color: var(--text-dim); }
+  .status-pr_created { background: rgba(116, 185, 255, 0.2); color: var(--blue); }
+  .status-in_progress { background: rgba(108, 92, 231, 0.2); color: var(--accent); }
+  .status-resolved { background: rgba(0, 184, 148, 0.2); color: var(--green); }
+  .status-needs_human { background: rgba(225, 112, 85, 0.2); color: var(--red); }
+
+  .agent-details {
+    font-size: 12px;
+    color: var(--text-dim);
+    margin-bottom: 8px;
+  }
+  .agent-details span { margin-right: 16px; }
+
+  .log-stream {
+    background: var(--bg);
+    border: 1px solid var(--border);
+    border-radius: 4px;
+    padding: 8px;
+    max-height: 150px;
+    overflow-y: auto;
+    font-size: 11px;
+    line-height: 1.6;
+  }
+  .log-stream .log-line { color: var(--text-dim); }
+  .log-stream .log-line .log-time { color: var(--text-dim); opacity: 0.6; margin-right: 8px; }
+  .log-stream .log-line .log-type { color: var(--accent); margin-right: 8px; }
+
+  .issue-table, .pr-table {
+    width: 100%;
+    border-collapse: collapse;
+  }
+  .issue-table th, .pr-table th {
+    text-align: left;
+    font-size: 11px;
+    color: var(--text-dim);
+    padding: 8px 12px;
+    border-bottom: 1px solid var(--border);
+  }
+  .issue-table td, .pr-table td {
+    padding: 8px 12px;
+    border-bottom: 1px solid var(--border);
+    font-size: 13px;
+  }
+  .empty-state {
+    text-align: center;
+    padding: 24px;
+    color: var(--text-dim);
+    font-style: italic;
+  }
+</style>
+</head>
+<body>
+<header>
+  <h1>Claude Code Swarm</h1>
+  <div class="header-meta">
+    <span id="agent-count">—</span> |
+    <span id="last-updated">—</span>
+  </div>
+</header>
+
+<div class="metrics-bar">
+  <div class="metric-card metric-green"><div class="value" id="m-resolved">—</div><div class="label">Resolved</div></div>
+  <div class="metric-card metric-yellow"><div class="value" id="m-pending">—</div><div class="label">In Queue</div></div>
+  <div class="metric-card metric-accent"><div class="value" id="m-in-progress">—</div><div class="label">In Progress</div></div>
+  <div class="metric-card metric-blue"><div class="value" id="m-pr-created">—</div><div class="label">PRs Open</div></div>
+  <div class="metric-card metric-red"><div class="value" id="m-needs-human">—</div><div class="label">Needs Human</div></div>
+  <div class="metric-card"><div class="value" id="m-avg-turns">—</div><div class="label">Avg Turns</div></div>
+</div>
+
+<section>
+  <h2>Active Agents</h2>
+  <div id="agents-list"><div class="empty-state">No agents running</div></div>
+</section>
+
+<section>
+  <h2>Issue Queue</h2>
+  <div id="issues-list"><div class="empty-state">No issues tracked</div></div>
+</section>
+
+<section>
+  <h2>PR Tracker</h2>
+  <div id="prs-list"><div class="empty-state">No PRs tracked</div></div>
+</section>
+
+<script>
+const API = '';
+const POLL_MS = 3000;
+
+function statusBadge(status) {
+  return `<span class="status-badge status-${status}">${status.replace('_', ' ')}</span>`;
+}
+
+function timeAgo(ts) {
+  if (!ts) return '—';
+  const d = new Date(ts + 'Z');
+  const diff = Math.floor((Date.now() - d.getTime()) / 1000);
+  if (diff < 60) return diff + 's ago';
+  if (diff < 3600) return Math.floor(diff / 60) + 'm ago';
+  return Math.floor(diff / 3600) + 'h ago';
+}
+
+function formatLogTime(ts) {
+  if (!ts) return '';
+  const d = new Date(ts + 'Z');
+  return d.toLocaleTimeString('en-US', { hour12: false });
+}
+
+async function fetchJSON(url) {
+  try {
+    const r = await fetch(url);
+    return await r.json();
+  } catch(e) { return null; }
+}
+
+async function updateMetrics() {
+  const m = await fetchJSON(API + '/api/metrics');
+  if (!m) return;
+  document.getElementById('m-resolved').textContent = m.resolved;
+  document.getElementById('m-pending').textContent = m.pending;
+  document.getElementById('m-in-progress').textContent = m.in_progress;
+  document.getElementById('m-pr-created').textContent = m.pr_created;
+  document.getElementById('m-needs-human').textContent = m.needs_human;
+  document.getElementById('m-avg-turns').textContent = m.avg_turns;
+  document.getElementById('agent-count').textContent = `${m.active_agents} agents active`;
+  document.getElementById('last-updated').textContent = new Date().toLocaleTimeString();
+}
+
+async function updateAgents() {
+  const data = await fetchJSON(API + '/api/agents');
+  if (!data) return;
+  const el = document.getElementById('agents-list');
+  const agents = data.agents || [];
+  if (agents.length === 0) {
+    el.innerHTML = '<div class="empty-state">No agents tracked yet</div>';
+    return;
+  }
+  // Show running first, then recent completed
+  const running = agents.filter(a => a.status === 'running');
+  const recent = agents.filter(a => a.status !== 'running').slice(0, 5);
+  const display = [...running, ...recent];
+
+  el.innerHTML = display.map(a => `
+    <div class="agent-card">
+      <div class="agent-header">
+        <span class="agent-name">${a.agent_id}</span>
+        ${statusBadge(a.status)}
+      </div>
+      <div class="agent-details">
+        <span>Issue: #${a.issue_number}</span>
+        ${a.pr_number ? `<span>PR: #${a.pr_number}</span>` : ''}
+        <span>Type: ${a.agent_type}</span>
+        <span>Turns: ${a.turns_used || 0}</span>
+        <span>Branch: ${a.branch_name || '—'}</span>
+        <span>Started: ${timeAgo(a.started_at)}</span>
+      </div>
+      <div class="log-stream" id="logs-${a.agent_id}">Loading logs...</div>
+    </div>
+  `).join('');
+
+  // Fetch logs for running agents
+  for (const a of running) {
+    fetchAgentLogs(a.agent_id);
+  }
+}
+
+async function fetchAgentLogs(agentId) {
+  const data = await fetchJSON(API + `/api/agents/${agentId}/logs?since=0`);
+  if (!data) return;
+  const el = document.getElementById(`logs-${agentId}`);
+  if (!el) return;
+  const events = (data.events || []).slice(-10);
+  if (events.length === 0) {
+    el.innerHTML = '<div class="log-line" style="opacity:0.5">Waiting for events...</div>';
+    return;
+  }
+  el.innerHTML = events.map(e => {
+    const parsed = tryParseEventData(e.event_data);
+    const summary = parsed || e.event_type;
+    return `<div class="log-line"><span class="log-time">${formatLogTime(e.timestamp)}</span><span class="log-type">${e.event_type}</span>${escapeHtml(summary)}</div>`;
+  }).join('');
+  el.scrollTop = el.scrollHeight;
+}
+
+function tryParseEventData(raw) {
+  try {
+    const d = JSON.parse(raw);
+    if (d.tool) return `${d.tool}: ${JSON.stringify(d.input || {}).slice(0, 80)}`;
+    if (d.type === 'assistant') {
+      const blocks = d.message?.content || [];
+      for (const b of blocks) {
+        if (b.type === 'text') return b.text?.slice(0, 80);
+      }
+    }
+    return null;
+  } catch { return null; }
+}
+
+function escapeHtml(s) {
+  if (!s) return '';
+  const div = document.createElement('div');
+  div.textContent = s;
+  return div.innerHTML;
+}
+
+async function updateIssues() {
+  const data = await fetchJSON(API + '/api/issues');
+  if (!data) return;
+  const el = document.getElementById('issues-list');
+  const issues = data.issues || [];
+  if (issues.length === 0) {
+    el.innerHTML = '<div class="empty-state">No issues tracked yet</div>';
+    return;
+  }
+  el.innerHTML = `<table class="issue-table">
+    <tr><th>#</th><th>Title</th><th>Status</th><th>PR</th><th>Attempts</th><th>Updated</th></tr>
+    ${issues.map(i => `<tr>
+      <td>${i.issue_number}</td>
+      <td>${escapeHtml(i.title)}</td>
+      <td>${statusBadge(i.status)}</td>
+      <td>${i.pr_number ? '#' + i.pr_number : '—'}</td>
+      <td>${i.attempts}</td>
+      <td>${timeAgo(i.updated_at)}</td>
+    </tr>`).join('')}
+  </table>`;
+}
+
+async function updatePRs() {
+  const data = await fetchJSON(API + '/api/prs');
+  if (!data) return;
+  const el = document.getElementById('prs-list');
+  const prs = data.prs || [];
+  if (prs.length === 0) {
+    el.innerHTML = '<div class="empty-state">No PRs tracked yet</div>';
+    return;
+  }
+  el.innerHTML = `<table class="pr-table">
+    <tr><th>PR</th><th>Iterations</th><th>Status</th><th>Comments</th></tr>
+    ${prs.map(p => `<tr>
+      <td>#${p.pr_number}</td>
+      <td>${p.iterations}</td>
+      <td>${statusBadge(p.latest_status)}</td>
+      <td>${p.total_comments}</td>
+    </tr>`).join('')}
+  </table>`;
+}
+
+async function poll() {
+  await Promise.all([updateMetrics(), updateAgents(), updateIssues(), updatePRs()]);
+}
+
+poll();
+setInterval(poll, POLL_MS);
+</script>
+</body>
+</html>
