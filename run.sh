@@ -23,6 +23,60 @@ _require_sudo() {
   fi
 }
 
+_ensure_venv() {
+  if [ -f "$DIR/.venv/bin/python" ]; then
+    return 0
+  fi
+
+  echo "Setting up Python virtual environment..."
+
+  # Find python3
+  if ! command -v python3 &>/dev/null; then
+    echo "ERROR: python3 not found. Install Python 3.10+ first:"
+    echo "  sudo apt update && sudo apt install -y python3 python3-venv python3-pip"
+    exit 1
+  fi
+
+  # Check version >= 3.10
+  PY_VERSION=$(python3 -c 'import sys; print(f"{sys.version_info.minor}")')
+  if [ "$PY_VERSION" -lt 10 ]; then
+    echo "ERROR: Python 3.10+ required (found 3.${PY_VERSION})"
+    exit 1
+  fi
+
+  # Create venv and install deps
+  python3 -m venv "$DIR/.venv"
+  "$DIR/.venv/bin/pip" install --upgrade pip -q
+  "$DIR/.venv/bin/pip" install -r "$DIR/requirements.txt" -q
+  echo "Virtual environment ready"
+}
+
+_ensure_env() {
+  if [ -f "$DIR/.env" ]; then
+    return 0
+  fi
+
+  echo ""
+  echo "No .env file found — let's set it up."
+  echo ""
+
+  # Copy template
+  cp "$DIR/.env.example" "$DIR/.env"
+
+  read -rp "CLAUDE_CODE_OAUTH_TOKEN (from 'claude setup-token'): " TOKEN
+  read -rp "GH_TOKEN (GitHub PAT): " GH
+  read -rp "GITHUB_REPO (e.g. owner/repo): " REPO
+  read -rp "TARGET_REPO_PATH (absolute path to local clone): " TARGET
+
+  sed -i "s|^CLAUDE_CODE_OAUTH_TOKEN=.*|CLAUDE_CODE_OAUTH_TOKEN=${TOKEN}|" "$DIR/.env"
+  sed -i "s|^GH_TOKEN=.*|GH_TOKEN=${GH}|" "$DIR/.env"
+  sed -i "s|^GITHUB_REPO=.*|GITHUB_REPO=${REPO}|" "$DIR/.env"
+  sed -i "s|^TARGET_REPO_PATH=.*|TARGET_REPO_PATH=${TARGET}|" "$DIR/.env"
+
+  echo ""
+  echo ".env configured. You can edit $DIR/.env to change settings later."
+}
+
 # ── Commands ─────────────────────────────────────────────
 
 cmd_start() {
@@ -31,6 +85,8 @@ cmd_start() {
     sudo systemctl start "$SERVICE_NAME"
     sudo systemctl status "$SERVICE_NAME" --no-pager
   else
+    _ensure_venv
+    _ensure_env
     if [ -f "$PIDFILE" ] && kill -0 "$(cat "$PIDFILE")" 2>/dev/null; then
       echo "Swarm already running (PID $(cat "$PIDFILE"))"
       exit 1
@@ -112,17 +168,9 @@ cmd_install() {
   REAL_USER="${SUDO_USER:-$(whoami)}"
   REAL_GROUP="$(id -gn "$REAL_USER")"
 
-  # Check prerequisites
-  if [ ! -f "$DIR/.env" ]; then
-    echo "ERROR: .env file not found at $DIR/.env"
-    echo "Copy .env.example to .env and fill in your tokens first."
-    exit 1
-  fi
-  if [ ! -f "$DIR/.venv/bin/python" ]; then
-    echo "ERROR: Virtual environment not found at $DIR/.venv"
-    echo "Run: python3 -m venv .venv && .venv/bin/pip install -r requirements.txt"
-    exit 1
-  fi
+  # Auto-setup venv and .env if missing
+  _ensure_venv
+  _ensure_env
 
   # Generate the service file with correct paths
   cat > "$SERVICE_FILE" <<EOF
