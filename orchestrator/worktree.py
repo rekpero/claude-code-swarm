@@ -39,6 +39,12 @@ def create_worktree(issue_number: int, base_branch: str | None = None) -> str:
         logger.warning("Worktree already exists at %s, removing first", worktree_path)
         cleanup_worktree(str(worktree_path))
 
+    # Delete stale branch if it exists (leftover from a previous failed run)
+    branch_check = _run_git("branch", "--list", branch_name, check=False)
+    if branch_name in branch_check.stdout:
+        logger.warning("Deleting stale branch %s", branch_name)
+        _run_git("branch", "-D", branch_name, check=False)
+
     logger.info("Creating worktree: %s (branch: %s)", worktree_path, branch_name)
     _run_git(
         "worktree", "add", str(worktree_path), "-b", branch_name, base
@@ -62,6 +68,15 @@ def create_worktree_for_pr(pr_number: int, branch_name: str) -> str:
 
     logger.info("Creating worktree for PR fix: %s (branch: %s)", worktree_path, branch_name)
     _run_git("worktree", "add", str(worktree_path), branch_name)
+
+    # Reset to latest remote commit — an external push may have landed since the
+    # local branch was last checked out.
+    subprocess.run(
+        ["git", "-C", str(worktree_path), "reset", "--hard", f"origin/{branch_name}"],
+        capture_output=True, text=True, timeout=30,
+    )
+    logger.info("Worktree reset to origin/%s", branch_name)
+
     return str(worktree_path)
 
 

@@ -26,7 +26,7 @@ def _run_gh(*args: str) -> subprocess.CompletedProcess:
 
 
 def get_pr_comments(pr_number: int) -> list[dict]:
-    """Fetch all review comments on a PR."""
+    """Fetch all review comments on a PR (REST API — no resolution status)."""
     owner, repo = GITHUB_REPO.split("/", 1)
     result = _run_gh(
         "api", f"repos/{owner}/{repo}/pulls/{pr_number}/comments",
@@ -42,12 +42,70 @@ def get_pr_comments(pr_number: int) -> list[dict]:
         return []
 
 
+def get_unresolved_threads(pr_number: int) -> list[dict] | None:
+    """Fetch unresolved review threads with full details using the GraphQL API.
+
+    Returns a list of unresolved thread dicts with 'path' and 'comments' keys,
+    or None if the query fails (caller should fall back to REST heuristic).
+    """
+    owner, repo = GITHUB_REPO.split("/", 1)
+    query = """
+    query($owner: String!, $repo: String!, $pr: Int!) {
+      repository(owner: $owner, name: $repo) {
+        pullRequest(number: $pr) {
+          reviewThreads(first: 100) {
+            nodes {
+              isResolved
+              path
+              line
+              comments(first: 10) {
+                nodes {
+                  body
+                  author { login }
+                }
+              }
+            }
+          }
+        }
+      }
+    }
+    """
+    result = _run_gh(
+        "api", "graphql",
+        "-f", f"query={query}",
+        "-f", f"owner={owner}",
+        "-f", f"repo={repo}",
+        "-F", f"pr={pr_number}",
+    )
+    if result.returncode != 0:
+        logger.warning("GraphQL query failed for PR #%d: %s", pr_number, result.stderr)
+        return None
+    try:
+        data = json.loads(result.stdout)
+        threads = data["data"]["repository"]["pullRequest"]["reviewThreads"]["nodes"]
+        unresolved = []
+        for t in threads:
+            if not t["isResolved"]:
+                unresolved.append({
+                    "path": t.get("path", "unknown"),
+                    "line": t.get("line"),
+                    "comments": [
+                        {"body": c["body"], "author": c.get("author", {}).get("login", "unknown")}
+                        for c in t.get("comments", {}).get("nodes", [])
+                    ],
+                })
+        return unresolved
+    except (json.JSONDecodeError, KeyError, TypeError) as e:
+        logger.warning("Failed to parse GraphQL response for PR #%d: %s", pr_number, e)
+        return None
+
+
 def get_pr_checks(pr_number: int) -> list[dict]:
     """Fetch CI check status for a PR."""
     result = _run_gh(
         "pr", "checks", str(pr_number),
         "--repo", GITHUB_REPO,
-        "--json", "name,state,conclusion",
+        "--json", "name,state,bucket",
     )
     if result.returncode != 0:
         logger.warning("Failed to fetch PR #%d checks: %s", pr_number, result.stderr)
@@ -80,8 +138,9 @@ class PRMonitor:
     def __init__(self, dispatch_fix_callback):
         """
         Args:
-            dispatch_fix_callback: function(pr_number, branch_name, issue_number) -> agent_id
-                Called when a PR needs review fixes.
+            dispatch_fix_callback: function(pr_number, branch_name, issue_number, unresolved_threads) -> agent_id
+                Called when a PR needs review fixes. unresolved_threads is a list of
+                dicts with 'path', 'line', 'comments' keys, or None if GraphQL failed.
         """
         self._dispatch_fix = dispatch_fix_callback
         self._last_comment_counts: dict[int, int] = {}  # pr_number -> last known comment count
@@ -137,45 +196,101 @@ class PRMonitor:
                 logger.debug("Fix agent already running for PR #%d, skipping", pr_number)
                 continue
 
-            # Fetch comments and check status
-            comments = get_pr_comments(pr_number)
+            # Fetch CI status
             checks = get_pr_checks(pr_number)
 
-            # Check if CI is still running
-            ci_pending = any(c.get("state") == "pending" or c.get("conclusion") == "" for c in checks)
+            # Check if CI is still running or hasn't started yet
+            if not checks:
+                logger.debug("PR #%d has no CI checks yet, waiting for CI to start", pr_number)
+                continue
+            ci_pending = any(c.get("state") == "PENDING" or c.get("bucket") == "pending" for c in checks)
             if ci_pending:
                 logger.debug("PR #%d CI still running, waiting", pr_number)
                 continue
 
             # Check CI results
             ci_failed = any(
-                c.get("conclusion") in ("failure", "cancelled", "timed_out")
+                c.get("bucket") == "fail" or c.get("state") in ("FAILURE", "ERROR")
                 for c in checks
             )
 
-            new_comment_count = len(comments)
-            prev_count = self._last_comment_counts.get(pr_number, 0)
+            # Use GraphQL to get unresolved thread details (the ground truth).
+            # Falls back to the REST comment-count heuristic if GraphQL fails.
+            unresolved_threads = get_unresolved_threads(pr_number)
 
-            if new_comment_count == 0 and not ci_failed:
-                # Clean PR — resolve the issue
-                logger.info("PR #%d is clean (0 comments, CI passed). Resolving issue #%d", pr_number, issue_number)
-                db.update_issue(issue_number, status="resolved")
-                continue
+            if unresolved_threads is not None:
+                # ── GraphQL path: use actual resolution status ──
+                unresolved_count = len(unresolved_threads)
+                logger.debug("PR #%d: %d unresolved review thread(s)", pr_number, unresolved_count)
 
-            if new_comment_count > prev_count or ci_failed:
-                # New comments or CI failure — dispatch fix agent
-                reason = f"{new_comment_count} comments" if new_comment_count > prev_count else "CI failed"
-                logger.info("PR #%d needs fixes (%s). Dispatching fix agent (iteration %d)", pr_number, reason, iteration_count + 1)
-
-                self._last_comment_counts[pr_number] = new_comment_count
-                db.create_pr_review(pr_number, iteration_count + 1, new_comment_count)
-
-                branch_name = get_pr_branch(pr_number)
-                if not branch_name:
-                    logger.error("Could not determine branch for PR #%d", pr_number)
+                if unresolved_count == 0 and not ci_failed:
+                    logger.info(
+                        "PR #%d is clean (0 unresolved threads, CI passed). Resolving issue #%d",
+                        pr_number, issue_number,
+                    )
+                    db.update_issue(issue_number, status="resolved")
                     continue
 
-                self._dispatch_fix(pr_number, branch_name, issue_number)
+                if unresolved_count > 0 or ci_failed:
+                    reason_parts = []
+                    if unresolved_count > 0:
+                        reason_parts.append(f"{unresolved_count} unresolved thread(s)")
+                    if ci_failed:
+                        reason_parts.append("CI failed")
+                    reason = ", ".join(reason_parts)
+                    logger.info(
+                        "PR #%d needs fixes (%s). Dispatching fix agent (iteration %d)",
+                        pr_number, reason, iteration_count + 1,
+                    )
+                    db.create_pr_review(pr_number, iteration_count + 1, unresolved_count, json.dumps(unresolved_threads))
+
+                    branch_name = get_pr_branch(pr_number)
+                    if not branch_name:
+                        logger.error("Could not determine branch for PR #%d", pr_number)
+                        continue
+
+                    self._dispatch_fix(pr_number, branch_name, issue_number, unresolved_threads)
+                    continue
+            else:
+                # ── Fallback: REST comment-count heuristic ──
+                comments = get_pr_comments(pr_number)
+                new_comment_count = len(comments)
+                prev_count = self._last_comment_counts.get(pr_number, 0)
+
+                if new_comment_count == 0 and not ci_failed:
+                    logger.info("PR #%d is clean (0 comments, CI passed). Resolving issue #%d", pr_number, issue_number)
+                    db.update_issue(issue_number, status="resolved")
+                    continue
+
+                if new_comment_count > prev_count or ci_failed:
+                    reason = f"{new_comment_count} comments" if new_comment_count > prev_count else "CI failed"
+                    logger.info("PR #%d needs fixes (%s). Dispatching fix agent (iteration %d)", pr_number, reason, iteration_count + 1)
+
+                    self._last_comment_counts[pr_number] = new_comment_count
+                    # Store REST comments as thread-like structures for UI display
+                    rest_threads = [
+                        {"path": c.get("path", "unknown"), "line": c.get("line"), "comments": [{"body": c.get("body", ""), "author": (c.get("user") or {}).get("login", "unknown")}]}
+                        for c in comments
+                    ] if comments else None
+                    db.create_pr_review(pr_number, iteration_count + 1, new_comment_count, json.dumps(rest_threads) if rest_threads else None)
+
+                    branch_name = get_pr_branch(pr_number)
+                    if not branch_name:
+                        logger.error("Could not determine branch for PR #%d", pr_number)
+                        continue
+
+                    # REST fallback — no thread details available, agent will fetch itself
+                    self._dispatch_fix(pr_number, branch_name, issue_number, None)
+                    continue
+
+                if prev_count > 0 and new_comment_count <= prev_count and not ci_failed:
+                    logger.info(
+                        "PR #%d: CI passed and no new comments since last fix (%d comments). "
+                        "Resolving issue #%d",
+                        pr_number, new_comment_count, issue_number,
+                    )
+                    db.update_issue(issue_number, status="resolved")
+                    continue
 
     def _label_needs_human(self, issue_number: int):
         """Add 'needs-human' label to the GitHub issue."""

@@ -100,6 +100,8 @@
   .status-in_progress { background: rgba(108, 92, 231, 0.2); color: var(--accent); }
   .status-resolved { background: rgba(0, 184, 148, 0.2); color: var(--green); }
   .status-needs_human { background: rgba(225, 112, 85, 0.2); color: var(--red); }
+  .status-rate_limited { background: rgba(253, 203, 110, 0.3); color: var(--yellow); }
+  .status-resumed { background: rgba(116, 185, 255, 0.2); color: var(--blue); }
 
   .agent-details {
     font-size: 12px;
@@ -113,14 +115,20 @@
     border: 1px solid var(--border);
     border-radius: 4px;
     padding: 8px;
-    max-height: 150px;
+    max-height: 500px;
     overflow-y: auto;
     font-size: 11px;
     line-height: 1.6;
   }
-  .log-stream .log-line { color: var(--text-dim); }
+  .log-stream .log-line { color: var(--text-dim); word-break: break-word; padding: 2px 0; }
   .log-stream .log-line .log-time { color: var(--text-dim); opacity: 0.6; margin-right: 8px; }
-  .log-stream .log-line .log-type { color: var(--accent); margin-right: 8px; }
+  .log-stream .log-line .log-type { margin-right: 8px; font-weight: 600; }
+  .log-stream .log-line .log-type.t-assistant { color: var(--accent); }
+  .log-stream .log-line .log-type.t-tool_use { color: var(--yellow); }
+  .log-stream .log-line .log-type.t-tool_result { color: var(--text-dim); }
+  .log-stream .log-line .log-type.t-result { color: var(--green); }
+  .log-stream .log-line .log-type.t-error { color: var(--red); }
+  .log-stream .log-line .log-type.t-system { color: var(--blue); }
 
   .issue-table, .pr-table {
     width: 100%;
@@ -144,6 +152,44 @@
     color: var(--text-dim);
     font-style: italic;
   }
+  .pr-threads-row td {
+    padding: 0 12px 12px 12px;
+    border-bottom: 1px solid var(--border);
+  }
+  .pr-threads {
+    display: flex;
+    flex-direction: column;
+    gap: 6px;
+  }
+  .pr-thread {
+    background: var(--bg);
+    border: 1px solid var(--border);
+    border-radius: 4px;
+    padding: 8px 10px;
+    font-size: 12px;
+  }
+  .pr-thread-file {
+    font-size: 11px;
+    color: var(--blue);
+    margin-bottom: 4px;
+  }
+  .pr-thread-comment {
+    color: var(--text-dim);
+    line-height: 1.5;
+    margin-top: 2px;
+  }
+  .pr-thread-comment .thread-author {
+    color: var(--text);
+    font-weight: 600;
+    margin-right: 6px;
+  }
+  .pr-toggle {
+    cursor: pointer;
+    color: var(--accent);
+    font-size: 11px;
+    user-select: none;
+  }
+  .pr-toggle:hover { text-decoration: underline; }
 </style>
 </head>
 <body>
@@ -161,6 +207,7 @@
   <div class="metric-card metric-accent"><div class="value" id="m-in-progress">—</div><div class="label">In Progress</div></div>
   <div class="metric-card metric-blue"><div class="value" id="m-pr-created">—</div><div class="label">PRs Open</div></div>
   <div class="metric-card metric-red"><div class="value" id="m-needs-human">—</div><div class="label">Needs Human</div></div>
+  <div class="metric-card metric-yellow"><div class="value" id="m-rate-limited">—</div><div class="label">Rate Limited</div></div>
   <div class="metric-card"><div class="value" id="m-avg-turns">—</div><div class="label">Avg Turns</div></div>
 </div>
 
@@ -217,10 +264,15 @@ async function updateMetrics() {
   document.getElementById('m-in-progress').textContent = m.in_progress;
   document.getElementById('m-pr-created').textContent = m.pr_created;
   document.getElementById('m-needs-human').textContent = m.needs_human;
+  document.getElementById('m-rate-limited').textContent = m.rate_limited || 0;
   document.getElementById('m-avg-turns').textContent = m.avg_turns;
   document.getElementById('agent-count').textContent = `${m.active_agents} agents active`;
   document.getElementById('last-updated').textContent = new Date().toLocaleTimeString();
 }
+
+// Track which agent IDs are currently rendered so we only rebuild when the list changes
+let currentAgentIds = [];
+const agentLogState = {};
 
 async function updateAgents() {
   const data = await fetchJSON(API + '/api/agents');
@@ -229,67 +281,169 @@ async function updateAgents() {
   const agents = data.agents || [];
   if (agents.length === 0) {
     el.innerHTML = '<div class="empty-state">No agents tracked yet</div>';
+    currentAgentIds = [];
     return;
   }
-  // Show running first, then recent completed
+  // Show running and rate-limited first, then recent completed
   const running = agents.filter(a => a.status === 'running');
-  const recent = agents.filter(a => a.status !== 'running').slice(0, 5);
-  const display = [...running, ...recent];
+  const rateLimited = agents.filter(a => a.status === 'rate_limited');
+  const recent = agents.filter(a => !['running', 'rate_limited'].includes(a.status)).slice(0, 5);
+  const display = [...running, ...rateLimited, ...recent];
+  const newIds = display.map(a => a.agent_id);
 
-  el.innerHTML = display.map(a => `
-    <div class="agent-card">
-      <div class="agent-header">
-        <span class="agent-name">${a.agent_id}</span>
-        ${statusBadge(a.status)}
-      </div>
-      <div class="agent-details">
-        <span>Issue: #${a.issue_number}</span>
-        ${a.pr_number ? `<span>PR: #${a.pr_number}</span>` : ''}
-        <span>Type: ${a.agent_type}</span>
-        <span>Turns: ${a.turns_used || 0}</span>
-        <span>Branch: ${a.branch_name || '—'}</span>
-        <span>Started: ${timeAgo(a.started_at)}</span>
-      </div>
-      <div class="log-stream" id="logs-${a.agent_id}">Loading logs...</div>
-    </div>
-  `).join('');
+  // Check if the list of agents changed — only rebuild DOM if it did
+  const listChanged = newIds.length !== currentAgentIds.length || newIds.some((id, i) => id !== currentAgentIds[i]);
 
-  // Fetch logs for running agents
-  for (const a of running) {
+  if (listChanged) {
+    // Reset log state for agents that are being rebuilt
+    for (const id of currentAgentIds) {
+      delete agentLogState[id];
+    }
+    currentAgentIds = newIds;
+
+    el.innerHTML = display.map(a => `
+      <div class="agent-card" id="card-${a.agent_id}">
+        <div class="agent-header">
+          <span class="agent-name">${a.agent_id}</span>
+          ${statusBadge(a.status)}
+        </div>
+        <div class="agent-details">
+          <span>Issue: #${a.issue_number}</span>
+          ${a.pr_number ? `<span>PR: #${a.pr_number}</span>` : ''}
+          <span>Type: ${a.agent_type}</span>
+          <span>Turns: ${a.turns_used || 0}</span>
+          <span>Branch: ${a.branch_name || '—'}</span>
+          <span>Started: ${timeAgo(a.started_at)}</span>
+        </div>
+        <div class="log-stream" id="logs-${a.agent_id}"></div>
+      </div>
+    `).join('');
+  } else {
+    // Update metadata in-place without destroying the log DOM
+    for (const a of display) {
+      const card = document.getElementById(`card-${a.agent_id}`);
+      if (!card) continue;
+      const header = card.querySelector('.agent-header');
+      if (header) {
+        header.innerHTML = `<span class="agent-name">${a.agent_id}</span>${statusBadge(a.status)}`;
+      }
+      const details = card.querySelector('.agent-details');
+      if (details) {
+        details.innerHTML = `
+          <span>Issue: #${a.issue_number}</span>
+          ${a.pr_number ? `<span>PR: #${a.pr_number}</span>` : ''}
+          <span>Type: ${a.agent_type}</span>
+          <span>Turns: ${a.turns_used || 0}</span>
+          <span>Branch: ${a.branch_name || '—'}</span>
+          <span>Started: ${timeAgo(a.started_at)}</span>
+        `;
+      }
+    }
+  }
+
+  // Fetch logs for all displayed agents
+  for (const a of display) {
     fetchAgentLogs(a.agent_id);
   }
 }
 
 async function fetchAgentLogs(agentId) {
-  const data = await fetchJSON(API + `/api/agents/${agentId}/logs?since=0`);
-  if (!data) return;
   const el = document.getElementById(`logs-${agentId}`);
   if (!el) return;
-  const events = (data.events || []).slice(-10);
+
+  // Initialize state for this agent
+  if (!agentLogState[agentId]) {
+    agentLogState[agentId] = { lastId: 0 };
+  }
+  const state = agentLogState[agentId];
+
+  const data = await fetchJSON(API + `/api/agents/${agentId}/logs?since=${state.lastId}`);
+  if (!data) return;
+  const events = data.events || [];
+
   if (events.length === 0) {
-    el.innerHTML = '<div class="log-line" style="opacity:0.5">Waiting for events...</div>';
+    // Show placeholder only if log area is completely empty
+    if (el.children.length === 0) {
+      el.innerHTML = '<div class="log-line log-placeholder" style="opacity:0.5">Waiting for events...</div>';
+    }
     return;
   }
-  el.innerHTML = events.map(e => {
-    const parsed = tryParseEventData(e.event_data);
-    const summary = parsed || e.event_type;
-    return `<div class="log-line"><span class="log-time">${formatLogTime(e.timestamp)}</span><span class="log-type">${e.event_type}</span>${escapeHtml(summary)}</div>`;
-  }).join('');
-  el.scrollTop = el.scrollHeight;
+
+  // Clear placeholder if present
+  const placeholder = el.querySelector('.log-placeholder');
+  if (placeholder) placeholder.remove();
+
+  // Check if user is near the bottom before appending (within 50px)
+  const wasNearBottom = (el.scrollHeight - el.scrollTop - el.clientHeight) < 50;
+
+  // Append new events incrementally
+  for (const e of events) {
+    const summary = tryParseEventData(e.event_data, e.event_type);
+    if (!summary) continue;
+    const line = document.createElement('div');
+    line.className = 'log-line';
+    line.innerHTML = `<span class="log-time">${formatLogTime(e.timestamp)}</span><span class="log-type t-${e.event_type}">${e.event_type}</span>${escapeHtml(summary)}`;
+    el.appendChild(line);
+    state.lastId = Math.max(state.lastId, e.id);
+  }
+
+  // Only auto-scroll if user was already at the bottom
+  if (wasNearBottom) {
+    el.scrollTop = el.scrollHeight;
+  }
 }
 
-function tryParseEventData(raw) {
+function tryParseEventData(raw, eventType) {
   try {
     const d = JSON.parse(raw);
-    if (d.tool) return `${d.tool}: ${JSON.stringify(d.input || {}).slice(0, 80)}`;
-    if (d.type === 'assistant') {
+
+    if (eventType === 'assistant' || d.type === 'assistant') {
       const blocks = d.message?.content || [];
+      const parts = [];
       for (const b of blocks) {
-        if (b.type === 'text') return b.text?.slice(0, 80);
+        if (b.type === 'text' && b.text) parts.push(b.text);
+        else if (b.type === 'tool_use') parts.push(`[calling ${b.name || 'tool'}]`);
+        else if (typeof b === 'string') parts.push(b);
       }
+      return parts.join(' ') || null;
     }
-    return null;
-  } catch { return null; }
+
+    if (eventType === 'tool_use' || d.type === 'tool_use') {
+      const tool = d.tool || d.name || 'unknown';
+      const input = d.input || {};
+      if (tool === 'Bash') return `$ ${input.command || ''}`;
+      if (tool === 'Read') return `Read ${input.file_path || '?'}`;
+      if (tool === 'Edit' || tool === 'Write') return `${tool} ${input.file_path || '?'}`;
+      if (tool === 'Grep') return `Grep "${input.pattern || ''}"`;
+      if (tool === 'Glob') return `Glob ${input.pattern || ''}`;
+      return `${tool}: ${JSON.stringify(input)}`;
+    }
+
+    if (eventType === 'tool_result' || d.type === 'tool_result') {
+      return null; // skip tool results to reduce noise
+    }
+
+    if (eventType === 'result' || d.type === 'result') {
+      const r = d.result;
+      if (typeof r === 'string') return r;
+      if (r && typeof r === 'object') return JSON.stringify(r);
+      return 'Agent finished';
+    }
+
+    if (eventType === 'error' || d.type === 'error') {
+      const err = d.error;
+      if (typeof err === 'string') return err;
+      if (err && err.message) return err.message;
+      return 'Error occurred';
+    }
+
+    if (eventType === 'system' || d.type === 'system') {
+      if (d.subtype === 'init') return `Session started in ${d.cwd || '?'}`;
+      return d.message || d.text || JSON.stringify(d);
+    }
+
+    return JSON.stringify(d);
+  } catch { return raw || null; }
 }
 
 function escapeHtml(s) {
@@ -297,6 +451,31 @@ function escapeHtml(s) {
   const div = document.createElement('div');
   div.textContent = s;
   return div.innerHTML;
+}
+
+// Track which PR thread details are expanded
+const expandedPRs = new Set();
+
+function togglePRDetails(prNumber) {
+  if (expandedPRs.has(prNumber)) {
+    expandedPRs.delete(prNumber);
+  } else {
+    expandedPRs.add(prNumber);
+  }
+  const row = document.getElementById(`pr-threads-${prNumber}`);
+  if (row) row.toggleAttribute('hidden');
+}
+
+function formatReviewThreads(threads) {
+  if (!threads || threads.length === 0) return '';
+  return `<div class="pr-threads">${threads.map(t => {
+    const file = t.path || 'unknown';
+    const line = t.line ? `:${t.line}` : '';
+    const comments = (t.comments || []).map(c =>
+      `<div class="pr-thread-comment"><span class="thread-author">${escapeHtml(c.author || 'unknown')}</span>${escapeHtml(c.body || '')}</div>`
+    ).join('');
+    return `<div class="pr-thread"><div class="pr-thread-file">${escapeHtml(file)}${line}</div>${comments}</div>`;
+  }).join('')}</div>`;
 }
 
 async function updateIssues() {
@@ -330,14 +509,20 @@ async function updatePRs() {
     el.innerHTML = '<div class="empty-state">No PRs tracked yet</div>';
     return;
   }
-  el.innerHTML = `<table class="pr-table">
-    <tr><th>PR</th><th>Iterations</th><th>Status</th><th>Comments</th></tr>
-    ${prs.map(p => `<tr>
+  const rows = prs.map(p => {
+    const threads = p.review_threads || [];
+    const hasThreads = threads.length > 0;
+    const isExpanded = expandedPRs.has(p.pr_number);
+    return `<tr>
       <td>#${p.pr_number}</td>
       <td>${p.iterations}</td>
       <td>${statusBadge(p.latest_status)}</td>
-      <td>${p.total_comments}</td>
-    </tr>`).join('')}
+      <td>${p.total_comments}${hasThreads ? ` <span class="pr-toggle" onclick="togglePRDetails(${p.pr_number})">[${isExpanded ? 'hide' : 'details'}]</span>` : ''}</td>
+    </tr>${hasThreads ? `<tr class="pr-threads-row" id="pr-threads-${p.pr_number}"${isExpanded ? '' : ' hidden'}><td colspan="4">${formatReviewThreads(threads)}</td></tr>` : ''}`;
+  }).join('');
+  el.innerHTML = `<table class="pr-table">
+    <tr><th>PR</th><th>Iterations</th><th>Status</th><th>Comments</th></tr>
+    ${rows}
   </table>`;
 }
 

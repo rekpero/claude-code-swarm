@@ -93,11 +93,32 @@ def count_turns(events: list[AgentEvent]) -> int:
 
 def extract_pr_number(events: list[AgentEvent]) -> int | None:
     """Try to extract a PR number from agent events (looking for gh pr create output)."""
+    import re
     for event in reversed(events):
         raw_str = json.dumps(event.raw)
         # Look for patterns like "pull/123" or "PR #123" in the output
-        import re
         matches = re.findall(r'(?:pull/|PR #|pr #|pull request #?)(\d+)', raw_str)
         if matches:
             return int(matches[-1])
+    return None
+
+
+def extract_session_id(events: list[AgentEvent]) -> str | None:
+    """Try to extract a Claude session ID from agent events.
+
+    Claude CLI stream-json may include session_id in system or result events.
+    """
+    for event in events:
+        raw = event.raw
+        # Check top-level fields
+        sid = raw.get("session_id") or raw.get("sessionId")
+        if sid:
+            return str(sid)
+        # Check nested in message or result
+        for key in ("message", "result", "metadata"):
+            nested = raw.get(key, {})
+            if isinstance(nested, dict):
+                sid = nested.get("session_id") or nested.get("sessionId")
+                if sid:
+                    return str(sid)
     return None

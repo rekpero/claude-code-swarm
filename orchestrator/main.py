@@ -1,6 +1,7 @@
 """Entry point — starts all subsystems of the Claude Code Agent Swarm."""
 
 import logging
+import os
 import signal
 import sys
 import threading
@@ -16,6 +17,7 @@ from orchestrator.config import (
 )
 from orchestrator.issue_poller import poll_issues
 from orchestrator.pr_monitor import PRMonitor
+from orchestrator.rate_limit_watcher import RateLimitWatcher
 from orchestrator.worktree import cleanup_worktree
 
 logging.basicConfig(
@@ -30,25 +32,67 @@ _shutdown_event = threading.Event()
 _auth_paused = False
 
 
+def _pid_is_alive(pid: int) -> bool:
+    """Check if a process with the given PID is still running."""
+    try:
+        os.kill(pid, 0)  # signal 0 = check existence, don't actually send a signal
+        return True
+    except (OSError, ProcessLookupError):
+        return False
+
+
 def _recover_stale_agents():
-    """On startup, mark any agents still 'running' in the DB as failed (stale from a previous crash)."""
+    """On startup, handle agents still marked as 'running' or 'rate_limited' in the DB.
+
+    If the agent process (PID) is still alive, leave it alone — it survived
+    the orchestrator restart and will finish on its own.
+    If the process is dead, mark the agent as failed and reset the issue.
+    Rate-limited agents keep their worktrees — the rate_limit_watcher will resume them.
+    """
     stale = db.get_running_agents()
+    if not stale:
+        return
+
     for agent in stale:
+        pid = agent.get("pid")
+        agent_id = agent["agent_id"]
+        issue_num = agent["issue_number"]
+
+        # If we have a PID and it's still alive, the agent is still working
+        if pid and _pid_is_alive(pid):
+            logger.info(
+                "Agent %s (PID %d) for issue #%s is still running — leaving it alone",
+                agent_id, pid, issue_num,
+            )
+            continue
+
+        # Process is dead — mark as failed
         logger.warning(
-            "Recovering stale agent %s (was running for issue #%s)",
-            agent["agent_id"], agent["issue_number"],
+            "Agent %s (PID %s) for issue #%s is dead — marking as failed",
+            agent_id, pid or "unknown", issue_num,
         )
-        db.finish_agent(agent["agent_id"], status="failed", error_message="Orchestrator restarted — agent marked as stale")
+        db.finish_agent(agent_id, status="failed", error_message="Agent process died during orchestrator restart")
+
         # Reset the issue to pending so it can be retried
-        issue = db.get_issue(agent["issue_number"])
+        issue = db.get_issue(issue_num)
         if issue and issue["status"] == "in_progress":
-            db.update_issue(agent["issue_number"], status="pending")
-        # Try to clean up the worktree
+            db.update_issue(issue_num, status="pending")
+
+        # Clean up the worktree only if process is dead
         if agent.get("worktree_path"):
             try:
                 cleanup_worktree(agent["worktree_path"])
             except Exception:
                 pass
+
+    # Rate-limited agents: log them but leave them alone — the watcher handles them
+    rate_limited = db.get_rate_limited_agents()
+    if rate_limited:
+        logger.info(
+            "%d rate-limited agent(s) found from previous run — watcher will resume them: %s",
+            len(rate_limited),
+            ", ".join(a["agent_id"] for a in rate_limited),
+        )
 
 
 def main():
@@ -76,16 +120,20 @@ def main():
 
     # Create PR monitor with dispatch callback
     pr_monitor = PRMonitor(
-        dispatch_fix_callback=lambda pr_num, branch, issue_num: pool.dispatch_fix_review(
-            pr_num, branch, issue_num
+        dispatch_fix_callback=lambda pr_num, branch, issue_num, threads=None: pool.dispatch_fix_review(
+            pr_num, branch, issue_num, threads
         )
     )
+
+    # Create rate limit watcher
+    rate_limit_watcher = RateLimitWatcher(agent_pool=pool)
 
     # Set up graceful shutdown
     def shutdown_handler(signum, frame):
         logger.info("Received signal %s, shutting down...", signum)
         _shutdown_event.set()
         pr_monitor.stop()
+        rate_limit_watcher.stop()
         pool.shutdown()
 
     signal.signal(signal.SIGINT, shutdown_handler)
@@ -104,6 +152,13 @@ def main():
     )
     pr_monitor_thread.start()
     logger.info("PR Monitor started")
+
+    # Start rate limit watcher in background thread
+    rate_limit_thread = threading.Thread(
+        target=rate_limit_watcher.start, daemon=True, name="rate-limit-watcher"
+    )
+    rate_limit_thread.start()
+    logger.info("Rate limit watcher started")
 
     # Main loop: poll issues and dispatch agents
     logger.info("Swarm orchestrator running. Poll interval: %ds", POLL_INTERVAL_SECONDS)

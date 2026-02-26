@@ -23,30 +23,80 @@ _require_sudo() {
   fi
 }
 
-_ensure_venv() {
-  if [ -f "$DIR/.venv/bin/python" ]; then
-    return 0
+_apt_updated=false
+_apt_update() {
+  if [ "$_apt_updated" = false ]; then
+    apt-get update -qq
+    _apt_updated=true
   fi
+}
 
-  echo "Setting up Python virtual environment..."
+_ensure_deps() {
+  echo "Checking system dependencies..."
 
-  # Find python3
+  # ── Python 3 ──
   if ! command -v python3 &>/dev/null; then
-    echo "ERROR: python3 not found. Install Python 3.10+ first:"
-    echo "  sudo apt update && sudo apt install -y python3 python3-venv python3-pip"
-    exit 1
+    echo "  Installing python3..."
+    _apt_update
+    apt-get install -y -qq python3 python3-pip
   fi
 
-  # Check version >= 3.10
-  PY_VERSION=$(python3 -c 'import sys; print(f"{sys.version_info.minor}")')
+  PY_VERSION=$(python3 -c 'import sys; print(sys.version_info.minor)')
   if [ "$PY_VERSION" -lt 10 ]; then
     echo "ERROR: Python 3.10+ required (found 3.${PY_VERSION})"
     exit 1
   fi
 
-  # Create venv and install deps
-  python3 -m venv "$DIR/.venv"
-  "$DIR/.venv/bin/pip" install --upgrade pip -q
+  # ── python3-venv ──
+  if ! python3 -m ensurepip --version &>/dev/null 2>&1; then
+    echo "  Installing python3.${PY_VERSION}-venv..."
+    _apt_update
+    apt-get install -y -qq "python3.${PY_VERSION}-venv"
+  fi
+
+  # ── Node.js (needed for claude CLI) ──
+  if ! command -v node &>/dev/null; then
+    echo "  Installing Node.js..."
+    if ! command -v curl &>/dev/null; then
+      _apt_update
+      apt-get install -y -qq curl
+    fi
+    curl -fsSL https://deb.nodesource.com/setup_22.x | bash -
+    apt-get install -y -qq nodejs
+  fi
+
+  # ── GitHub CLI (gh) ──
+  if ! command -v gh &>/dev/null; then
+    echo "  Installing GitHub CLI..."
+    if ! command -v curl &>/dev/null; then
+      _apt_update
+      apt-get install -y -qq curl
+    fi
+    curl -fsSL https://cli.github.com/packages/githubcli-archive-keyring.gpg \
+      | dd of=/usr/share/keyrings/githubcli-archive-keyring.gpg 2>/dev/null
+    echo "deb [arch=$(dpkg --print-architecture) signed-by=/usr/share/keyrings/githubcli-archive-keyring.gpg] https://cli.github.com/packages stable main" \
+      > /etc/apt/sources.list.d/github-cli.list
+    apt-get update -qq
+    apt-get install -y -qq gh
+  fi
+
+  # ── Claude CLI ──
+  if ! command -v claude &>/dev/null; then
+    echo "  Installing Claude CLI..."
+    npm install -g @anthropic-ai/claude-code
+  fi
+
+  echo "System dependencies ready"
+}
+
+_ensure_venv() {
+  if [ ! -f "$DIR/.venv/bin/python" ]; then
+    echo "Setting up Python virtual environment..."
+    python3 -m venv "$DIR/.venv"
+  fi
+
+  # Always ensure deps are installed
+  "$DIR/.venv/bin/pip" install --upgrade pip -q 2>/dev/null
   "$DIR/.venv/bin/pip" install -r "$DIR/requirements.txt" -q
   echo "Virtual environment ready"
 }
@@ -168,9 +218,18 @@ cmd_install() {
   REAL_USER="${SUDO_USER:-$(whoami)}"
   REAL_GROUP="$(id -gn "$REAL_USER")"
 
-  # Auto-setup venv and .env if missing
+  # Install all system-level deps, then venv & .env
+  _ensure_deps
   _ensure_venv
   _ensure_env
+
+  # Build PATH that includes claude, gh, node, etc.
+  SVC_PATH="/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
+  # Add node/npm path if installed via nvm
+  REAL_HOME=$(eval echo "~${REAL_USER}")
+  for p in "$REAL_HOME/.nvm/versions/node"/*/bin /usr/local/lib/nodejs/*/bin; do
+    [ -d "$p" ] && SVC_PATH="${p}:${SVC_PATH}"
+  done
 
   # Generate the service file with correct paths
   cat > "$SERVICE_FILE" <<EOF
@@ -185,6 +244,7 @@ Group=${REAL_GROUP}
 WorkingDirectory=${DIR}
 ExecStart=${DIR}/.venv/bin/python -m orchestrator.main
 EnvironmentFile=${DIR}/.env
+Environment=PATH=${SVC_PATH}
 KillSignal=SIGTERM
 TimeoutStopSec=60
 Restart=on-failure

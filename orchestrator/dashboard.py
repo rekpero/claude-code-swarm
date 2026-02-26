@@ -43,6 +43,8 @@ async def list_issues():
 @app.get("/api/prs")
 async def list_prs():
     """List all tracked PRs and their review loop count."""
+    import json
+
     reviews = db.get_all_pr_reviews()
     # Group by PR number
     pr_map: dict[int, dict] = {}
@@ -54,10 +56,20 @@ async def list_prs():
                 "iterations": 0,
                 "latest_status": review["status"],
                 "total_comments": 0,
+                "review_threads": [],
             }
         pr_map[pr_num]["iterations"] = max(pr_map[pr_num]["iterations"], review["iteration"])
         pr_map[pr_num]["latest_status"] = review["status"]
         pr_map[pr_num]["total_comments"] += review.get("comments_count", 0)
+
+        # Use the latest review's threads as the current state
+        comments_json = review.get("comments_json")
+        if comments_json:
+            try:
+                pr_map[pr_num]["review_threads"] = json.loads(comments_json)
+            except (json.JSONDecodeError, TypeError):
+                pass
+
     return {"prs": list(pr_map.values())}
 
 

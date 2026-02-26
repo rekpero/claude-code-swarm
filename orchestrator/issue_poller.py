@@ -22,6 +22,33 @@ def _run_gh(*args: str) -> subprocess.CompletedProcess:
     return result
 
 
+def _find_open_pr_for_issue(issue_number: int) -> int | None:
+    """Check GitHub for an existing open PR that references this issue.
+
+    Looks for PRs with a branch named 'fix/issue-{N}' or whose body contains
+    'Closes #{N}' / 'Fixes #{N}'.  Returns the PR number if found, else None.
+    """
+    branch_name = f"fix/issue-{issue_number}"
+    try:
+        result = _run_gh(
+            "pr", "list",
+            "--repo", GITHUB_REPO,
+            "--head", branch_name,
+            "--state", "open",
+            "--json", "number",
+            "--limit", "1",
+        )
+        prs = json.loads(result.stdout) if result.stdout.strip() else []
+        if prs:
+            pr_num = prs[0]["number"]
+            logger.info("Found existing open PR #%d for issue #%d (branch %s)", pr_num, issue_number, branch_name)
+            return pr_num
+    except Exception as e:
+        logger.warning("Failed to check for existing PR for issue #%d: %s", issue_number, e)
+
+    return None
+
+
 def _issue_has_trigger(issue_number: int) -> bool:
     """Check if an issue has a comment containing the trigger mention.
 
@@ -90,7 +117,20 @@ def poll_issues() -> list[dict]:
         existing = db.get_issue(issue_number)
 
         if existing is None:
-            # New issue — add to DB but only dispatch if triggered
+            # New issue — check if there's already an open PR for it
+            existing_pr = _find_open_pr_for_issue(issue_number)
+
+            if existing_pr:
+                # PR already exists — seed as pr_created so PR monitor picks it up
+                db.upsert_issue(issue_number, title, status="pr_created")
+                db.update_issue(issue_number, pr_number=existing_pr)
+                logger.info(
+                    "Issue #%d already has open PR #%d — seeded as pr_created for monitoring",
+                    issue_number, existing_pr,
+                )
+                continue
+
+            # No existing PR — add to DB and dispatch if triggered
             db.upsert_issue(issue_number, title, status="pending")
 
             if _issue_has_trigger(issue_number):
@@ -120,6 +160,19 @@ def poll_issues() -> list[dict]:
             logger.debug("Issue #%d needs human intervention, skipping", issue_number)
 
         elif existing["status"] == "resolved":
+            # Check if the PR is still open — it may have been prematurely resolved
+            # before CI/BugBot had a chance to run.
+            existing_pr = existing.get("pr_number")
+            if existing_pr:
+                open_pr = _find_open_pr_for_issue(issue_number)
+                if open_pr:
+                    logger.warning(
+                        "Issue #%d is marked resolved but PR #%d is still open — "
+                        "resetting to pr_created for monitoring",
+                        issue_number, open_pr,
+                    )
+                    db.update_issue(issue_number, status="pr_created", pr_number=open_pr)
+                    continue
             logger.debug("Issue #%d already resolved, skipping", issue_number)
 
     logger.info("%d issues ready for dispatch", len(ready))

@@ -29,6 +29,7 @@ CREATE TABLE IF NOT EXISTS agents (
     status TEXT NOT NULL DEFAULT 'running',
     worktree_path TEXT,
     branch_name TEXT,
+    pid INTEGER,
     turns_used INTEGER DEFAULT 0,
     started_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
     finished_at TIMESTAMP,
@@ -50,6 +51,7 @@ CREATE TABLE IF NOT EXISTS pr_reviews (
     pr_number INTEGER NOT NULL,
     iteration INTEGER NOT NULL,
     comments_count INTEGER,
+    comments_json TEXT,
     agent_id TEXT,
     status TEXT NOT NULL DEFAULT 'pending',
     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
@@ -73,7 +75,22 @@ def init_db():
     """Initialize the database schema."""
     conn = _get_connection()
     conn.executescript(SCHEMA)
+    # Migrate: add columns if missing (for existing DBs)
+    _migrate_add_column(conn, "agents", "pid", "INTEGER")
+    _migrate_add_column(conn, "agents", "session_id", "TEXT")
+    _migrate_add_column(conn, "agents", "resume_count", "INTEGER DEFAULT 0")
+    _migrate_add_column(conn, "agents", "rate_limited_at", "TIMESTAMP")
+    _migrate_add_column(conn, "pr_reviews", "comments_json", "TEXT")
     conn.commit()
+
+
+def _migrate_add_column(conn: sqlite3.Connection, table: str, column: str, col_type: str):
+    """Add a column to a table if it doesn't exist."""
+    try:
+        conn.execute(f"SELECT {column} FROM {table} LIMIT 1")
+    except sqlite3.OperationalError:
+        conn.execute(f"ALTER TABLE {table} ADD COLUMN {column} {col_type}")
+        conn.commit()
 
 
 def _now() -> str:
@@ -138,12 +155,13 @@ def create_agent(
     worktree_path: str,
     branch_name: str,
     pr_number: int | None = None,
+    pid: int | None = None,
 ):
     conn = _get_connection()
     conn.execute(
-        """INSERT INTO agents (agent_id, issue_number, pr_number, agent_type, status, worktree_path, branch_name, started_at)
-           VALUES (?, ?, ?, ?, 'running', ?, ?, ?)""",
-        (agent_id, issue_number, pr_number, agent_type, worktree_path, branch_name, _now()),
+        """INSERT INTO agents (agent_id, issue_number, pr_number, agent_type, status, worktree_path, branch_name, pid, started_at)
+           VALUES (?, ?, ?, ?, 'running', ?, ?, ?, ?)""",
+        (agent_id, issue_number, pr_number, agent_type, worktree_path, branch_name, pid, _now()),
     )
     conn.commit()
 
@@ -168,6 +186,15 @@ def get_all_agents() -> list[dict]:
     conn = _get_connection()
     rows = conn.execute(
         "SELECT * FROM agents ORDER BY started_at DESC"
+    ).fetchall()
+    return [dict(r) for r in rows]
+
+
+def get_rate_limited_agents() -> list[dict]:
+    """Get all agents currently in rate_limited status."""
+    conn = _get_connection()
+    rows = conn.execute(
+        "SELECT * FROM agents WHERE status = 'rate_limited' ORDER BY rate_limited_at"
     ).fetchall()
     return [dict(r) for r in rows]
 
@@ -217,12 +244,12 @@ def get_agent_events(agent_id: str, since_id: int = 0, limit: int = 100) -> list
 # === PR Reviews ===
 
 
-def create_pr_review(pr_number: int, iteration: int, comments_count: int) -> int:
+def create_pr_review(pr_number: int, iteration: int, comments_count: int, comments_json: str | None = None) -> int:
     conn = _get_connection()
     cursor = conn.execute(
-        """INSERT INTO pr_reviews (pr_number, iteration, comments_count, created_at)
-           VALUES (?, ?, ?, ?)""",
-        (pr_number, iteration, comments_count, _now()),
+        """INSERT INTO pr_reviews (pr_number, iteration, comments_count, comments_json, created_at)
+           VALUES (?, ?, ?, ?, ?)""",
+        (pr_number, iteration, comments_count, comments_json, _now()),
     )
     conn.commit()
     return cursor.lastrowid
@@ -298,6 +325,10 @@ def get_metrics() -> dict:
         "SELECT AVG(turns_used) FROM agents WHERE status = 'completed'"
     ).fetchone()[0]
 
+    rate_limited = conn.execute(
+        "SELECT COUNT(*) FROM agents WHERE status = 'rate_limited'"
+    ).fetchone()[0]
+
     return {
         "active_agents": active_agents,
         "total_issues": total_issues,
@@ -307,4 +338,5 @@ def get_metrics() -> dict:
         "needs_human": needs_human,
         "pr_created": pr_created,
         "avg_turns": round(avg_turns, 1) if avg_turns else 0,
+        "rate_limited": rate_limited,
     }

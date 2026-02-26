@@ -5,6 +5,145 @@ All notable changes to Claude Code Agent Swarm will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.0.12] - 2025-02-28
+
+### Fixed
+- Added SQLite WAL (`swarm.db-wal`) and SHM (`swarm.db-shm`) files to `.gitignore` — previously only the main DB file was ignored, causing WAL artifacts to show up in `git status`
+
+---
+
+## [1.0.11] - 2025-02-28
+
+### Added
+- Automatic database schema migration on startup — new columns (`pid`, `session_id`, `resume_count`, `rate_limited_at`, `comments_json`) are added to existing databases without data loss
+- `_migrate_add_column()` helper that safely checks for column existence before altering the table
+
+### Changed
+- `init_db()` now runs migrations after creating the schema, so existing databases upgrade seamlessly on restart
+
+---
+
+## [1.0.10] - 2025-02-28
+
+### Added
+- `run.sh install` now auto-installs all system dependencies: Python 3, `python3-venv`, Node.js (v22 via NodeSource), GitHub CLI (`gh`), and Claude CLI (`@anthropic-ai/claude-code`)
+- Systemd service file now includes a `PATH` that resolves `claude`, `gh`, and `node` — fixes agents failing in systemd because CLI tools weren't on the service `PATH`
+
+### Changed
+- Dependency installation is idempotent — each tool is only installed if missing
+- `_ensure_venv()` simplified to always ensure pip deps are up to date on every start
+
+---
+
+## [1.0.9] - 2025-02-28
+
+### Added
+- Dashboard: "Rate Limited" metric card in the top metrics bar
+- Dashboard: `rate_limited` and `resumed` status badges with distinct colors (yellow / blue)
+- Dashboard: PR review thread details — click `[details]` on any PR row to expand and see unresolved review threads inline, with file paths, line numbers, and comment authors
+- Dashboard: color-coded log event types — `assistant` (purple), `tool_use` (yellow), `result` (green), `error` (red), `system` (blue)
+
+### Changed
+- Dashboard: agent log stream is now incremental — only fetches new events since the last known ID, appends them to the DOM without destroying scroll position
+- Dashboard: log container expanded from 150px to 500px max-height for better visibility
+- Dashboard: agent cards update metadata (status, turns, etc.) in-place without rebuilding the entire DOM, preserving log scroll state
+- Dashboard: `tryParseEventData()` rewritten with type-aware formatting — Bash commands show `$ cmd`, Read/Edit/Write show file paths, Grep shows patterns, tool_results are hidden to reduce noise
+- Dashboard: auto-scroll only triggers if the user is already near the bottom of the log stream
+
+---
+
+## [1.0.8] - 2025-02-28
+
+### Fixed
+- Issue poller now detects existing open PRs when encountering a new issue — if a PR with branch `fix/issue-{N}` already exists, the issue is seeded as `pr_created` so the PR monitor picks it up instead of dispatching a duplicate agent
+- Issues marked as `resolved` are now re-checked: if their PR is still open on GitHub, the issue is reset to `pr_created` for continued monitoring — prevents premature resolution before CI/review bots finish
+
+---
+
+## [1.0.7] - 2025-02-28
+
+### Added
+- Multi-step PR verification after implement agent completes:
+  1. Extract PR number from agent events (existing behavior)
+  2. Query GitHub API for PR matching branch `fix/issue-{N}` (new fallback)
+  3. Check if branch was pushed to remote — if yes, auto-create the PR via `gh pr create`
+  4. Check for unpushed local commits — if found, push branch and create PR
+  5. If none of the above, mark agent as failed with descriptive error
+- Helper methods: `_find_pr_for_branch()`, `_is_branch_pushed()`, `_has_unpushed_commits()`, `_push_branch()`, `_create_pr_for_branch()`
+
+### Fixed
+- Agents that complete their work but forget to run `gh pr create` no longer result in lost work — the orchestrator recovers by creating the PR automatically
+
+---
+
+## [1.0.6] - 2025-02-28
+
+### Added
+- New `RateLimitWatcher` background thread that periodically checks if rate limits have reset
+- Lightweight Claude probe (`claude -p "Reply with just the word OK" --max-turns 1`) to test availability before resuming agents
+- `resume_rate_limited_agent()` method on `AgentPool` — spawns a new agent subprocess in the preserved worktree with a continuation prompt
+- Resume prompts for both `implement` and `fix_review` agent types that instruct the agent to assess current state (`git log`, `git diff`) and continue from where the previous agent stopped
+- Session ID extraction from stream-json events — enables `claude --resume <session_id>` for seamless continuation, with `--continue` as fallback
+- Configurable `RATE_LIMIT_RETRY_INTERVAL` (default: 5 min) and `MAX_RATE_LIMIT_RESUMES` (default: 5) settings
+
+---
+
+## [1.0.5] - 2025-02-28
+
+### Added
+- Rate limit detection: agent pool now recognizes rate/usage limit errors in both stderr output and stream-json error events using pattern matching (`rate limit`, `429`, `too many requests`, `overloaded`, etc.)
+- Rate-limited agents are marked with `status = 'rate_limited'` instead of `failed` — their worktrees are preserved for later resumption
+- `rate_limited_at` timestamp stored on the agent record for the watcher to use
+
+### Changed
+- Rate-limited agents do NOT count as failures — the issue stays `in_progress` and attempt count is not incremented
+- `db.get_rate_limited_agents()` query added to retrieve all paused agents
+
+---
+
+## [1.0.4] - 2025-02-28
+
+### Changed
+- Agents now spawn with `start_new_session=True` — they survive orchestrator restarts as independent processes
+- Agent PID is tracked in the database (`agents.pid` column)
+- Stale agent recovery now checks if the agent's PID is still alive before marking it as failed — running agents are left alone to finish their work
+- Graceful shutdown no longer kills running agents — they continue independently and are picked up on next startup
+- Removed `--max-turns` from the `claude` CLI invocation — the agent timeout (`AGENT_TIMEOUT_SECONDS`) serves as the safety net instead, preventing silent mid-work stops on large features
+
+---
+
+## [1.0.3] - 2025-02-28
+
+### Added
+- GraphQL-based unresolved thread detection for PR reviews via `get_unresolved_threads()` — uses GitHub's `reviewThreads` API to get actual resolution status instead of relying on comment counts
+- Thread-aware fix prompts: when GraphQL data is available, unresolved threads with file paths, line numbers, and full comment text are embedded directly in the agent prompt
+- REST comment-count heuristic retained as automatic fallback when GraphQL fails
+- PR review records now store full thread details as JSON (`comments_json` column) for dashboard display
+
+### Fixed
+- CI check status parsing updated to use `bucket` field (`"pending"`, `"fail"`) and correct `state` values (`"PENDING"`, `"FAILURE"`, `"ERROR"`) — fixes false positives where CI was incorrectly reported as passed
+- PR monitor now waits for CI checks to appear before evaluating — prevents premature resolution when checks haven't started yet
+
+---
+
+## [1.0.2] - 2025-02-28
+
+### Fixed
+- Worktree creation now deletes stale branches from previous failed runs before creating a new worktree — prevents `git worktree add` failures when a branch already exists
+- PR fix worktrees now reset to `origin/{branch}` after checkout — ensures the agent starts from the latest remote state even if the local branch is stale from a previous run
+
+---
+
+## [1.0.1] - 2025-02-28
+
+### Fixed
+- Fix review dispatch callback now accepts and forwards the optional `unresolved_threads` parameter, enabling thread-aware prompts from the PR monitor
+
+### Changed
+- PR monitor dispatch callback signature updated: `function(pr_number, branch_name, issue_number, unresolved_threads)` (4th argument added)
+
+---
+
 ## [1.0.0] - 2025-02-27
 
 Initial release of the Claude Code Agent Swarm — a 24/7 autonomous orchestrator that watches a GitHub repository for open issues, dispatches parallel Claude Code agents, creates PRs, and handles CI review feedback in a loop.

@@ -1,5 +1,7 @@
 .env
 orchestrator/swarm.db
+orchestrator/swarm.db-wal
+orchestrator/swarm.db-shm
 __pycache__/
 *.pyc
 .venv/

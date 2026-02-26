@@ -40,6 +40,12 @@ PR_POLL_INTERVAL_SECONDS = int(os.environ.get("PR_POLL_INTERVAL_SECONDS", "120")
 MAX_PR_FIX_RETRIES = int(os.environ.get("MAX_PR_FIX_RETRIES", "5"))
 CI_WAIT_TIMEOUT_SECONDS = int(os.environ.get("CI_WAIT_TIMEOUT_SECONDS", "600"))
 
+# === Rate Limit Handling ===
+# How often (seconds) to check if rate-limited agents can be resumed.
+RATE_LIMIT_RETRY_INTERVAL = int(os.environ.get("RATE_LIMIT_RETRY_INTERVAL", "300"))
+# Max times we'll resume a single agent after rate limits before giving up.
+MAX_RATE_LIMIT_RESUMES = int(os.environ.get("MAX_RATE_LIMIT_RESUMES", "5"))
+
 # === Dashboard ===
 DASHBOARD_PORT = int(os.environ.get("DASHBOARD_PORT", "8420"))
 
@@ -124,6 +130,8 @@ def print_config():
     print(f"  AGENT_TIMEOUT:         {AGENT_TIMEOUT_SECONDS}s")
     print(f"  PR_POLL_INTERVAL:      {PR_POLL_INTERVAL_SECONDS}s")
     print(f"  MAX_PR_FIX_RETRIES:    {MAX_PR_FIX_RETRIES}")
+    print(f"  RATE_LIMIT_RETRY:      {RATE_LIMIT_RETRY_INTERVAL}s")
+    print(f"  MAX_RATE_RESUMES:      {MAX_RATE_LIMIT_RESUMES}")
     print(f"  DASHBOARD_PORT:        {DASHBOARD_PORT}")
     token_preview = CLAUDE_CODE_OAUTH_TOKEN[:12] + "..." if CLAUDE_CODE_OAUTH_TOKEN else "(not set)"
     gh_preview = GH_TOKEN[:8] + "..." if GH_TOKEN else "(not set)"
