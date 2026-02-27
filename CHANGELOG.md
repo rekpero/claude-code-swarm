@@ -5,6 +5,16 @@ All notable changes to Claude Code Agent Swarm will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.0.13] - 2025-02-27
+
+### Added
+- Dashboard: collapsible accordion logs for agent cards — completed/failed/timeout agents have their logs hidden by default with a "Show Logs" / "Hide Logs" toggle, keeping the dashboard clean
+- Dashboard: expand/collapse state persists across 3-second polling cycles — opening an agent's logs won't snap closed on the next refresh
+- Dashboard: smooth status transitions — when a running agent completes, the toggle is dynamically inserted and logs auto-collapse; when a rate-limited agent resumes, the toggle is removed and logs become visible again
+- Dashboard: running and rate-limited agents always show logs with no toggle, so live activity is never hidden
+
+---
+
 ## [1.0.12] - 2025-02-28
 
 ### Fixed

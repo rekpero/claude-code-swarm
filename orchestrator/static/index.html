@@ -183,6 +183,27 @@
     font-weight: 600;
     margin-right: 6px;
   }
+  .log-toggle {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    padding: 6px 8px;
+    margin-top: 4px;
+    cursor: pointer;
+    color: var(--text-dim);
+    font-size: 11px;
+    user-select: none;
+    border-radius: 4px;
+    transition: background 0.15s;
+  }
+  .log-toggle:hover { background: rgba(255,255,255,0.04); color: var(--text); }
+  .log-toggle .chevron {
+    display: inline-block;
+    transition: transform 0.2s;
+    font-size: 9px;
+  }
+  .log-toggle .chevron.open { transform: rotate(90deg); }
+
   .pr-toggle {
     cursor: pointer;
     color: var(--accent);
@@ -274,6 +295,34 @@ async function updateMetrics() {
 let currentAgentIds = [];
 const agentLogState = {};
 
+// Track which finished agents have their logs manually expanded (persists across polls)
+const expandedAgentLogs = new Set();
+
+function isAgentFinished(status) {
+  return !['running', 'rate_limited'].includes(status);
+}
+
+function toggleAgentLogs(agentId) {
+  const logsEl = document.getElementById(`logs-${agentId}`);
+  const toggleEl = document.getElementById(`log-toggle-${agentId}`);
+  if (!logsEl) return;
+  if (expandedAgentLogs.has(agentId)) {
+    expandedAgentLogs.delete(agentId);
+    logsEl.setAttribute('hidden', '');
+    if (toggleEl) {
+      toggleEl.querySelector('.chevron').classList.remove('open');
+      toggleEl.querySelector('.toggle-label').textContent = 'Show Logs';
+    }
+  } else {
+    expandedAgentLogs.add(agentId);
+    logsEl.removeAttribute('hidden');
+    if (toggleEl) {
+      toggleEl.querySelector('.chevron').classList.add('open');
+      toggleEl.querySelector('.toggle-label').textContent = 'Hide Logs';
+    }
+  }
+}
+
 async function updateAgents() {
   const data = await fetchJSON(API + '/api/agents');
   if (!data) return;
@@ -301,7 +350,10 @@ async function updateAgents() {
     }
     currentAgentIds = newIds;
 
-    el.innerHTML = display.map(a => `
+    el.innerHTML = display.map(a => {
+      const finished = isAgentFinished(a.status);
+      const logsVisible = !finished || expandedAgentLogs.has(a.agent_id);
+      return `
       <div class="agent-card" id="card-${a.agent_id}">
         <div class="agent-header">
           <span class="agent-name">${a.agent_id}</span>
@@ -315,9 +367,10 @@ async function updateAgents() {
           <span>Branch: ${a.branch_name || '—'}</span>
           <span>Started: ${timeAgo(a.started_at)}</span>
         </div>
-        <div class="log-stream" id="logs-${a.agent_id}"></div>
-      </div>
-    `).join('');
+        ${finished ? `<div class="log-toggle" id="log-toggle-${a.agent_id}" onclick="toggleAgentLogs('${a.agent_id}')"><span class="chevron ${logsVisible ? 'open' : ''}">&#9654;</span><span class="toggle-label">${logsVisible ? 'Hide' : 'Show'} Logs</span></div>` : ''}
+        <div class="log-stream" id="logs-${a.agent_id}"${!logsVisible ? ' hidden' : ''}></div>
+      </div>`;
+    }).join('');
   } else {
     // Update metadata in-place without destroying the log DOM
     for (const a of display) {
@@ -337,6 +390,29 @@ async function updateAgents() {
           <span>Branch: ${a.branch_name || '—'}</span>
           <span>Started: ${timeAgo(a.started_at)}</span>
         `;
+      }
+
+      // Handle status transitions: add/remove log toggle as needed
+      const finished = isAgentFinished(a.status);
+      const existingToggle = document.getElementById(`log-toggle-${a.agent_id}`);
+      const logsEl = document.getElementById(`logs-${a.agent_id}`);
+
+      if (finished && !existingToggle) {
+        // Agent just finished — insert toggle and collapse logs (unless user expanded)
+        const logsVisible = expandedAgentLogs.has(a.agent_id);
+        const toggleDiv = document.createElement('div');
+        toggleDiv.className = 'log-toggle';
+        toggleDiv.id = `log-toggle-${a.agent_id}`;
+        toggleDiv.onclick = () => toggleAgentLogs(a.agent_id);
+        toggleDiv.innerHTML = `<span class="chevron ${logsVisible ? 'open' : ''}">&#9654;</span><span class="toggle-label">${logsVisible ? 'Hide' : 'Show'} Logs</span>`;
+        if (logsEl) {
+          card.insertBefore(toggleDiv, logsEl);
+          if (!logsVisible) logsEl.setAttribute('hidden', '');
+        }
+      } else if (!finished && existingToggle) {
+        // Agent resumed — remove toggle and show logs
+        existingToggle.remove();
+        if (logsEl) logsEl.removeAttribute('hidden');
       }
     }
   }
