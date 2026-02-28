@@ -782,11 +782,9 @@ python-dotenv>=1.0.0
 
 These are NOT part of the initial implementation but should be considered for v2:
 
-1. **Smart routing:** Use issue labels or complexity estimation to choose agent parameters (more turns for complex issues, fewer for simple ones)
-2. **Webhook-driven instead of polling:** Set up GitHub webhooks to trigger agent dispatch instantly when issues are labeled
-3. **Agent-to-agent review:** Before creating a PR, spawn a second agent to review the first agent's code
-4. **Auto-merge:** When CI passes and a configurable number of clean iterations is reached, auto-merge the PR
-5. **Slack/Discord notifications:** Alert on completions, failures, and escalations
-6. **Cost tracking dashboard:** Parse token usage from stream-json metadata and display estimated cost per agent
-7. **Priority queuing:** Process issues by priority label (P0 before P1, etc.)
-8. **Resumable agents:** Use `claude --resume <session-id>` to continue a failed agent's work instead of starting fresh
+1. **Webhook-driven instead of polling:** Set up GitHub webhooks to trigger agent dispatch instantly when issues are labeled
+2. **Agent-to-agent review:** Before creating a PR, spawn a second agent to review the first agent's code
+3. **Slack/Discord notifications:** Alert on completions, failures, and escalations
+4. **Cost tracking dashboard:** Parse token usage from stream-json metadata and display estimated cost per agent
+5. **Priority queuing:** Process issues by priority label (P0 before P1, etc.)
+6. **Resumable agents:** Use `claude --resume <session-id>` to continue a failed agent's work instead of starting fresh

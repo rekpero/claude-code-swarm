@@ -18,6 +18,7 @@ from orchestrator.config import (
     GH_TOKEN,
     MAX_CONCURRENT_AGENTS,
     MAX_RATE_LIMIT_RESUMES,
+    SKILLS_ENABLED,
 )
 from orchestrator.prompts import (
     build_fix_review_prompt,
@@ -263,9 +264,13 @@ class AgentPool:
         (AGENT_TIMEOUT_SECONDS) is the safety net. Max-turns would silently
         stop the agent mid-work on large features.
         """
+        allowed_tools = "Read,Edit,Bash,Write,Glob,Grep"
+        if SKILLS_ENABLED:
+            allowed_tools += ",Skill"
+
         cmd = [
             "claude", "-p", prompt,
-            "--allowedTools", "Read,Edit,Bash,Write,Glob,Grep",
+            "--allowedTools", allowed_tools,
             "--output-format", "stream-json",
             "--verbose",
         ]
@@ -580,8 +585,12 @@ class AgentPool:
             cmd += ["--continue", "-p", prompt]
             logger.info("Continuing last session in worktree for agent %s", old_agent_id)
 
+        resume_allowed_tools = "Read,Edit,Bash,Write,Glob,Grep"
+        if SKILLS_ENABLED:
+            resume_allowed_tools += ",Skill"
+
         cmd += [
-            "--allowedTools", "Read,Edit,Bash,Write,Glob,Grep",
+            "--allowedTools", resume_allowed_tools,
             "--output-format", "stream-json",
             "--verbose",
         ]

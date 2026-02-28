@@ -1,12 +1,58 @@
-from orchestrator.config import GITHUB_REPO
+import logging
+from pathlib import Path
+
+from orchestrator.config import GITHUB_REPO, SKILLS_ENABLED, TARGET_REPO_PATH
+
+logger = logging.getLogger(__name__)
+
+
+def _discover_installed_skills() -> list[str]:
+    """Discover skills installed in the target repo and globally."""
+    skills: list[str] = []
+
+    # Check target repo .claude/skills/
+    repo_skills = TARGET_REPO_PATH / ".claude" / "skills"
+    if repo_skills.is_dir():
+        for entry in repo_skills.iterdir():
+            if entry.is_dir() or entry.is_symlink():
+                skill_md = entry / "SKILL.md" if entry.is_dir() else Path(entry.resolve()) / "SKILL.md"
+                if entry.is_symlink() or skill_md.exists():
+                    skills.append(entry.name)
+
+    # Check global ~/.claude/skills/
+    global_skills = Path.home() / ".claude" / "skills"
+    if global_skills.is_dir():
+        for entry in global_skills.iterdir():
+            if (entry.is_dir() or entry.is_symlink()) and entry.name not in skills:
+                skills.append(entry.name)
+
+    return sorted(skills)
+
+
+def _skills_block() -> str:
+    """Return the skills hint if skills are enabled, empty string otherwise."""
+    if not SKILLS_ENABLED:
+        return ""
+
+    skills = _discover_installed_skills()
+    if not skills:
+        return ""
+
+    skill_list = ", ".join(skills)
+    return f"""
+Skills: You have access to Claude Code skills via the Skill tool. Installed skills: {skill_list}.
+If the issue plan or review comments mention using a specific skill (e.g. "use the frontend-design skill"),
+invoke it with the Skill tool. You can also use relevant skills proactively when the task
+matches their domain."""
 
 
 def build_implement_prompt(issue_number: int) -> str:
     owner, repo = GITHUB_REPO.split("/", 1)
+    skills = _skills_block()
     return f"""Read the AGENT.md file at the root of this repository FIRST and follow every guideline strictly.
 
 Your task: Implement the feature or fix described in issue #{issue_number}.
-
+{skills}
 Step 1 — Read the implementation plan:
 Run `gh issue view {issue_number}` to read the full issue description.
 The issue body contains a DETAILED IMPLEMENTATION PLAN. This is your complete spec.
@@ -56,6 +102,8 @@ def _format_unresolved_threads(threads: list[dict]) -> str:
 def build_fix_review_prompt(pr_number: int, unresolved_threads: list[dict] | None = None) -> str:
     owner, repo = GITHUB_REPO.split("/", 1)
 
+    skills = _skills_block()
+
     if unresolved_threads is not None:
         # Pre-fetched threads — embed directly in prompt
         thread_count = len(unresolved_threads)
@@ -63,7 +111,7 @@ def build_fix_review_prompt(pr_number: int, unresolved_threads: list[dict] | Non
         return f"""Read the AGENT.md file at the root of this repository FIRST and follow every guideline strictly.
 
 Your task: Fix all UNRESOLVED review comments on PR #{pr_number}.
-
+{skills}
 There are {thread_count} unresolved review thread(s). Here are the details:
 
 {threads_block}
@@ -85,7 +133,7 @@ Important:
         return f"""Read the AGENT.md file at the root of this repository FIRST and follow every guideline strictly.
 
 Your task: Fix all UNRESOLVED review comments on PR #{pr_number}.
-
+{skills}
 Steps:
 1. Run `gh pr view {pr_number} --comments` to see the PR description and all comments.
 2. Run `gh api repos/{owner}/{repo}/pulls/{pr_number}/comments` to get all inline review comment details.
@@ -102,10 +150,11 @@ Important:
 
 
 def build_resume_implement_prompt(issue_number: int) -> str:
+    skills = _skills_block()
     return f"""Read the AGENT.md file at the root of this repository FIRST and follow every guideline strictly.
 
 Your task: CONTINUE implementing the feature or fix described in issue #{issue_number}.
-
+{skills}
 IMPORTANT CONTEXT: A previous agent was working on this issue but was interrupted by a
 rate limit. The worktree has been preserved with all its in-progress work. You must
 pick up where the previous agent left off — do NOT start from scratch.
@@ -144,6 +193,7 @@ Important:
 
 def build_resume_fix_review_prompt(pr_number: int, unresolved_threads: list[dict] | None = None) -> str:
     owner, repo = GITHUB_REPO.split("/", 1)
+    skills = _skills_block()
 
     if unresolved_threads is not None:
         thread_count = len(unresolved_threads)
@@ -151,7 +201,7 @@ def build_resume_fix_review_prompt(pr_number: int, unresolved_threads: list[dict
         return f"""Read the AGENT.md file at the root of this repository FIRST and follow every guideline strictly.
 
 Your task: CONTINUE fixing review comments on PR #{pr_number}.
-
+{skills}
 IMPORTANT CONTEXT: A previous agent was working on fixing review comments but was
 interrupted by a rate limit. The worktree has been preserved with all its in-progress
 work. You must pick up where the previous agent left off — do NOT start from scratch.
@@ -176,7 +226,7 @@ Important:
         return f"""Read the AGENT.md file at the root of this repository FIRST and follow every guideline strictly.
 
 Your task: CONTINUE fixing review comments on PR #{pr_number}.
-
+{skills}
 IMPORTANT CONTEXT: A previous agent was working on fixing review comments but was
 interrupted by a rate limit. The worktree has been preserved with all its in-progress
 work. You must pick up where the previous agent left off — do NOT start from scratch.

@@ -46,6 +46,11 @@ RATE_LIMIT_RETRY_INTERVAL = int(os.environ.get("RATE_LIMIT_RETRY_INTERVAL", "300
 # Max times we'll resume a single agent after rate limits before giving up.
 MAX_RATE_LIMIT_RESUMES = int(os.environ.get("MAX_RATE_LIMIT_RESUMES", "5"))
 
+# === Skills ===
+# Set to "true" to enable Claude Code skills for agents.
+# Skills must be installed first via: ./run.sh install-skills
+SKILLS_ENABLED = os.environ.get("SKILLS_ENABLED", "true").lower() in ("true", "1", "yes")
+
 # === Dashboard ===
 DASHBOARD_PORT = int(os.environ.get("DASHBOARD_PORT", "8420"))
 
@@ -132,6 +137,7 @@ def print_config():
     print(f"  MAX_PR_FIX_RETRIES:    {MAX_PR_FIX_RETRIES}")
     print(f"  RATE_LIMIT_RETRY:      {RATE_LIMIT_RETRY_INTERVAL}s")
     print(f"  MAX_RATE_RESUMES:      {MAX_RATE_LIMIT_RESUMES}")
+    print(f"  SKILLS_ENABLED:        {SKILLS_ENABLED}")
     print(f"  DASHBOARD_PORT:        {DASHBOARD_PORT}")
     token_preview = CLAUDE_CODE_OAUTH_TOKEN[:12] + "..." if CLAUDE_CODE_OAUTH_TOKEN else "(not set)"
     gh_preview = GH_TOKEN[:8] + "..." if GH_TOKEN else "(not set)"

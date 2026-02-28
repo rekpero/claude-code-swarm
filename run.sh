@@ -286,6 +286,223 @@ cmd_uninstall() {
   fi
 }
 
+# ── Skills (powered by skills.sh) ─────────────────────────
+
+# Default skill repos to install. Each entry is "owner/repo".
+# Override with SKILL_REPOS in .env (comma-separated).
+DEFAULT_SKILL_REPOS=(
+  "anthropics/skills"
+  "vercel-labs/agent-skills"
+)
+
+_get_target_repo_path() {
+  if [ -f "$DIR/.env" ]; then
+    grep "^TARGET_REPO_PATH=" "$DIR/.env" | cut -d'=' -f2-
+  fi
+}
+
+cmd_install_skills() {
+  local global_flag=""
+  local repos=()
+  local skill_filter=""
+  local extra_args=()
+
+  # Parse arguments
+  shift  # remove "install-skills" from args
+  while [ $# -gt 0 ]; do
+    case "$1" in
+      --global|-g)
+        global_flag="--global"
+        shift
+        ;;
+      --repo|-r)
+        repos+=("$2")
+        shift 2
+        ;;
+      --skill|-s)
+        skill_filter="$2"
+        shift 2
+        ;;
+      --list|-l)
+        # List available skills from default repos
+        echo "Listing available skills from default repos..."
+        echo ""
+        for repo in "${DEFAULT_SKILL_REPOS[@]}"; do
+          echo "=== $repo ==="
+          npx skills add "$repo" --list 2>&1 | grep -E "^\│\s+(✓\s+)?\S" || true
+          echo ""
+        done
+        echo "Usage:"
+        echo "  $0 install-skills                              Install all default skills into target repo"
+        echo "  $0 install-skills --global                     Install globally (~/.claude/skills/)"
+        echo "  $0 install-skills --repo owner/repo            Install from a specific repo"
+        echo "  $0 install-skills --skill frontend-design      Install a specific skill"
+        echo "  $0 install-skills --repo owner/repo --list     List skills in a repo"
+        echo "  $0 install-skills custom owner/repo [...]      Install from custom repo(s)"
+        return 0
+        ;;
+      --copy)
+        extra_args+=("--copy")
+        shift
+        ;;
+      -*)
+        echo "Unknown option: $1"
+        return 1
+        ;;
+      *)
+        # Positional args treated as repo names
+        repos+=("$1")
+        shift
+        ;;
+    esac
+  done
+
+  # Default to DEFAULT_SKILL_REPOS if no repos specified
+  if [ ${#repos[@]} -eq 0 ]; then
+    repos=("${DEFAULT_SKILL_REPOS[@]}")
+  fi
+
+  # Determine install directory
+  local target_dir=""
+  if [ -z "$global_flag" ]; then
+    local repo_path
+    repo_path=$(_get_target_repo_path)
+    if [ -n "$repo_path" ] && [ -d "$repo_path" ]; then
+      target_dir="$repo_path"
+    else
+      echo "WARNING: TARGET_REPO_PATH not set or not found. Installing globally."
+      global_flag="--global"
+    fi
+  fi
+
+  echo "Installing skills from ${#repos[@]} repo(s)..."
+  if [ -n "$global_flag" ]; then
+    echo "Scope: global (~/.claude/skills/)"
+  else
+    echo "Scope: target repo ($target_dir)"
+  fi
+  echo ""
+
+  local failed=0
+  for repo in "${repos[@]}"; do
+    echo "--- Installing from: $repo ---"
+
+    # Build npx skills add command
+    # --copy is default for target repo installs (symlinks break in worktrees)
+    local cmd=(npx skills add "$repo" --agent claude-code -y)
+
+    if [ -n "$global_flag" ]; then
+      cmd+=("--global")
+    else
+      cmd+=("--copy")
+    fi
+
+    if [ -n "$skill_filter" ]; then
+      cmd+=("--skill" "$skill_filter")
+    else
+      cmd+=("--skill" "*")
+    fi
+
+    for arg in "${extra_args[@]}"; do
+      cmd+=("$arg")
+    done
+
+    # Run in the target directory (or cwd for global)
+    if [ -n "$target_dir" ] && [ -z "$global_flag" ]; then
+      (cd "$target_dir" && "${cmd[@]}") || {
+        echo "WARNING: Failed to install from $repo"
+        failed=$((failed + 1))
+      }
+    else
+      "${cmd[@]}" || {
+        echo "WARNING: Failed to install from $repo"
+        failed=$((failed + 1))
+      }
+    fi
+
+    echo ""
+  done
+
+  if [ $failed -eq 0 ]; then
+    echo "All skills installed successfully."
+  else
+    echo "$failed repo(s) had errors. Check output above."
+  fi
+
+  echo ""
+  echo "Make sure SKILLS_ENABLED=true is set in .env (default: true)."
+
+  # Show what's installed
+  echo ""
+  echo "Installed skills:"
+  if [ -n "$target_dir" ] && [ -z "$global_flag" ]; then
+    (cd "$target_dir" && npx skills list 2>&1) || true
+  else
+    npx skills list 2>&1 || true
+  fi
+}
+
+cmd_uninstall_skills() {
+  local global_flag=""
+  local skill_filter=""
+
+  shift  # remove "uninstall-skills" from args
+  while [ $# -gt 0 ]; do
+    case "$1" in
+      --global|-g)
+        global_flag="--global"
+        shift
+        ;;
+      --skill|-s)
+        skill_filter="$2"
+        shift 2
+        ;;
+      *)
+        skill_filter="$1"
+        shift
+        ;;
+    esac
+  done
+
+  local target_dir=""
+  if [ -z "$global_flag" ]; then
+    target_dir=$(_get_target_repo_path)
+  fi
+
+  local cmd=(npx skills remove --agent claude-code -y)
+  if [ -n "$global_flag" ]; then
+    cmd+=("--global")
+  fi
+  if [ -n "$skill_filter" ]; then
+    cmd+=("--skill" "$skill_filter")
+  else
+    cmd+=("--skill" "*")
+  fi
+
+  if [ -n "$target_dir" ] && [ -z "$global_flag" ]; then
+    (cd "$target_dir" && "${cmd[@]}") || true
+  else
+    "${cmd[@]}" || true
+  fi
+
+  echo "Done."
+}
+
+cmd_list_skills() {
+  local target_dir
+  target_dir=$(_get_target_repo_path)
+
+  echo "Installed skills:"
+  echo ""
+  if [ -n "$target_dir" ] && [ -d "$target_dir" ]; then
+    echo "--- Target repo: $target_dir ---"
+    (cd "$target_dir" && npx skills list 2>&1) || echo "  (none)"
+  fi
+  echo ""
+  echo "--- Global: ~/.claude/skills/ ---"
+  npx skills list --global 2>&1 || echo "  (none)"
+}
+
 # ── Main ─────────────────────────────────────────────────
 
 case "${1:-help}" in
@@ -296,18 +513,33 @@ case "${1:-help}" in
   logs)     cmd_logs ;;
   install)  _require_sudo "$@"; cmd_install ;;
   uninstall) _require_sudo "$@"; cmd_uninstall ;;
+  install-skills)   cmd_install_skills "$@" ;;
+  uninstall-skills) cmd_uninstall_skills "$@" ;;
+  list-skills)      cmd_list_skills ;;
   *)
     echo "Claude Code Swarm Orchestrator"
     echo ""
     echo "Usage: $0 {command}"
     echo ""
     echo "Commands:"
-    echo "  start      Start the orchestrator"
-    echo "  stop       Stop the orchestrator"
-    echo "  restart    Restart the orchestrator"
-    echo "  status     Show current status"
-    echo "  logs       Tail live logs"
-    echo "  install    Install as systemd service (auto-start on boot, auto-restart on crash)"
-    echo "  uninstall  Remove the systemd service"
+    echo "  start              Start the orchestrator"
+    echo "  stop               Stop the orchestrator"
+    echo "  restart            Restart the orchestrator"
+    echo "  status             Show current status"
+    echo "  logs               Tail live logs"
+    echo "  install            Install as systemd service (auto-start on boot, auto-restart on crash)"
+    echo "  uninstall          Remove the systemd service"
+    echo ""
+    echo "Skills (powered by skills.sh):"
+    echo "  install-skills                           Install default skills into target repo"
+    echo "  install-skills --global                  Install globally (~/.claude/skills/)"
+    echo "  install-skills --repo owner/repo         Install from a specific GitHub repo"
+    echo "  install-skills --skill name              Install a specific skill only"
+    echo "  install-skills --list                    List available skills in default repos"
+    echo "  list-skills                              Show currently installed skills"
+    echo "  uninstall-skills                         Remove all installed skills"
+    echo ""
+    echo "Default skill repos: ${DEFAULT_SKILL_REPOS[*]}"
+    echo "Override with SKILL_REPOS in .env (comma-separated)"
     ;;
 esac

@@ -61,7 +61,10 @@ pip install -r requirements.txt
 cp .env.example .env
 # Edit .env with your tokens and target repo path
 
-# 3. Run
+# 3. Install skills (optional but recommended)
+./run.sh install-skills
+
+# 4. Run
 python -m orchestrator.main
 ```
 
@@ -88,7 +91,68 @@ All settings are in `.env` (or environment variables):
 | `TRIGGER_MENTION` | `@claude-swarm` | Agents only start when a comment with this mention exists (set empty to disable) |
 | `MAX_ISSUE_RETRIES` | `3` | Retry limit per issue before escalation |
 | `MAX_PR_FIX_RETRIES` | `5` | Max review-fix cycles per PR |
+| `SKILLS_ENABLED` | `true` | Enable Claude Code skills for agents |
 | `DASHBOARD_PORT` | `8420` | Dashboard web UI port |
+
+## Skills
+
+Agents can use [Claude Code skills](https://skills.sh) — reusable capabilities that give agents domain expertise for frontend design, testing, security, API design, and more. Skills are sourced from the open [skills.sh](https://skills.sh) ecosystem.
+
+### Installing Skills
+
+```bash
+# Install all skills from default repos (anthropics/skills + vercel-labs/agent-skills)
+./run.sh install-skills
+
+# Install from a specific repo
+./run.sh install-skills --repo anthropics/skills
+
+# Install a single skill
+./run.sh install-skills --skill frontend-design
+
+# Install globally instead of into target repo
+./run.sh install-skills --global
+
+# List available skills in default repos
+./run.sh install-skills --list
+
+# Show currently installed skills
+./run.sh list-skills
+
+# Remove all installed skills
+./run.sh uninstall-skills
+```
+
+By default, skills are installed into the target repo's `.claude/skills/` directory using `--copy` mode (not symlinks), so they are available in every agent worktree. You can also install globally to `~/.claude/skills/` with `--global`.
+
+### How Skills Work with Agents
+
+When `SKILLS_ENABLED=true` (the default) and skills are installed:
+
+1. The orchestrator discovers installed skills at startup by scanning `.claude/skills/` in the target repo and `~/.claude/skills/` globally.
+2. Agent prompts automatically include a hint listing available skills.
+3. The `Skill` tool is added to each agent's allowed tools.
+4. If an issue body or PR review comment says something like *"use the frontend-design skill"*, the agent will invoke it.
+5. Agents can also use skills proactively when the task matches a skill's domain.
+
+### Default Skill Repos
+
+| Repo | Notable Skills |
+|---|---|
+| `anthropics/skills` | frontend-design, pdf, docx, xlsx, pptx, mcp-builder, webapp-testing, skill-creator |
+| `vercel-labs/agent-skills` | web-design-guidelines, vercel-react-best-practices, vercel-composition-patterns |
+
+Browse all available skills at [skills.sh](https://skills.sh). You can install from any GitHub repo that follows the skills format:
+
+```bash
+./run.sh install-skills --repo remotion-dev/skills
+./run.sh install-skills --repo supabase/agent-skills
+./run.sh install-skills --repo microsoft/github-copilot-for-azure
+```
+
+### Disabling Skills
+
+Set `SKILLS_ENABLED=false` in `.env` to disable skill support entirely. Agents will revert to using only the base tools (`Read`, `Edit`, `Bash`, `Write`, `Glob`, `Grep`).
 
 ## Production Deployment (Ubuntu)
 
@@ -97,6 +161,9 @@ The `run.sh` script manages the orchestrator as a systemd service:
 ```bash
 # Install as a systemd service (auto-start on boot, auto-restart on crash)
 sudo ./run.sh install
+
+# Install agent skills
+./run.sh install-skills
 
 # Day-to-day management
 ./run.sh status      # Check if running
@@ -149,13 +216,17 @@ claude-code-swarm/              ← This project (orchestrator)
 │   ├── pr_monitor.py           # Watches PRs for review comments / CI status
 │   ├── worktree.py             # Git worktree create/cleanup
 │   ├── stream_parser.py        # Parses claude stream-json output
-│   ├── prompts.py              # Agent prompt templates
+│   ├── prompts.py              # Agent prompt templates (with skill discovery)
 │   ├── dashboard.py            # FastAPI server
 │   └── static/index.html       # Dashboard UI
-├── run.sh                      # Service management script
+├── run.sh                      # Service management + skill installation
 └── .env                        # Tokens and config
 
 ~/my-project/                   ← Target repo (separate directory)
+├── .claude/skills/             ← Installed skills (via ./run.sh install-skills)
+│   ├── frontend-design/
+│   ├── web-design-guidelines/
+│   └── ...
 ~/my-project-worktrees/         ← Auto-created isolated worktrees for each agent
 ```
 
