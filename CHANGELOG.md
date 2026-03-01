@@ -5,6 +5,45 @@ All notable changes to Claude Code Agent Swarm will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.0.15] - 2025-03-01
+
+### Added
+- **Merge-gated resolution**: PRs now only resolve their issue when the PR is actually merged on GitHub — previously a "clean" PR (0 comments + CI passed) was immediately marked resolved, which was premature when human review or merge approval was still pending
+- `is_pr_merged()` helper in `pr_monitor.py` — checks PR state via `gh pr view --json state,mergedAt`
+- Dashboard: live turn count for running agents — agents that haven't finished yet now show a real-time turn count computed from their `assistant` events instead of showing 0
+- `get_agent_turn_count()` query in `db.py` — counts assistant events per agent from the events table
+- Dashboard: `formatToolUse()` helper for concise tool invocation summaries — Bash shows `$ cmd`, Read/Edit/Write show file paths, Skill shows skill name
+- Dashboard: `Skill` tool formatting in log stream
+- Dashboard: thinking block display — assistant thinking is shown in dimmed italic text
+- Dashboard: `rate_limit_event` and `user` event type styling (yellow for rate limits, dimmed for user/tool-result events)
+- Stream parser: assistant events now include inline tool_use block summaries (e.g. `[$ git status]`, `[Read file.py]`, `[Skill: frontend-design]`) and thinking block content
+
+### Changed
+- PR monitor: "Resolving issue" log messages changed to "Awaiting merge for issue" — reflects the new merge-gated workflow
+- PR monitor: clean PRs (0 unresolved threads, CI passed) no longer auto-resolve — they stay in `pr_created` status until the PR is merged
+- Issue poller: removed re-check logic that reset `resolved` issues back to `pr_created` when their PR was still open — no longer needed since issues are only resolved on merge
+- Stream parser: updated docstring to reflect the actual stream-json message types (`user`, `rate_limit_event`, etc.)
+- Dashboard: `system` init events now show session working directory; other system events suppress raw JSON noise
+- Dashboard: `user` events (tool results) are filtered out to reduce log noise
+- Dashboard: `lastId` tracking moved before skip logic to prevent re-processing of filtered events
+
+---
+
+## [1.0.14] - 2025-02-28
+
+### Added
+- **Skills support**: agents can now use [Claude Code skills](https://skills.sh) — reusable capabilities that give agents domain expertise (frontend design, testing, security, API design, etc.)
+- Skill discovery at startup: the orchestrator scans `.claude/skills/` in the target repo and `~/.claude/skills/` globally, then injects a skills hint into every agent prompt
+- `Skill` tool automatically added to each agent's `--allowedTools` when `SKILLS_ENABLED=true`
+- `SKILLS_ENABLED` config flag (default: `true`) to toggle skill support on/off
+- `run.sh install-skills` command — installs skills from default repos (`anthropics/skills`, `vercel-labs/agent-skills`) into the target repo's `.claude/skills/` using `--copy` mode (symlinks break in worktrees)
+- `run.sh install-skills` flags: `--global`, `--repo owner/repo`, `--skill name`, `--list`
+- `run.sh list-skills` — shows currently installed skills (repo-local and global)
+- `run.sh uninstall-skills` — removes all installed skills
+- Skills hint injected into all prompt types: implement, fix-review, and their rate-limit resume variants
+
+---
+
 ## [1.0.13] - 2025-02-27
 
 ### Added

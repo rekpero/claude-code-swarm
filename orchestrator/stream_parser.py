@@ -9,7 +9,7 @@ logger = logging.getLogger(__name__)
 
 @dataclass
 class AgentEvent:
-    event_type: str  # "assistant", "tool_use", "tool_result", "result", "error", "system"
+    event_type: str  # "assistant", "user", "system", "result", "error", "rate_limit_event", etc.
     summary: str     # human-readable one-liner for the dashboard
     raw: dict        # full parsed JSON
 
@@ -18,11 +18,12 @@ def parse_stream_line(line: str) -> AgentEvent | None:
     """Parse a single line of stream-json output from `claude -p --output-format stream-json`.
 
     Claude stream-json emits one JSON object per line. Key message types:
-    - {"type": "assistant", "message": {...}}  — assistant text chunks
-    - {"type": "tool_use", "tool": "...", ...} — tool invocations
-    - {"type": "tool_result", ...}             — tool results
-    - {"type": "result", ...}                  — final result
-    - {"type": "system", ...}                  — system messages
+    - {"type": "assistant", "message": {"content": [...]}} — assistant turns (may contain text, thinking, tool_use blocks)
+    - {"type": "user", "message": {"content": [...]}}      — tool results (wrapped as user messages)
+    - {"type": "system", "subtype": "init", ...}           — session init
+    - {"type": "result", ...}                              — final result
+    - {"type": "error", ...}                               — errors
+    - {"type": "rate_limit_event", ...}                    — rate limit notifications
     """
     line = line.strip()
     if not line:
@@ -37,16 +38,36 @@ def parse_stream_line(line: str) -> AgentEvent | None:
     msg_type = data.get("type", "unknown")
 
     if msg_type == "assistant":
-        # Extract text content from the message
+        # Extract text and tool_use content from the message
         message = data.get("message", {})
         content_blocks = message.get("content", [])
         text_parts = []
         for block in content_blocks:
-            if isinstance(block, dict) and block.get("type") == "text":
-                text_parts.append(block.get("text", ""))
+            if isinstance(block, dict):
+                if block.get("type") == "text":
+                    text_parts.append(block.get("text", ""))
+                elif block.get("type") == "tool_use":
+                    tool_name = block.get("name", "tool")
+                    tool_input = block.get("input", {})
+                    if tool_name == "Bash":
+                        text_parts.append(f"[$ {tool_input.get('command', '')[:80]}]")
+                    elif tool_name == "Read":
+                        text_parts.append(f"[Read {tool_input.get('file_path', '?')}]")
+                    elif tool_name in ("Edit", "Write"):
+                        text_parts.append(f"[{tool_name} {tool_input.get('file_path', '?')}]")
+                    elif tool_name == "Skill":
+                        text_parts.append(f"[Skill: {tool_input.get('skill', '?')}]")
+                    else:
+                        text_parts.append(f"[{tool_name}]")
+                elif block.get("type") == "thinking":
+                    thinking_text = block.get("thinking", "")
+                    if thinking_text:
+                        text_parts.append(f"(thinking) {thinking_text}")
+                    elif not text_parts:
+                        text_parts.append("(thinking...)")
             elif isinstance(block, str):
                 text_parts.append(block)
-        text = " ".join(text_parts)[:200]
+        text = " ".join(text_parts)
         return AgentEvent(event_type="assistant", summary=text or "(thinking...)", raw=data)
 
     elif msg_type == "tool_use":

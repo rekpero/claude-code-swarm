@@ -129,6 +129,9 @@
   .log-stream .log-line .log-type.t-result { color: var(--green); }
   .log-stream .log-line .log-type.t-error { color: var(--red); }
   .log-stream .log-line .log-type.t-system { color: var(--blue); }
+  .log-stream .log-line .thinking { color: var(--text-dim); font-style: italic; }
+  .log-stream .log-line .log-type.t-user { color: var(--text-dim); }
+  .log-stream .log-line .log-type.t-rate_limit_event { color: var(--yellow); }
 
   .issue-table, .pr-table {
     width: 100%;
@@ -454,19 +457,31 @@ async function fetchAgentLogs(agentId) {
 
   // Append new events incrementally
   for (const e of events) {
+    state.lastId = Math.max(state.lastId, e.id);
     const summary = tryParseEventData(e.event_data, e.event_type);
     if (!summary) continue;
     const line = document.createElement('div');
     line.className = 'log-line';
     line.innerHTML = `<span class="log-time">${formatLogTime(e.timestamp)}</span><span class="log-type t-${e.event_type}">${e.event_type}</span>${escapeHtml(summary)}`;
     el.appendChild(line);
-    state.lastId = Math.max(state.lastId, e.id);
   }
 
   // Only auto-scroll if user was already at the bottom
   if (wasNearBottom) {
     el.scrollTop = el.scrollHeight;
   }
+}
+
+function formatToolUse(b) {
+  const tool = b.name || 'unknown';
+  const input = b.input || {};
+  if (tool === 'Bash') return `$ ${(input.command || '').substring(0, 120)}`;
+  if (tool === 'Read') return `Read ${input.file_path || '?'}`;
+  if (tool === 'Edit' || tool === 'Write') return `${tool} ${input.file_path || '?'}`;
+  if (tool === 'Grep') return `Grep "${input.pattern || ''}"`;
+  if (tool === 'Glob') return `Glob ${input.pattern || ''}`;
+  if (tool === 'Skill') return `Skill: ${input.skill || '?'}`;
+  return `${tool}`;
 }
 
 function tryParseEventData(raw, eventType) {
@@ -478,10 +493,21 @@ function tryParseEventData(raw, eventType) {
       const parts = [];
       for (const b of blocks) {
         if (b.type === 'text' && b.text) parts.push(b.text);
-        else if (b.type === 'tool_use') parts.push(`[calling ${b.name || 'tool'}]`);
+        else if (b.type === 'tool_use') parts.push(formatToolUse(b));
+        else if (b.type === 'thinking' && b.thinking) parts.push('(thinking) ' + b.thinking);
         else if (typeof b === 'string') parts.push(b);
       }
       return parts.join(' ') || null;
+    }
+
+    // user events contain tool results — show concise summary
+    if (eventType === 'user' || d.type === 'user') {
+      const content = d.message?.content || d.tool_use_result || [];
+      if (Array.isArray(content)) {
+        const toolResults = content.filter(b => b.type === 'tool_result');
+        if (toolResults.length > 0) return null; // skip tool results to reduce noise
+      }
+      return null;
     }
 
     if (eventType === 'tool_use' || d.type === 'tool_use') {
@@ -515,10 +541,14 @@ function tryParseEventData(raw, eventType) {
 
     if (eventType === 'system' || d.type === 'system') {
       if (d.subtype === 'init') return `Session started in ${d.cwd || '?'}`;
-      return d.message || d.text || JSON.stringify(d);
+      return d.message || d.text || null;
     }
 
-    return JSON.stringify(d);
+    if (eventType === 'rate_limit_event') {
+      return 'Rate limit event';
+    }
+
+    return null;
   } catch { return raw || null; }
 }
 

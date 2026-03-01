@@ -132,6 +132,22 @@ def get_pr_branch(pr_number: int) -> str | None:
         return None
 
 
+def is_pr_merged(pr_number: int) -> bool:
+    """Check if a PR has been merged."""
+    result = _run_gh(
+        "pr", "view", str(pr_number),
+        "--repo", GITHUB_REPO,
+        "--json", "state,mergedAt",
+    )
+    if result.returncode != 0:
+        return False
+    try:
+        data = json.loads(result.stdout)
+        return data.get("state") == "MERGED" or bool(data.get("mergedAt"))
+    except json.JSONDecodeError:
+        return False
+
+
 class PRMonitor:
     """Monitors PRs created by agents and dispatches fix agents when needed."""
 
@@ -162,7 +178,7 @@ class PRMonitor:
         self._running = False
 
     def _poll_prs(self):
-        """Check all PRs in 'pr_created' status for review comments."""
+        """Check all PRs in 'pr_created' status for review comments and merge status."""
         issues_with_prs = db.get_issues_by_status("pr_created")
 
         for issue in issues_with_prs:
@@ -172,6 +188,15 @@ class PRMonitor:
 
             issue_number = issue["issue_number"]
             logger.debug("Checking PR #%d for issue #%d", pr_number, issue_number)
+
+            # Check if the PR has been merged — only then do we mark the issue as resolved
+            if is_pr_merged(pr_number):
+                logger.info(
+                    "PR #%d has been merged. Resolving issue #%d",
+                    pr_number, issue_number,
+                )
+                db.update_issue(issue_number, status="resolved")
+                continue
 
             # Check how many fix iterations we've done
             reviews = db.get_pr_reviews(pr_number)
@@ -225,10 +250,9 @@ class PRMonitor:
 
                 if unresolved_count == 0 and not ci_failed:
                     logger.info(
-                        "PR #%d is clean (0 unresolved threads, CI passed). Resolving issue #%d",
+                        "PR #%d is clean (0 unresolved threads, CI passed). Awaiting merge for issue #%d",
                         pr_number, issue_number,
                     )
-                    db.update_issue(issue_number, status="resolved")
                     continue
 
                 if unresolved_count > 0 or ci_failed:
@@ -258,8 +282,10 @@ class PRMonitor:
                 prev_count = self._last_comment_counts.get(pr_number, 0)
 
                 if new_comment_count == 0 and not ci_failed:
-                    logger.info("PR #%d is clean (0 comments, CI passed). Resolving issue #%d", pr_number, issue_number)
-                    db.update_issue(issue_number, status="resolved")
+                    logger.info(
+                        "PR #%d is clean (0 comments, CI passed). Awaiting merge for issue #%d",
+                        pr_number, issue_number,
+                    )
                     continue
 
                 if new_comment_count > prev_count or ci_failed:
@@ -286,10 +312,9 @@ class PRMonitor:
                 if prev_count > 0 and new_comment_count <= prev_count and not ci_failed:
                     logger.info(
                         "PR #%d: CI passed and no new comments since last fix (%d comments). "
-                        "Resolving issue #%d",
+                        "Awaiting merge for issue #%d",
                         pr_number, new_comment_count, issue_number,
                     )
-                    db.update_issue(issue_number, status="resolved")
                     continue
 
     def _label_needs_human(self, issue_number: int):

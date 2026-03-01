@@ -23,6 +23,10 @@ async def index():
 async def list_agents():
     """List all agents with current status."""
     agents = db.get_all_agents()
+    # For running agents, compute live turn count from events
+    for agent in agents:
+        if agent["status"] == "running" and not agent.get("turns_used"):
+            agent["turns_used"] = db.get_agent_turn_count(agent["agent_id"])
     return {"agents": agents}
 
 

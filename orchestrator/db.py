@@ -241,6 +241,16 @@ def get_agent_events(agent_id: str, since_id: int = 0, limit: int = 100) -> list
     return [dict(r) for r in rows]
 
 
+def get_agent_turn_count(agent_id: str) -> int:
+    """Count assistant events (turns) for an agent from the events table."""
+    conn = _get_connection()
+    row = conn.execute(
+        "SELECT COUNT(*) FROM agent_events WHERE agent_id = ? AND event_type = 'assistant'",
+        (agent_id,),
+    ).fetchone()
+    return row[0] if row else 0
+
+
 # === PR Reviews ===
 
 

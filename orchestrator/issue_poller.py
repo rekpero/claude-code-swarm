@@ -160,20 +160,7 @@ def poll_issues() -> list[dict]:
             logger.debug("Issue #%d needs human intervention, skipping", issue_number)
 
         elif existing["status"] == "resolved":
-            # Check if the PR is still open — it may have been prematurely resolved
-            # before CI/BugBot had a chance to run.
-            existing_pr = existing.get("pr_number")
-            if existing_pr:
-                open_pr = _find_open_pr_for_issue(issue_number)
-                if open_pr:
-                    logger.warning(
-                        "Issue #%d is marked resolved but PR #%d is still open — "
-                        "resetting to pr_created for monitoring",
-                        issue_number, open_pr,
-                    )
-                    db.update_issue(issue_number, status="pr_created", pr_number=open_pr)
-                    continue
-            logger.debug("Issue #%d already resolved, skipping", issue_number)
+            logger.debug("Issue #%d already resolved (PR merged), skipping", issue_number)
 
     logger.info("%d issues ready for dispatch", len(ready))
     return ready
