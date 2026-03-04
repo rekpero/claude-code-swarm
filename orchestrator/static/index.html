@@ -603,9 +603,10 @@ async function openWorkspaceSettings() {
           </label>
         </div>
         <div style="display:flex;gap:6px;align-items:center">
-          <input type="text" id="env-new-file" placeholder="Target path (e.g. apps/web/.env)" style="flex:1;padding:4px 8px;background:var(--bg);border:1px solid var(--border);border-radius:4px;color:var(--text);font-family:inherit;font-size:11px">
+          <input type="text" id="env-new-file" placeholder="Target path (e.g. marketplace/.env)" style="flex:1;padding:4px 8px;background:var(--bg);border:1px solid var(--border);border-radius:4px;color:var(--text);font-family:inherit;font-size:11px">
           <button class="btn btn-sm" onclick="addEnvFileTab()">Add File</button>
         </div>
+        <div style="font-size:10px;color:var(--text-dim);margin-top:2px">Tip: To upload env vars to a specific path, first add the file tab above, then upload.</div>
       </div>
     </div>
   `;
@@ -737,36 +738,9 @@ function handleEnvFileUpload(input) {
     const text = e.target.result;
     const parsed = parseEnvFileContent(text);
 
-    // Check if a target path is specified — if so, switch to that tab first
-    const targetInput = document.getElementById('env-new-file');
-    const targetPath = targetInput ? targetInput.value.trim() : '';
-    if (targetPath) {
-      // Save current tab state
-      settingsEnvVars = _collectCurrentEnvRows();
-      settingsAllEnvVars[settingsEnvFile] = settingsEnvVars;
-
-      // Switch to target path tab
-      settingsEnvFile = targetPath;
-      settingsAllEnvVars[targetPath] = parsed;
-      settingsEnvVars = parsed;
-      targetInput.value = '';
-
-      // Add tab if it doesn't exist
-      const tabs = document.getElementById('env-file-tabs');
-      const existing = [...tabs.children].find(t => t.textContent === targetPath);
-      if (!existing) {
-        const tab = document.createElement('div');
-        tab.className = 'env-file-tab';
-        tab.textContent = targetPath;
-        tab.onclick = () => switchEnvFile(targetPath);
-        tabs.appendChild(tab);
-      }
-      document.querySelectorAll('.env-file-tab').forEach(t => t.classList.toggle('active', t.textContent === targetPath));
-    } else {
-      // No target path — merge into current tab
-      settingsEnvVars = {...settingsEnvVars, ...parsed};
-      settingsAllEnvVars[settingsEnvFile] = settingsEnvVars;
-    }
+    // Always upload into the currently active tab
+    settingsEnvVars = {..._collectCurrentEnvRows(), ...parsed};
+    settingsAllEnvVars[settingsEnvFile] = settingsEnvVars;
 
     renderEnvRows();
     input.value = '';
