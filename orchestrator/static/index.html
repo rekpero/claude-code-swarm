@@ -185,6 +185,8 @@
     color: var(--text-dim);
   }
   .env-file-tab.active { border-color: var(--accent); color: var(--accent); }
+  .env-tab-del { margin-left:6px; opacity:0.4; font-size:13px; font-weight:bold; }
+  .env-tab-del:hover { opacity:1; color:#e55; }
   .env-row {
     display: flex;
     gap: 8px;
@@ -624,7 +626,7 @@ async function openWorkspaceSettings() {
 function renderEnvFileTabs(files) {
   const el = document.getElementById('env-file-tabs');
   el.innerHTML = files.map(f =>
-    `<div class="env-file-tab ${f === settingsEnvFile ? 'active' : ''}" onclick="switchEnvFile('${esc(f)}')">${esc(f)}</div>`
+    `<div class="env-file-tab ${f === settingsEnvFile ? 'active' : ''}" data-file="${esc(f)}" onclick="switchEnvFile('${esc(f)}')">${esc(f)}<span class="env-tab-del" onclick="event.stopPropagation();deleteEnvFileTab('${esc(f)}')" title="Delete this env file">&times;</span></div>`
   ).join('');
   loadEnvVars(settingsEnvFile);
 }
@@ -647,7 +649,7 @@ async function switchEnvFile(file) {
   settingsAllEnvVars[settingsEnvFile] = settingsEnvVars;
 
   settingsEnvFile = file;
-  document.querySelectorAll('.env-file-tab').forEach(t => t.classList.toggle('active', t.textContent === file));
+  document.querySelectorAll('.env-file-tab').forEach(t => t.classList.toggle('active', t.dataset.file === file));
   await loadEnvVars(file);
 }
 
@@ -700,6 +702,37 @@ function removeEnvRow(btn, key) {
   delete settingsEnvVars[key];
 }
 
+async function deleteEnvFileTab(file) {
+  if (!settingsWs) return;
+  if (!confirm(`Delete "${file}" and all its variables? This also removes the file from disk.`)) return;
+
+  // Delete from backend + disk
+  await fetch(API + `/api/workspaces/${settingsWs.id}/env?env_file=${encodeURIComponent(file)}`, {method: 'DELETE'});
+
+  // Remove from local state
+  delete settingsAllEnvVars[file];
+
+  // Remove the tab from DOM
+  const tabs = document.getElementById('env-file-tabs');
+  [...tabs.children].forEach(t => { if (t.dataset.file === file) t.remove(); });
+
+  // If we deleted the active tab, pick the first remaining tab or show empty
+  if (settingsEnvFile === file) {
+    const remaining = [...tabs.children];
+    if (remaining.length > 0) {
+      const nextFile = remaining[0].dataset.file;
+      settingsEnvFile = nextFile;
+      settingsEnvVars = settingsAllEnvVars[nextFile] || {};
+    } else {
+      settingsEnvFile = '.env';
+      settingsEnvVars = {};
+    }
+  }
+
+  document.querySelectorAll('.env-file-tab').forEach(t => t.classList.toggle('active', t.dataset.file === settingsEnvFile));
+  renderEnvRows();
+}
+
 function addEnvFileTab() {
   const input = document.getElementById('env-new-file');
   const file = input.value.trim();
@@ -718,15 +751,16 @@ function addEnvFileTab() {
   settingsEnvVars = settingsAllEnvVars[file];
 
   const tabs = document.getElementById('env-file-tabs');
-  const existing = [...tabs.children].find(t => t.textContent === file);
+  const existing = [...tabs.children].find(t => t.dataset.file === file);
   if (!existing) {
     const tab = document.createElement('div');
     tab.className = 'env-file-tab active';
-    tab.textContent = file;
+    tab.dataset.file = file;
+    tab.innerHTML = `${esc(file)}<span class="env-tab-del" onclick="event.stopPropagation();deleteEnvFileTab('${esc(file)}')" title="Delete this env file">&times;</span>`;
     tab.onclick = () => switchEnvFile(file);
     tabs.appendChild(tab);
   }
-  document.querySelectorAll('.env-file-tab').forEach(t => t.classList.toggle('active', t.textContent === file));
+  document.querySelectorAll('.env-file-tab').forEach(t => t.classList.toggle('active', t.dataset.file === file));
   renderEnvRows();
 }
 

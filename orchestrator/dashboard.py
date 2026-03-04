@@ -130,6 +130,20 @@ async def get_workspace_env(workspace_id: str, env_file: str = Query(".env")):
     return {"vars": env_vars, "env_file": env_file}
 
 
+@app.delete("/api/workspaces/{workspace_id}/env")
+async def delete_workspace_env_file(workspace_id: str, env_file: str = Query(".env")):
+    """Delete all env vars for a specific env file in a workspace and remove the file from disk."""
+    db.delete_workspace_env_file(workspace_id, env_file)
+    # Also delete the actual file from disk
+    ws = db.get_workspace(workspace_id)
+    if ws and ws.get("local_path"):
+        from pathlib import Path
+        file_path = Path(ws["local_path"]) / env_file
+        if file_path.exists() and file_path.is_file():
+            file_path.unlink()
+    return {"ok": True, "env_file": env_file}
+
+
 @app.get("/api/workspaces/{workspace_id}/env-files")
 async def get_workspace_env_files(workspace_id: str):
     """List all env files — both discovered on disk and managed in DB."""
