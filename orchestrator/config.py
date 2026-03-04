@@ -54,6 +54,9 @@ SKILLS_ENABLED = os.environ.get("SKILLS_ENABLED", "true").lower() in ("true", "1
 # === Dashboard ===
 DASHBOARD_PORT = int(os.environ.get("DASHBOARD_PORT", "8420"))
 
+# === Workspaces ===
+WORKSPACES_DIR = Path(os.environ.get("WORKSPACES_DIR", "/root/workspaces"))
+
 # === Paths ===
 WORKTREE_DIR = Path(
     os.environ.get(
@@ -80,14 +83,9 @@ def validate_environment() -> list[str]:
         errors.append("CLAUDE_CODE_OAUTH_TOKEN is not set")
     if not GH_TOKEN:
         errors.append("GH_TOKEN is not set")
-    if GITHUB_REPO == "owner/repo":
-        errors.append("GITHUB_REPO is not configured (still default 'owner/repo')")
 
-    # Check TARGET_REPO_PATH
-    if not TARGET_REPO_PATH.exists():
-        errors.append(f"TARGET_REPO_PATH does not exist: {TARGET_REPO_PATH}")
-    elif not (TARGET_REPO_PATH / ".git").exists():
-        errors.append(f"TARGET_REPO_PATH is not a git repo: {TARGET_REPO_PATH}")
+    # GITHUB_REPO and TARGET_REPO_PATH are optional in multi-workspace mode.
+    # Workspaces can be added via the dashboard instead.
 
     # Check claude CLI
     if not shutil.which("claude"):

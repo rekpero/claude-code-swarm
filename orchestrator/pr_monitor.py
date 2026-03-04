@@ -25,11 +25,12 @@ def _run_gh(*args: str) -> subprocess.CompletedProcess:
     return result
 
 
-def get_pr_comments(pr_number: int) -> list[dict]:
+def get_pr_comments(pr_number: int, github_repo: str | None = None) -> list[dict]:
     """Fetch all review comments on a PR (REST API — no resolution status)."""
-    owner, repo = GITHUB_REPO.split("/", 1)
+    repo = github_repo or GITHUB_REPO
+    owner, repo_name = repo.split("/", 1)
     result = _run_gh(
-        "api", f"repos/{owner}/{repo}/pulls/{pr_number}/comments",
+        "api", f"repos/{owner}/{repo_name}/pulls/{pr_number}/comments",
         "--paginate",
     )
     if result.returncode != 0:
@@ -42,13 +43,10 @@ def get_pr_comments(pr_number: int) -> list[dict]:
         return []
 
 
-def get_unresolved_threads(pr_number: int) -> list[dict] | None:
-    """Fetch unresolved review threads with full details using the GraphQL API.
-
-    Returns a list of unresolved thread dicts with 'path' and 'comments' keys,
-    or None if the query fails (caller should fall back to REST heuristic).
-    """
-    owner, repo = GITHUB_REPO.split("/", 1)
+def get_unresolved_threads(pr_number: int, github_repo: str | None = None) -> list[dict] | None:
+    """Fetch unresolved review threads with full details using the GraphQL API."""
+    repo = github_repo or GITHUB_REPO
+    owner, repo_name = repo.split("/", 1)
     query = """
     query($owner: String!, $repo: String!, $pr: Int!) {
       repository(owner: $owner, name: $repo) {
@@ -74,7 +72,7 @@ def get_unresolved_threads(pr_number: int) -> list[dict] | None:
         "api", "graphql",
         "-f", f"query={query}",
         "-f", f"owner={owner}",
-        "-f", f"repo={repo}",
+        "-f", f"repo={repo_name}",
         "-F", f"pr={pr_number}",
     )
     if result.returncode != 0:
@@ -100,11 +98,12 @@ def get_unresolved_threads(pr_number: int) -> list[dict] | None:
         return None
 
 
-def get_pr_checks(pr_number: int) -> list[dict]:
+def get_pr_checks(pr_number: int, github_repo: str | None = None) -> list[dict]:
     """Fetch CI check status for a PR."""
+    repo = github_repo or GITHUB_REPO
     result = _run_gh(
         "pr", "checks", str(pr_number),
-        "--repo", GITHUB_REPO,
+        "--repo", repo,
         "--json", "name,state,bucket",
     )
     if result.returncode != 0:
@@ -116,11 +115,12 @@ def get_pr_checks(pr_number: int) -> list[dict]:
         return []
 
 
-def get_pr_branch(pr_number: int) -> str | None:
+def get_pr_branch(pr_number: int, github_repo: str | None = None) -> str | None:
     """Get the head branch name for a PR."""
+    repo = github_repo or GITHUB_REPO
     result = _run_gh(
         "pr", "view", str(pr_number),
-        "--repo", GITHUB_REPO,
+        "--repo", repo,
         "--json", "headRefName",
     )
     if result.returncode != 0:
@@ -132,11 +132,12 @@ def get_pr_branch(pr_number: int) -> str | None:
         return None
 
 
-def is_pr_merged(pr_number: int) -> bool:
+def is_pr_merged(pr_number: int, github_repo: str | None = None) -> bool:
     """Check if a PR has been merged."""
+    repo = github_repo or GITHUB_REPO
     result = _run_gh(
         "pr", "view", str(pr_number),
-        "--repo", GITHUB_REPO,
+        "--repo", repo,
         "--json", "state,mergedAt",
     )
     if result.returncode != 0:
@@ -154,12 +155,11 @@ class PRMonitor:
     def __init__(self, dispatch_fix_callback):
         """
         Args:
-            dispatch_fix_callback: function(pr_number, branch_name, issue_number, unresolved_threads) -> agent_id
-                Called when a PR needs review fixes. unresolved_threads is a list of
-                dicts with 'path', 'line', 'comments' keys, or None if GraphQL failed.
+            dispatch_fix_callback: function(pr_number, branch_name, issue_number, workspace, unresolved_threads) -> agent_id
+                Called when a PR needs review fixes.
         """
         self._dispatch_fix = dispatch_fix_callback
-        self._last_comment_counts: dict[int, int] = {}  # pr_number -> last known comment count
+        self._last_comment_counts: dict[int, int] = {}
         self._running = False
 
     def start(self):
@@ -187,15 +187,25 @@ class PRMonitor:
                 continue
 
             issue_number = issue["issue_number"]
+            workspace_id = issue.get("workspace_id")
+
+            # Resolve workspace config for this issue
+            workspace = None
+            github_repo = None
+            if workspace_id:
+                workspace = db.get_workspace(workspace_id)
+                if workspace:
+                    github_repo = workspace["github_repo"]
+
             logger.debug("Checking PR #%d for issue #%d", pr_number, issue_number)
 
-            # Check if the PR has been merged — only then do we mark the issue as resolved
-            if is_pr_merged(pr_number):
+            # Check if the PR has been merged
+            if is_pr_merged(pr_number, github_repo=github_repo):
                 logger.info(
                     "PR #%d has been merged. Resolving issue #%d",
                     pr_number, issue_number,
                 )
-                db.update_issue(issue_number, status="resolved")
+                db.update_issue(issue_number, workspace_id=workspace_id, status="resolved")
                 continue
 
             # Check how many fix iterations we've done
@@ -207,8 +217,8 @@ class PRMonitor:
                     "PR #%d exceeded max fix retries (%d), escalating to needs_human",
                     pr_number, MAX_PR_FIX_RETRIES,
                 )
-                db.update_issue(issue_number, status="needs_human")
-                self._label_needs_human(issue_number)
+                db.update_issue(issue_number, workspace_id=workspace_id, status="needs_human")
+                self._label_needs_human(issue_number, github_repo=github_repo)
                 continue
 
             # Check if there's already a running fix agent for this PR
@@ -222,9 +232,8 @@ class PRMonitor:
                 continue
 
             # Fetch CI status
-            checks = get_pr_checks(pr_number)
+            checks = get_pr_checks(pr_number, github_repo=github_repo)
 
-            # Check if CI is still running or hasn't started yet
             if not checks:
                 logger.debug("PR #%d has no CI checks yet, waiting for CI to start", pr_number)
                 continue
@@ -233,18 +242,14 @@ class PRMonitor:
                 logger.debug("PR #%d CI still running, waiting", pr_number)
                 continue
 
-            # Check CI results
             ci_failed = any(
                 c.get("bucket") == "fail" or c.get("state") in ("FAILURE", "ERROR")
                 for c in checks
             )
 
-            # Use GraphQL to get unresolved thread details (the ground truth).
-            # Falls back to the REST comment-count heuristic if GraphQL fails.
-            unresolved_threads = get_unresolved_threads(pr_number)
+            unresolved_threads = get_unresolved_threads(pr_number, github_repo=github_repo)
 
             if unresolved_threads is not None:
-                # ── GraphQL path: use actual resolution status ──
                 unresolved_count = len(unresolved_threads)
                 logger.debug("PR #%d: %d unresolved review thread(s)", pr_number, unresolved_count)
 
@@ -266,18 +271,17 @@ class PRMonitor:
                         "PR #%d needs fixes (%s). Dispatching fix agent (iteration %d)",
                         pr_number, reason, iteration_count + 1,
                     )
-                    db.create_pr_review(pr_number, iteration_count + 1, unresolved_count, json.dumps(unresolved_threads))
+                    db.create_pr_review(pr_number, iteration_count + 1, unresolved_count, json.dumps(unresolved_threads), workspace_id=workspace_id)
 
-                    branch_name = get_pr_branch(pr_number)
+                    branch_name = get_pr_branch(pr_number, github_repo=github_repo)
                     if not branch_name:
                         logger.error("Could not determine branch for PR #%d", pr_number)
                         continue
 
-                    self._dispatch_fix(pr_number, branch_name, issue_number, unresolved_threads)
+                    self._dispatch_fix(pr_number, branch_name, issue_number, workspace, unresolved_threads)
                     continue
             else:
-                # ── Fallback: REST comment-count heuristic ──
-                comments = get_pr_comments(pr_number)
+                comments = get_pr_comments(pr_number, github_repo=github_repo)
                 new_comment_count = len(comments)
                 prev_count = self._last_comment_counts.get(pr_number, 0)
 
@@ -293,20 +297,18 @@ class PRMonitor:
                     logger.info("PR #%d needs fixes (%s). Dispatching fix agent (iteration %d)", pr_number, reason, iteration_count + 1)
 
                     self._last_comment_counts[pr_number] = new_comment_count
-                    # Store REST comments as thread-like structures for UI display
                     rest_threads = [
                         {"path": c.get("path", "unknown"), "line": c.get("line"), "comments": [{"body": c.get("body", ""), "author": (c.get("user") or {}).get("login", "unknown")}]}
                         for c in comments
                     ] if comments else None
-                    db.create_pr_review(pr_number, iteration_count + 1, new_comment_count, json.dumps(rest_threads) if rest_threads else None)
+                    db.create_pr_review(pr_number, iteration_count + 1, new_comment_count, json.dumps(rest_threads) if rest_threads else None, workspace_id=workspace_id)
 
-                    branch_name = get_pr_branch(pr_number)
+                    branch_name = get_pr_branch(pr_number, github_repo=github_repo)
                     if not branch_name:
                         logger.error("Could not determine branch for PR #%d", pr_number)
                         continue
 
-                    # REST fallback — no thread details available, agent will fetch itself
-                    self._dispatch_fix(pr_number, branch_name, issue_number, None)
+                    self._dispatch_fix(pr_number, branch_name, issue_number, workspace, None)
                     continue
 
                 if prev_count > 0 and new_comment_count <= prev_count and not ci_failed:
@@ -317,12 +319,13 @@ class PRMonitor:
                     )
                     continue
 
-    def _label_needs_human(self, issue_number: int):
+    def _label_needs_human(self, issue_number: int, github_repo: str | None = None):
         """Add 'needs-human' label to the GitHub issue."""
+        repo = github_repo or GITHUB_REPO
         try:
             _run_gh(
                 "issue", "edit", str(issue_number),
-                "--repo", GITHUB_REPO,
+                "--repo", repo,
                 "--add-label", "needs-human",
             )
         except Exception as e:

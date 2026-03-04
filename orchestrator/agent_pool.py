@@ -7,6 +7,7 @@ import signal
 import subprocess
 import threading
 import time
+from pathlib import Path
 from typing import Callable
 
 from orchestrator import db
@@ -16,9 +17,12 @@ from orchestrator.config import (
     AGENT_TIMEOUT_SECONDS,
     CLAUDE_CODE_OAUTH_TOKEN,
     GH_TOKEN,
+    GITHUB_REPO,
     MAX_CONCURRENT_AGENTS,
     MAX_RATE_LIMIT_RESUMES,
     SKILLS_ENABLED,
+    TARGET_REPO_PATH,
+    WORKTREE_DIR,
 )
 from orchestrator.prompts import (
     build_fix_review_prompt,
@@ -47,6 +51,25 @@ _RATE_LIMIT_PATTERNS = [
 logger = logging.getLogger(__name__)
 
 
+def _workspace_config(workspace: dict | None) -> tuple[str, str, str, str]:
+    """Extract (github_repo, local_path, worktree_dir, base_branch) from workspace dict or fallback to globals."""
+    if workspace:
+        local_path = workspace["local_path"]
+        worktree_dir = local_path + "-worktrees"
+        return (
+            workspace["github_repo"],
+            local_path,
+            worktree_dir,
+            workspace.get("base_branch", "main"),
+        )
+    return (
+        GITHUB_REPO,
+        str(TARGET_REPO_PATH),
+        str(WORKTREE_DIR),
+        "main",
+    )
+
+
 class AgentProcess:
     """Wraps a running claude -p subprocess."""
 
@@ -58,6 +81,7 @@ class AgentProcess:
         issue_number: int,
         agent_type: str,
         pr_number: int | None = None,
+        workspace_id: str | None = None,
     ):
         self.agent_id = agent_id
         self.process = process
@@ -65,9 +89,12 @@ class AgentProcess:
         self.issue_number = issue_number
         self.agent_type = agent_type
         self.pr_number = pr_number
+        self.workspace_id = workspace_id
         self.events: list[AgentEvent] = []
         self.started_at = time.time()
         self._reader_thread: threading.Thread | None = None
+        # Store workspace config for use in completion handlers
+        self._workspace: dict | None = None
 
     def start_reader(self):
         """Start a background thread to read stream-json output."""
@@ -132,24 +159,30 @@ class AgentPool:
         """Set a callback to be called when an agent completes."""
         self._on_agent_complete = callback
 
-    def dispatch_implement(self, issue_number: int) -> str | None:
+    def dispatch_implement(self, issue_number: int, workspace: dict | None = None) -> str | None:
         """Dispatch an agent to implement an issue. Returns agent_id or None if pool is full."""
         if not self.can_dispatch:
             logger.warning("Agent pool full (%d/%d), cannot dispatch", self.active_count, MAX_CONCURRENT_AGENTS)
             return None
 
+        github_repo, local_path, worktree_dir, base_branch = _workspace_config(workspace)
+        workspace_id = workspace["id"] if workspace else None
         agent_id = f"agent-issue-{issue_number}-{int(time.time())}"
         branch_name = f"fix/issue-{issue_number}"
 
         try:
-            # Update repo and create worktree
-            ensure_repo_updated()
-            worktree_path = create_worktree(issue_number)
+            ensure_repo_updated(repo_path=local_path, base_branch=base_branch)
+            worktree_path = create_worktree(
+                issue_number,
+                repo_path=local_path,
+                worktree_dir=worktree_dir,
+                base_branch=base_branch,
+            )
         except Exception as e:
             logger.error("Failed to create worktree for issue #%d: %s", issue_number, e)
             return None
 
-        prompt = build_implement_prompt(issue_number)
+        prompt = build_implement_prompt(issue_number, github_repo=github_repo, target_repo_path=local_path)
 
         try:
             agent_proc = self._spawn_agent(
@@ -159,10 +192,12 @@ class AgentPool:
                 max_turns=AGENT_MAX_TURNS_IMPLEMENT,
                 issue_number=issue_number,
                 agent_type="implement",
+                workspace_id=workspace_id,
             )
+            agent_proc._workspace = workspace
         except Exception as e:
             logger.error("Failed to spawn agent for issue #%d: %s", issue_number, e)
-            cleanup_worktree(worktree_path)
+            cleanup_worktree(worktree_path, repo_path=local_path)
             return None
 
         # Record in DB
@@ -173,8 +208,10 @@ class AgentPool:
             worktree_path=worktree_path,
             branch_name=branch_name,
             pid=agent_proc.process.pid,
+            workspace_id=workspace_id,
         )
-        db.update_issue(issue_number, status="in_progress", agent_id=agent_id, attempts=db.get_issue(issue_number)["attempts"] + 1)
+        issue = db.get_issue(issue_number, workspace_id=workspace_id)
+        db.update_issue(issue_number, workspace_id=workspace_id, status="in_progress", agent_id=agent_id, attempts=issue["attempts"] + 1)
 
         with self._lock:
             self._agents[agent_id] = agent_proc
@@ -189,27 +226,28 @@ class AgentPool:
 
         return agent_id
 
-    def dispatch_fix_review(self, pr_number: int, branch_name: str, issue_number: int, unresolved_threads: list[dict] | None = None) -> str | None:
-        """Dispatch an agent to fix PR review comments. Returns agent_id or None.
-
-        Args:
-            unresolved_threads: Pre-fetched unresolved thread details from GraphQL,
-                or None to have the agent fetch comments itself (REST fallback).
-        """
+    def dispatch_fix_review(self, pr_number: int, branch_name: str, issue_number: int, workspace: dict | None = None, unresolved_threads: list[dict] | None = None) -> str | None:
+        """Dispatch an agent to fix PR review comments. Returns agent_id or None."""
         if not self.can_dispatch:
             logger.warning("Agent pool full, cannot dispatch fix agent")
             return None
 
+        github_repo, local_path, worktree_dir, base_branch = _workspace_config(workspace)
+        workspace_id = workspace["id"] if workspace else None
         agent_id = f"agent-pr-fix-{pr_number}-{int(time.time())}"
 
         try:
-            ensure_repo_updated()
-            worktree_path = create_worktree_for_pr(pr_number, branch_name)
+            ensure_repo_updated(repo_path=local_path, base_branch=base_branch)
+            worktree_path = create_worktree_for_pr(
+                pr_number, branch_name,
+                repo_path=local_path,
+                worktree_dir=worktree_dir,
+            )
         except Exception as e:
             logger.error("Failed to create worktree for PR #%d: %s", pr_number, e)
             return None
 
-        prompt = build_fix_review_prompt(pr_number, unresolved_threads)
+        prompt = build_fix_review_prompt(pr_number, unresolved_threads, github_repo=github_repo, target_repo_path=local_path)
 
         try:
             agent_proc = self._spawn_agent(
@@ -220,10 +258,12 @@ class AgentPool:
                 issue_number=issue_number,
                 agent_type="fix_review",
                 pr_number=pr_number,
+                workspace_id=workspace_id,
             )
+            agent_proc._workspace = workspace
         except Exception as e:
             logger.error("Failed to spawn fix agent for PR #%d: %s", pr_number, e)
-            cleanup_worktree(worktree_path)
+            cleanup_worktree(worktree_path, repo_path=local_path)
             return None
 
         db.create_agent(
@@ -234,6 +274,7 @@ class AgentPool:
             worktree_path=worktree_path,
             branch_name=branch_name,
             pid=agent_proc.process.pid,
+            workspace_id=workspace_id,
         )
 
         with self._lock:
@@ -257,13 +298,9 @@ class AgentPool:
         issue_number: int,
         agent_type: str,
         pr_number: int | None = None,
+        workspace_id: str | None = None,
     ) -> AgentProcess:
-        """Spawn a claude -p subprocess.
-
-        Note: We do NOT pass --max-turns to claude CLI. The agent timeout
-        (AGENT_TIMEOUT_SECONDS) is the safety net. Max-turns would silently
-        stop the agent mid-work on large features.
-        """
+        """Spawn a claude -p subprocess."""
         allowed_tools = "Read,Edit,Bash,Write,Glob,Grep"
         if SKILLS_ENABLED:
             allowed_tools += ",Skill"
@@ -280,6 +317,11 @@ class AgentPool:
             "CLAUDE_CODE_OAUTH_TOKEN": CLAUDE_CODE_OAUTH_TOKEN,
             "GH_TOKEN": GH_TOKEN,
         }
+
+        # Inject workspace-specific env vars
+        if workspace_id:
+            ws_env = db.get_workspace_env(workspace_id)
+            env.update(ws_env)
 
         logger.info("Spawning agent %s in %s (PID will be independent)", agent_id, worktree_path)
         process = subprocess.Popen(
@@ -299,17 +341,16 @@ class AgentPool:
             issue_number=issue_number,
             agent_type=agent_type,
             pr_number=pr_number,
+            workspace_id=workspace_id,
         )
 
     @staticmethod
     def _is_rate_limit_error(stderr_output: str, events: list[AgentEvent]) -> bool:
         """Check if the agent failure was caused by a rate/usage limit."""
-        # Check stderr
         text = stderr_output.lower()
         for pattern in _RATE_LIMIT_PATTERNS:
             if pattern in text:
                 return True
-        # Check error events from stream-json
         for event in events:
             if event.event_type == "error":
                 error_text = event.summary.lower()
@@ -325,12 +366,15 @@ class AgentPool:
         if not agent:
             return
 
+        # Resolve repo_path for worktree cleanup
+        repo_path = agent._workspace.get("local_path") if agent._workspace else str(TARGET_REPO_PATH)
+
         while agent.is_running:
             if agent.is_timed_out:
                 logger.warning("Agent %s timed out after %ds, killing", agent_id, AGENT_TIMEOUT_SECONDS)
                 agent.kill()
                 db.finish_agent(agent_id, status="timeout", error_message="Agent exceeded timeout")
-                cleanup_worktree(agent.worktree_path)
+                cleanup_worktree(agent.worktree_path, repo_path=repo_path)
                 return
             time.sleep(5)
 
@@ -352,9 +396,8 @@ class AgentPool:
                 self._handle_implement_complete(agent)
             else:
                 db.finish_agent(agent_id, status="completed")
-                cleanup_worktree(agent.worktree_path)
+                cleanup_worktree(agent.worktree_path, repo_path=repo_path)
         elif self._is_rate_limit_error(stderr_output, agent.events):
-            # ── Rate limit detected — preserve worktree, don't count as failure ──
             logger.warning(
                 "Agent %s hit rate limit — preserving worktree at %s for later resumption",
                 agent_id, agent.worktree_path,
@@ -363,8 +406,6 @@ class AgentPool:
             db.update_agent(agent_id, turns_used=turns)
             db.finish_agent(agent_id, status="rate_limited", error_message=stderr_output[:500])
             db.update_agent(agent_id, rate_limited_at=datetime.utcnow().isoformat())
-            # Issue stays in "in_progress" — do NOT reset to pending or increment attempts.
-            # The rate_limit_watcher will pick this up and resume when the limit resets.
         else:
             error_msg = stderr_output[:500] if stderr_output else f"Exit code {return_code}"
             logger.error("Agent %s failed: %s", agent_id, error_msg)
@@ -372,9 +413,9 @@ class AgentPool:
             db.update_agent(agent_id, turns_used=turns)
 
             if agent.agent_type == "implement":
-                db.update_issue(agent.issue_number, status="pending")
+                db.update_issue(agent.issue_number, workspace_id=agent.workspace_id, status="pending")
 
-            cleanup_worktree(agent.worktree_path)
+            cleanup_worktree(agent.worktree_path, repo_path=repo_path)
 
         # Call completion callback
         if self._on_agent_complete:
@@ -387,70 +428,70 @@ class AgentPool:
         """Handle completion of an implement agent — verify PR was actually created."""
         agent_id = agent.agent_id
         branch_name = f"fix/issue-{agent.issue_number}"
+        workspace = agent._workspace
+        github_repo = workspace["github_repo"] if workspace else GITHUB_REPO
+        repo_path = workspace.get("local_path") if workspace else str(TARGET_REPO_PATH)
 
         # 1. Try to detect PR number from agent events
         pr_num = extract_pr_number(agent.events)
 
         # 2. If not found in events, check GitHub directly
         if not pr_num:
-            pr_num = self._find_pr_for_branch(branch_name)
+            pr_num = self._find_pr_for_branch(branch_name, github_repo=github_repo)
 
         if pr_num:
             logger.info("Agent %s created PR #%d for issue #%d", agent_id, pr_num, agent.issue_number)
             db.finish_agent(agent_id, status="completed")
             db.update_agent(agent_id, pr_number=pr_num)
-            db.update_issue(agent.issue_number, status="pr_created", pr_number=pr_num)
-            cleanup_worktree(agent.worktree_path)
+            db.update_issue(agent.issue_number, workspace_id=agent.workspace_id, status="pr_created", pr_number=pr_num)
+            cleanup_worktree(agent.worktree_path, repo_path=repo_path)
             return
 
         # 3. No PR found — check if branch was at least pushed
         branch_pushed = self._is_branch_pushed(branch_name, agent.worktree_path)
 
         if branch_pushed:
-            # Branch was pushed but no PR — agent probably ran out of turns mid-work.
-            # Create the PR ourselves.
             logger.warning("Agent %s pushed branch but no PR — creating PR automatically", agent_id)
-            auto_pr = self._create_pr_for_branch(branch_name, agent.issue_number)
+            auto_pr = self._create_pr_for_branch(branch_name, agent.issue_number, github_repo=github_repo)
             if auto_pr:
                 db.finish_agent(agent_id, status="completed")
                 db.update_agent(agent_id, pr_number=auto_pr)
-                db.update_issue(agent.issue_number, status="pr_created", pr_number=auto_pr)
-                cleanup_worktree(agent.worktree_path)
+                db.update_issue(agent.issue_number, workspace_id=agent.workspace_id, status="pr_created", pr_number=auto_pr)
+                cleanup_worktree(agent.worktree_path, repo_path=repo_path)
                 return
 
         # 4. Check if there are local commits that weren't pushed
-        has_local_commits = self._has_unpushed_commits(agent.worktree_path)
+        base_branch = workspace.get("base_branch", "main") if workspace else "main"
+        has_local_commits = self._has_unpushed_commits(agent.worktree_path, base_branch=base_branch)
 
         if has_local_commits:
-            # Push the branch, then create PR
             logger.warning("Agent %s has unpushed commits — pushing and creating PR", agent_id)
             push_ok = self._push_branch(branch_name, agent.worktree_path)
             if push_ok:
-                auto_pr = self._create_pr_for_branch(branch_name, agent.issue_number)
+                auto_pr = self._create_pr_for_branch(branch_name, agent.issue_number, github_repo=github_repo)
                 if auto_pr:
                     db.finish_agent(agent_id, status="completed")
                     db.update_agent(agent_id, pr_number=auto_pr)
-                    db.update_issue(agent.issue_number, status="pr_created", pr_number=auto_pr)
-                    cleanup_worktree(agent.worktree_path)
+                    db.update_issue(agent.issue_number, workspace_id=agent.workspace_id, status="pr_created", pr_number=auto_pr)
+                    cleanup_worktree(agent.worktree_path, repo_path=repo_path)
                     return
 
         # 5. Agent did nothing useful — mark as failed
         logger.warning("Agent %s completed but produced no commits or PR", agent_id)
         db.finish_agent(agent_id, status="failed", error_message="Agent finished without creating commits or PR")
-        db.update_issue(agent.issue_number, status="pending")
-        cleanup_worktree(agent.worktree_path)
+        db.update_issue(agent.issue_number, workspace_id=agent.workspace_id, status="pending")
+        cleanup_worktree(agent.worktree_path, repo_path=repo_path)
 
-    def _find_pr_for_branch(self, branch_name: str) -> int | None:
+    def _find_pr_for_branch(self, branch_name: str, github_repo: str | None = None) -> int | None:
         """Check GitHub for an existing PR from this branch."""
+        repo = github_repo or GITHUB_REPO
         try:
-            from orchestrator.config import GITHUB_REPO, GH_TOKEN
             result = subprocess.run(
-                ["gh", "pr", "list", "--repo", GITHUB_REPO, "--head", branch_name, "--json", "number", "--limit", "1"],
+                ["gh", "pr", "list", "--repo", repo, "--head", branch_name, "--json", "number", "--limit", "1"],
                 capture_output=True, text=True, timeout=30,
                 env={**os.environ, "GH_TOKEN": GH_TOKEN},
             )
             if result.returncode == 0 and result.stdout.strip():
-                import json
                 prs = json.loads(result.stdout)
                 if prs:
                     return prs[0]["number"]
@@ -469,12 +510,11 @@ class AgentPool:
         except Exception:
             return False
 
-    def _has_unpushed_commits(self, worktree_path: str) -> bool:
+    def _has_unpushed_commits(self, worktree_path: str, base_branch: str = "main") -> bool:
         """Check if the worktree has commits ahead of the base branch."""
         try:
-            from orchestrator.config import BASE_BRANCH
             result = subprocess.run(
-                ["git", "log", f"origin/{BASE_BRANCH}..HEAD", "--oneline"],
+                ["git", "log", f"origin/{base_branch}..HEAD", "--oneline"],
                 capture_output=True, text=True, timeout=15, cwd=worktree_path,
             )
             return bool(result.stdout.strip())
@@ -496,14 +536,14 @@ class AgentPool:
             logger.error("Error pushing branch %s: %s", branch_name, e)
         return False
 
-    def _create_pr_for_branch(self, branch_name: str, issue_number: int) -> int | None:
+    def _create_pr_for_branch(self, branch_name: str, issue_number: int, github_repo: str | None = None) -> int | None:
         """Create a PR for the given branch."""
+        repo = github_repo or GITHUB_REPO
         try:
-            from orchestrator.config import GITHUB_REPO, GH_TOKEN
             result = subprocess.run(
                 [
                     "gh", "pr", "create",
-                    "--repo", GITHUB_REPO,
+                    "--repo", repo,
                     "--head", branch_name,
                     "--title", f"Fix #{issue_number}: Auto-created from agent work",
                     "--body", f"Closes #{issue_number}\n\nThis PR was auto-created by the swarm orchestrator because the agent completed its work but didn't create a PR itself.",
@@ -525,11 +565,7 @@ class AgentPool:
         return None
 
     def resume_rate_limited_agent(self, agent_record: dict) -> str | None:
-        """Resume an agent that was paused due to rate limiting.
-
-        Re-uses the preserved worktree and spawns a new agent subprocess with a
-        continuation prompt.  Returns new agent_id or None on failure.
-        """
+        """Resume an agent that was paused due to rate limiting."""
         if not self.can_dispatch:
             logger.info("Agent pool full, cannot resume rate-limited agent %s yet", agent_record["agent_id"])
             return None
@@ -542,6 +578,11 @@ class AgentPool:
         pr_number = agent_record.get("pr_number")
         old_session_id = agent_record.get("session_id")
         resume_count = (agent_record.get("resume_count") or 0) + 1
+        workspace_id = agent_record.get("workspace_id")
+
+        # Resolve repo_path for worktree cleanup
+        workspace = db.get_workspace(workspace_id) if workspace_id else None
+        repo_path = workspace["local_path"] if workspace else str(TARGET_REPO_PATH)
 
         if resume_count > MAX_RATE_LIMIT_RESUMES:
             logger.warning(
@@ -550,33 +591,36 @@ class AgentPool:
             )
             db.finish_agent(old_agent_id, status="failed", error_message="Exceeded max rate-limit resumes")
             if agent_type == "implement":
-                db.update_issue(issue_number, status="pending")
-            cleanup_worktree(worktree_path)
+                db.update_issue(issue_number, workspace_id=workspace_id, status="pending")
+            cleanup_worktree(worktree_path, repo_path=repo_path)
             return None
 
         # Verify worktree still exists
-        from pathlib import Path
         if not Path(worktree_path).exists():
             logger.error("Worktree %s no longer exists — cannot resume agent %s", worktree_path, old_agent_id)
             db.finish_agent(old_agent_id, status="failed", error_message="Worktree lost during rate limit wait")
             if agent_type == "implement":
-                db.update_issue(issue_number, status="pending")
+                db.update_issue(issue_number, workspace_id=workspace_id, status="pending")
             return None
+
+        # Resolve workspace for prompt building
+        workspace = db.get_workspace(workspace_id) if workspace_id else None
+        github_repo = workspace["github_repo"] if workspace else GITHUB_REPO
+        local_path = workspace["local_path"] if workspace else str(TARGET_REPO_PATH)
 
         # Build the appropriate resume prompt
         if agent_type == "implement":
-            prompt = build_resume_implement_prompt(issue_number)
+            prompt = build_resume_implement_prompt(issue_number, github_repo=github_repo, target_repo_path=local_path)
             max_turns = AGENT_MAX_TURNS_IMPLEMENT
         else:
-            # Re-fetch unresolved threads at resume time for freshest data
             from orchestrator.pr_monitor import get_unresolved_threads
-            unresolved_threads = get_unresolved_threads(pr_number) if pr_number else None
-            prompt = build_resume_fix_review_prompt(pr_number, unresolved_threads)
+            unresolved_threads = get_unresolved_threads(pr_number, github_repo=github_repo) if pr_number else None
+            prompt = build_resume_fix_review_prompt(pr_number, unresolved_threads, github_repo=github_repo, target_repo_path=local_path)
             max_turns = AGENT_MAX_TURNS_FIX
 
         new_agent_id = f"agent-resume-{issue_number}-{int(time.time())}"
 
-        # Build command — try --resume with session_id, fall back to --continue, or plain prompt
+        # Build command
         cmd = ["claude"]
         if old_session_id:
             cmd += ["--resume", old_session_id, "-p", prompt]
@@ -601,6 +645,11 @@ class AgentPool:
             "GH_TOKEN": GH_TOKEN,
         }
 
+        # Inject workspace-specific env vars
+        if workspace_id:
+            ws_env = db.get_workspace_env(workspace_id)
+            env.update(ws_env)
+
         try:
             process = subprocess.Popen(
                 cmd,
@@ -622,7 +671,9 @@ class AgentPool:
             issue_number=issue_number,
             agent_type=agent_type,
             pr_number=pr_number,
+            workspace_id=workspace_id,
         )
+        agent_proc._workspace = workspace
 
         # Mark old agent as superseded
         db.update_agent(old_agent_id, status="resumed")
@@ -636,11 +687,12 @@ class AgentPool:
             branch_name=branch_name,
             pr_number=pr_number,
             pid=process.pid,
+            workspace_id=workspace_id,
         )
         db.update_agent(new_agent_id, resume_count=resume_count)
 
         # Update issue to point to new agent
-        db.update_issue(issue_number, agent_id=new_agent_id)
+        db.update_issue(issue_number, workspace_id=workspace_id, agent_id=new_agent_id)
 
         with self._lock:
             self._agents[new_agent_id] = agent_proc
@@ -672,6 +724,7 @@ class AgentPool:
                     "is_running": agent.is_running,
                     "elapsed_seconds": round(agent.elapsed_seconds),
                     "event_count": len(agent.events),
+                    "workspace_id": agent.workspace_id,
                     "recent_events": [
                         {"type": e.event_type, "summary": e.summary}
                         for e in recent_events
@@ -680,12 +733,7 @@ class AgentPool:
             return results
 
     def shutdown(self):
-        """Gracefully shut down the pool — let running agents continue independently.
-
-        Since agents are spawned with start_new_session=True, they survive the
-        orchestrator stopping.  On next startup, _recover_stale_agents() will
-        check their PIDs and either wait for them or mark them as stale.
-        """
+        """Gracefully shut down the pool — let running agents continue independently."""
         logger.info("Shutting down agent pool (agents will keep running)...")
         with self._lock:
             running = [a for a in self._agents.values() if a.is_running]

@@ -10,15 +10,43 @@ from orchestrator.config import DB_PATH
 _local = threading.local()
 
 SCHEMA = """
+CREATE TABLE IF NOT EXISTS workspaces (
+    id TEXT PRIMARY KEY,
+    name TEXT NOT NULL,
+    github_repo TEXT NOT NULL,
+    repo_url TEXT NOT NULL,
+    local_path TEXT NOT NULL,
+    base_branch TEXT DEFAULT 'main',
+    status TEXT DEFAULT 'active',
+    is_monorepo INTEGER DEFAULT 0,
+    structure_json TEXT DEFAULT '{}',
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+);
+
+CREATE TABLE IF NOT EXISTS workspace_env (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    workspace_id TEXT NOT NULL,
+    env_key TEXT NOT NULL,
+    env_value TEXT NOT NULL,
+    env_file TEXT DEFAULT '.env',
+    FOREIGN KEY (workspace_id) REFERENCES workspaces(id),
+    UNIQUE(workspace_id, env_key, env_file)
+);
+
 CREATE TABLE IF NOT EXISTS issues (
-    issue_number INTEGER PRIMARY KEY,
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    issue_number INTEGER NOT NULL,
     title TEXT NOT NULL,
     status TEXT NOT NULL DEFAULT 'pending',
     agent_id TEXT,
     pr_number INTEGER,
     attempts INTEGER DEFAULT 0,
+    workspace_id TEXT,
     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    FOREIGN KEY (workspace_id) REFERENCES workspaces(id),
+    UNIQUE(issue_number, workspace_id)
 );
 
 CREATE TABLE IF NOT EXISTS agents (
@@ -31,10 +59,10 @@ CREATE TABLE IF NOT EXISTS agents (
     branch_name TEXT,
     pid INTEGER,
     turns_used INTEGER DEFAULT 0,
+    workspace_id TEXT,
     started_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
     finished_at TIMESTAMP,
-    error_message TEXT,
-    FOREIGN KEY (issue_number) REFERENCES issues(issue_number)
+    error_message TEXT
 );
 
 CREATE TABLE IF NOT EXISTS agent_events (
@@ -53,9 +81,11 @@ CREATE TABLE IF NOT EXISTS pr_reviews (
     comments_count INTEGER,
     comments_json TEXT,
     agent_id TEXT,
+    workspace_id TEXT,
     status TEXT NOT NULL DEFAULT 'pending',
     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-    FOREIGN KEY (agent_id) REFERENCES agents(agent_id)
+    FOREIGN KEY (agent_id) REFERENCES agents(agent_id),
+    FOREIGN KEY (workspace_id) REFERENCES workspaces(id)
 );
 """
 
@@ -67,13 +97,16 @@ def _get_connection() -> sqlite3.Connection:
         _local.conn = sqlite3.connect(str(DB_PATH), timeout=30)
         _local.conn.row_factory = sqlite3.Row
         _local.conn.execute("PRAGMA journal_mode=WAL")
-        _local.conn.execute("PRAGMA foreign_keys=ON")
     return _local.conn
 
 
 def init_db():
     """Initialize the database schema."""
     conn = _get_connection()
+
+    # Migrate old issues table schema before running CREATE TABLE IF NOT EXISTS
+    _migrate_issues_table(conn)
+
     conn.executescript(SCHEMA)
     # Migrate: add columns if missing (for existing DBs)
     _migrate_add_column(conn, "agents", "pid", "INTEGER")
@@ -81,7 +114,53 @@ def init_db():
     _migrate_add_column(conn, "agents", "resume_count", "INTEGER DEFAULT 0")
     _migrate_add_column(conn, "agents", "rate_limited_at", "TIMESTAMP")
     _migrate_add_column(conn, "pr_reviews", "comments_json", "TEXT")
+    # Multi-workspace migration
+    _migrate_add_column(conn, "issues", "workspace_id", "TEXT")
+    _migrate_add_column(conn, "agents", "workspace_id", "TEXT")
+    _migrate_add_column(conn, "pr_reviews", "workspace_id", "TEXT")
     conn.commit()
+
+
+def _migrate_issues_table(conn: sqlite3.Connection):
+    """Migrate old issues table from issue_number-as-PK to new schema with id PK and composite unique."""
+    try:
+        # Check if the issues table exists
+        row = conn.execute(
+            "SELECT name FROM sqlite_master WHERE type='table' AND name='issues'"
+        ).fetchone()
+        if not row:
+            return  # Table doesn't exist yet, CREATE TABLE will handle it
+
+        # Check if the table has the old schema (issue_number as PK, no 'id' column)
+        columns = conn.execute("PRAGMA table_info(issues)").fetchall()
+        col_names = {c[1] for c in columns}
+
+        if "id" in col_names:
+            return  # Already migrated to new schema
+
+        # Old schema detected — recreate with new schema
+        conn.executescript("""
+            ALTER TABLE issues RENAME TO _issues_old;
+            CREATE TABLE issues (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                issue_number INTEGER NOT NULL,
+                title TEXT NOT NULL,
+                status TEXT NOT NULL DEFAULT 'pending',
+                agent_id TEXT,
+                pr_number INTEGER,
+                attempts INTEGER DEFAULT 0,
+                workspace_id TEXT,
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                UNIQUE(issue_number, workspace_id)
+            );
+            INSERT INTO issues (issue_number, title, status, agent_id, pr_number, attempts, created_at, updated_at)
+                SELECT issue_number, title, status, agent_id, pr_number, attempts, created_at, updated_at
+                FROM _issues_old;
+            DROP TABLE _issues_old;
+        """)
+    except Exception:
+        pass  # If anything goes wrong, let CREATE TABLE IF NOT EXISTS handle it
 
 
 def _migrate_add_column(conn: sqlite3.Connection, table: str, column: str, col_type: str):
@@ -97,51 +176,214 @@ def _now() -> str:
     return datetime.utcnow().isoformat()
 
 
-# === Issue CRUD ===
+# === Workspace CRUD ===
 
 
-def upsert_issue(issue_number: int, title: str, status: str = "pending"):
+def create_workspace(
+    workspace_id: str,
+    name: str,
+    github_repo: str,
+    repo_url: str,
+    local_path: str,
+    base_branch: str = "main",
+    status: str = "cloning",
+):
     conn = _get_connection()
     conn.execute(
-        """INSERT INTO issues (issue_number, title, status, created_at, updated_at)
-           VALUES (?, ?, ?, ?, ?)
-           ON CONFLICT(issue_number) DO UPDATE SET
-             title=excluded.title, updated_at=excluded.updated_at""",
-        (issue_number, title, status, _now(), _now()),
+        """INSERT INTO workspaces (id, name, github_repo, repo_url, local_path, base_branch, status, created_at, updated_at)
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+        (workspace_id, name, github_repo, repo_url, local_path, base_branch, status, _now(), _now()),
     )
     conn.commit()
 
 
-def get_issue(issue_number: int) -> dict | None:
+def get_workspace(workspace_id: str) -> dict | None:
     conn = _get_connection()
-    row = conn.execute(
-        "SELECT * FROM issues WHERE issue_number = ?", (issue_number,)
-    ).fetchone()
+    row = conn.execute("SELECT * FROM workspaces WHERE id = ?", (workspace_id,)).fetchone()
     return dict(row) if row else None
 
 
-def get_issues_by_status(status: str) -> list[dict]:
+def get_all_workspaces() -> list[dict]:
     conn = _get_connection()
-    rows = conn.execute(
-        "SELECT * FROM issues WHERE status = ? ORDER BY issue_number", (status,)
-    ).fetchall()
+    rows = conn.execute("SELECT * FROM workspaces ORDER BY created_at").fetchall()
     return [dict(r) for r in rows]
 
 
-def get_all_issues() -> list[dict]:
+def get_active_workspaces() -> list[dict]:
     conn = _get_connection()
-    rows = conn.execute(
-        "SELECT * FROM issues ORDER BY issue_number"
-    ).fetchall()
+    rows = conn.execute("SELECT * FROM workspaces WHERE status = 'active' ORDER BY created_at").fetchall()
     return [dict(r) for r in rows]
 
 
-def update_issue(issue_number: int, **kwargs):
+def update_workspace(workspace_id: str, **kwargs):
     conn = _get_connection()
     kwargs["updated_at"] = _now()
     sets = ", ".join(f"{k} = ?" for k in kwargs)
-    vals = list(kwargs.values()) + [issue_number]
-    conn.execute(f"UPDATE issues SET {sets} WHERE issue_number = ?", vals)
+    vals = list(kwargs.values()) + [workspace_id]
+    conn.execute(f"UPDATE workspaces SET {sets} WHERE id = ?", vals)
+    conn.commit()
+
+
+def delete_workspace(workspace_id: str):
+    conn = _get_connection()
+    conn.execute("DELETE FROM workspace_env WHERE workspace_id = ?", (workspace_id,))
+    conn.execute("DELETE FROM agent_events WHERE agent_id IN (SELECT agent_id FROM agents WHERE workspace_id = ?)", (workspace_id,))
+    conn.execute("DELETE FROM pr_reviews WHERE workspace_id = ?", (workspace_id,))
+    conn.execute("DELETE FROM agents WHERE workspace_id = ?", (workspace_id,))
+    conn.execute("DELETE FROM issues WHERE workspace_id = ?", (workspace_id,))
+    conn.execute("DELETE FROM workspaces WHERE id = ?", (workspace_id,))
+    conn.commit()
+
+
+# === Workspace Env CRUD ===
+
+
+def save_workspace_env(workspace_id: str, env_key: str, env_value: str, env_file: str = ".env"):
+    conn = _get_connection()
+    conn.execute(
+        """INSERT INTO workspace_env (workspace_id, env_key, env_value, env_file)
+           VALUES (?, ?, ?, ?)
+           ON CONFLICT(workspace_id, env_key, env_file) DO UPDATE SET env_value=excluded.env_value""",
+        (workspace_id, env_key, env_value, env_file),
+    )
+    conn.commit()
+
+
+def save_workspace_env_bulk(workspace_id: str, env_dict: dict[str, str], env_file: str = ".env"):
+    conn = _get_connection()
+    # Delete existing keys for this env_file so removed keys don't persist
+    conn.execute(
+        "DELETE FROM workspace_env WHERE workspace_id = ? AND env_file = ?",
+        (workspace_id, env_file),
+    )
+    for key, value in env_dict.items():
+        conn.execute(
+            """INSERT INTO workspace_env (workspace_id, env_key, env_value, env_file)
+               VALUES (?, ?, ?, ?)""",
+            (workspace_id, key, value, env_file),
+        )
+    conn.commit()
+
+
+def get_workspace_env(workspace_id: str, env_file: str = ".env") -> dict[str, str]:
+    conn = _get_connection()
+    rows = conn.execute(
+        "SELECT env_key, env_value FROM workspace_env WHERE workspace_id = ? AND env_file = ?",
+        (workspace_id, env_file),
+    ).fetchall()
+    return {r["env_key"]: r["env_value"] for r in rows}
+
+
+def get_workspace_env_files(workspace_id: str) -> list[str]:
+    conn = _get_connection()
+    rows = conn.execute(
+        "SELECT DISTINCT env_file FROM workspace_env WHERE workspace_id = ? ORDER BY env_file",
+        (workspace_id,),
+    ).fetchall()
+    return [r["env_file"] for r in rows]
+
+
+def delete_workspace_env(workspace_id: str, env_key: str, env_file: str = ".env"):
+    conn = _get_connection()
+    conn.execute(
+        "DELETE FROM workspace_env WHERE workspace_id = ? AND env_key = ? AND env_file = ?",
+        (workspace_id, env_key, env_file),
+    )
+    conn.commit()
+
+
+def delete_workspace_env_file(workspace_id: str, env_file: str):
+    conn = _get_connection()
+    conn.execute(
+        "DELETE FROM workspace_env WHERE workspace_id = ? AND env_file = ?",
+        (workspace_id, env_file),
+    )
+    conn.commit()
+
+
+# === Issue CRUD ===
+
+
+def upsert_issue(issue_number: int, title: str, status: str = "pending", workspace_id: str | None = None):
+    conn = _get_connection()
+    # SQLite treats NULLs as distinct in UNIQUE constraints, so ON CONFLICT
+    # won't fire when workspace_id is NULL. Handle this case explicitly.
+    if workspace_id is None:
+        existing = conn.execute(
+            "SELECT id FROM issues WHERE issue_number = ? AND workspace_id IS NULL",
+            (issue_number,),
+        ).fetchone()
+        if existing:
+            conn.execute(
+                "UPDATE issues SET title = ?, updated_at = ? WHERE id = ?",
+                (title, _now(), existing["id"]),
+            )
+        else:
+            conn.execute(
+                """INSERT INTO issues (issue_number, title, status, workspace_id, created_at, updated_at)
+                   VALUES (?, ?, ?, NULL, ?, ?)""",
+                (issue_number, title, status, _now(), _now()),
+            )
+    else:
+        conn.execute(
+            """INSERT INTO issues (issue_number, title, status, workspace_id, created_at, updated_at)
+               VALUES (?, ?, ?, ?, ?, ?)
+               ON CONFLICT(issue_number, workspace_id) DO UPDATE SET
+                 title=excluded.title, updated_at=excluded.updated_at""",
+            (issue_number, title, status, workspace_id, _now(), _now()),
+        )
+    conn.commit()
+
+
+def get_issue(issue_number: int, workspace_id: str | None = None) -> dict | None:
+    conn = _get_connection()
+    if workspace_id:
+        row = conn.execute(
+            "SELECT * FROM issues WHERE issue_number = ? AND workspace_id = ?", (issue_number, workspace_id)
+        ).fetchone()
+    else:
+        row = conn.execute(
+            "SELECT * FROM issues WHERE issue_number = ?", (issue_number,)
+        ).fetchone()
+    return dict(row) if row else None
+
+
+def get_issues_by_status(status: str, workspace_id: str | None = None) -> list[dict]:
+    conn = _get_connection()
+    if workspace_id:
+        rows = conn.execute(
+            "SELECT * FROM issues WHERE status = ? AND workspace_id = ? ORDER BY issue_number", (status, workspace_id)
+        ).fetchall()
+    else:
+        rows = conn.execute(
+            "SELECT * FROM issues WHERE status = ? ORDER BY issue_number", (status,)
+        ).fetchall()
+    return [dict(r) for r in rows]
+
+
+def get_all_issues(workspace_id: str | None = None) -> list[dict]:
+    conn = _get_connection()
+    if workspace_id:
+        rows = conn.execute(
+            "SELECT * FROM issues WHERE workspace_id = ? ORDER BY issue_number", (workspace_id,)
+        ).fetchall()
+    else:
+        rows = conn.execute(
+            "SELECT * FROM issues ORDER BY issue_number"
+        ).fetchall()
+    return [dict(r) for r in rows]
+
+
+def update_issue(issue_number: int, workspace_id: str | None = None, **kwargs):
+    conn = _get_connection()
+    kwargs["updated_at"] = _now()
+    sets = ", ".join(f"{k} = ?" for k in kwargs)
+    if workspace_id:
+        vals = list(kwargs.values()) + [issue_number, workspace_id]
+        conn.execute(f"UPDATE issues SET {sets} WHERE issue_number = ? AND workspace_id = ?", vals)
+    else:
+        vals = list(kwargs.values()) + [issue_number]
+        conn.execute(f"UPDATE issues SET {sets} WHERE issue_number = ?", vals)
     conn.commit()
 
 
@@ -156,12 +398,13 @@ def create_agent(
     branch_name: str,
     pr_number: int | None = None,
     pid: int | None = None,
+    workspace_id: str | None = None,
 ):
     conn = _get_connection()
     conn.execute(
-        """INSERT INTO agents (agent_id, issue_number, pr_number, agent_type, status, worktree_path, branch_name, pid, started_at)
-           VALUES (?, ?, ?, ?, 'running', ?, ?, ?, ?)""",
-        (agent_id, issue_number, pr_number, agent_type, worktree_path, branch_name, pid, _now()),
+        """INSERT INTO agents (agent_id, issue_number, pr_number, agent_type, status, worktree_path, branch_name, pid, workspace_id, started_at)
+           VALUES (?, ?, ?, ?, 'running', ?, ?, ?, ?, ?)""",
+        (agent_id, issue_number, pr_number, agent_type, worktree_path, branch_name, pid, workspace_id, _now()),
     )
     conn.commit()
 
@@ -182,11 +425,16 @@ def get_running_agents() -> list[dict]:
     return [dict(r) for r in rows]
 
 
-def get_all_agents() -> list[dict]:
+def get_all_agents(workspace_id: str | None = None) -> list[dict]:
     conn = _get_connection()
-    rows = conn.execute(
-        "SELECT * FROM agents ORDER BY started_at DESC"
-    ).fetchall()
+    if workspace_id:
+        rows = conn.execute(
+            "SELECT * FROM agents WHERE workspace_id = ? ORDER BY started_at DESC", (workspace_id,)
+        ).fetchall()
+    else:
+        rows = conn.execute(
+            "SELECT * FROM agents ORDER BY started_at DESC"
+        ).fetchall()
     return [dict(r) for r in rows]
 
 
@@ -254,12 +502,12 @@ def get_agent_turn_count(agent_id: str) -> int:
 # === PR Reviews ===
 
 
-def create_pr_review(pr_number: int, iteration: int, comments_count: int, comments_json: str | None = None) -> int:
+def create_pr_review(pr_number: int, iteration: int, comments_count: int, comments_json: str | None = None, workspace_id: str | None = None) -> int:
     conn = _get_connection()
     cursor = conn.execute(
-        """INSERT INTO pr_reviews (pr_number, iteration, comments_count, comments_json, created_at)
-           VALUES (?, ?, ?, ?, ?)""",
-        (pr_number, iteration, comments_count, comments_json, _now()),
+        """INSERT INTO pr_reviews (pr_number, iteration, comments_count, comments_json, workspace_id, created_at)
+           VALUES (?, ?, ?, ?, ?, ?)""",
+        (pr_number, iteration, comments_count, comments_json, workspace_id, _now()),
     )
     conn.commit()
     return cursor.lastrowid
@@ -291,52 +539,63 @@ def update_pr_review(review_id: int, **kwargs):
     conn.commit()
 
 
-def get_all_pr_reviews() -> list[dict]:
+def get_all_pr_reviews(workspace_id: str | None = None) -> list[dict]:
     conn = _get_connection()
-    rows = conn.execute(
-        "SELECT * FROM pr_reviews ORDER BY pr_number, iteration"
-    ).fetchall()
+    if workspace_id:
+        rows = conn.execute(
+            "SELECT * FROM pr_reviews WHERE workspace_id = ? ORDER BY pr_number, iteration", (workspace_id,)
+        ).fetchall()
+    else:
+        rows = conn.execute(
+            "SELECT * FROM pr_reviews ORDER BY pr_number, iteration"
+        ).fetchall()
     return [dict(r) for r in rows]
 
 
 # === Metrics ===
 
 
-def get_metrics() -> dict:
+def get_metrics(workspace_id: str | None = None) -> dict:
     conn = _get_connection()
 
+    ws_filter_agents = " AND workspace_id = ?" if workspace_id else ""
+    ws_filter_issues = " AND workspace_id = ?" if workspace_id else ""
+    ws_params: tuple = (workspace_id,) if workspace_id else ()
+
     active_agents = conn.execute(
-        "SELECT COUNT(*) FROM agents WHERE status = 'running'"
+        f"SELECT COUNT(*) FROM agents WHERE status = 'running'{ws_filter_agents}", ws_params
     ).fetchone()[0]
 
-    total_issues = conn.execute("SELECT COUNT(*) FROM issues").fetchone()[0]
+    total_issues = conn.execute(
+        f"SELECT COUNT(*) FROM issues WHERE 1=1{ws_filter_issues}", ws_params
+    ).fetchone()[0]
 
     resolved = conn.execute(
-        "SELECT COUNT(*) FROM issues WHERE status = 'resolved'"
+        f"SELECT COUNT(*) FROM issues WHERE status = 'resolved'{ws_filter_issues}", ws_params
     ).fetchone()[0]
 
     pending = conn.execute(
-        "SELECT COUNT(*) FROM issues WHERE status = 'pending'"
+        f"SELECT COUNT(*) FROM issues WHERE status = 'pending'{ws_filter_issues}", ws_params
     ).fetchone()[0]
 
     in_progress = conn.execute(
-        "SELECT COUNT(*) FROM issues WHERE status = 'in_progress'"
+        f"SELECT COUNT(*) FROM issues WHERE status = 'in_progress'{ws_filter_issues}", ws_params
     ).fetchone()[0]
 
     needs_human = conn.execute(
-        "SELECT COUNT(*) FROM issues WHERE status = 'needs_human'"
+        f"SELECT COUNT(*) FROM issues WHERE status = 'needs_human'{ws_filter_issues}", ws_params
     ).fetchone()[0]
 
     pr_created = conn.execute(
-        "SELECT COUNT(*) FROM issues WHERE status = 'pr_created'"
+        f"SELECT COUNT(*) FROM issues WHERE status = 'pr_created'{ws_filter_issues}", ws_params
     ).fetchone()[0]
 
     avg_turns = conn.execute(
-        "SELECT AVG(turns_used) FROM agents WHERE status = 'completed'"
+        f"SELECT AVG(turns_used) FROM agents WHERE status = 'completed'{ws_filter_agents}", ws_params
     ).fetchone()[0]
 
     rate_limited = conn.execute(
-        "SELECT COUNT(*) FROM agents WHERE status = 'rate_limited'"
+        f"SELECT COUNT(*) FROM agents WHERE status = 'rate_limited'{ws_filter_agents}", ws_params
     ).fetchone()[0]
 
     return {

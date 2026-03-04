@@ -22,17 +22,14 @@ def _run_gh(*args: str) -> subprocess.CompletedProcess:
     return result
 
 
-def _find_open_pr_for_issue(issue_number: int) -> int | None:
-    """Check GitHub for an existing open PR that references this issue.
-
-    Looks for PRs with a branch named 'fix/issue-{N}' or whose body contains
-    'Closes #{N}' / 'Fixes #{N}'.  Returns the PR number if found, else None.
-    """
+def _find_open_pr_for_issue(issue_number: int, github_repo: str | None = None) -> int | None:
+    """Check GitHub for an existing open PR that references this issue."""
+    repo = github_repo or GITHUB_REPO
     branch_name = f"fix/issue-{issue_number}"
     try:
         result = _run_gh(
             "pr", "list",
-            "--repo", GITHUB_REPO,
+            "--repo", repo,
             "--head", branch_name,
             "--state", "open",
             "--json", "number",
@@ -49,22 +46,16 @@ def _find_open_pr_for_issue(issue_number: int) -> int | None:
     return None
 
 
-def _issue_has_trigger(issue_number: int) -> bool:
-    """Check if an issue has a comment containing the trigger mention.
-
-    Looks for any comment whose body contains TRIGGER_MENTION (case-insensitive).
-    Examples that match (with default @claude-swarm):
-      - "@claude-swarm start"
-      - "@claude-swarm work on this"
-      - "Hey @claude-swarm please start this"
-    """
+def _issue_has_trigger(issue_number: int, github_repo: str | None = None) -> bool:
+    """Check if an issue has a comment containing the trigger mention."""
     if not TRIGGER_MENTION:
         return True  # Trigger disabled — all labeled issues are eligible
 
+    repo = github_repo or GITHUB_REPO
     try:
         result = _run_gh(
             "issue", "view", str(issue_number),
-            "--repo", GITHUB_REPO,
+            "--repo", repo,
             "--json", "comments",
         )
         data = json.loads(result.stdout) if result.stdout.strip() else {}
@@ -85,20 +76,18 @@ def _issue_has_trigger(issue_number: int) -> bool:
         return False
 
 
-def poll_issues() -> list[dict]:
+def poll_issues(github_repo: str | None = None, workspace_id: str | None = None) -> list[dict]:
     """Poll GitHub for new issues that need agent dispatch.
 
-    Returns a list of issue dicts ready for dispatch. An issue is ready when:
-    1. It has the configured label (e.g. "agent")
-    2. It has a comment containing the trigger mention (e.g. "@claude-swarm start")
-    3. It hasn't exceeded the retry limit
-    4. It's not already being worked on
+    Returns a list of issue dicts ready for dispatch. Each dict includes a
+    'workspace_id' key for tracking.
     """
-    logger.info("Polling issues for repo %s with label '%s'", GITHUB_REPO, ISSUE_LABEL)
+    repo = github_repo or GITHUB_REPO
+    logger.info("Polling issues for repo %s with label '%s'", repo, ISSUE_LABEL)
 
     result = _run_gh(
         "issue", "list",
-        "--repo", GITHUB_REPO,
+        "--repo", repo,
         "--label", ISSUE_LABEL,
         "--state", "open",
         "--json", "number,title,labels,body",
@@ -106,7 +95,7 @@ def poll_issues() -> list[dict]:
     )
 
     issues = json.loads(result.stdout) if result.stdout.strip() else []
-    logger.info("Found %d open issues with label '%s'", len(issues), ISSUE_LABEL)
+    logger.info("Found %d open issues with label '%s' in %s", len(issues), ISSUE_LABEL, repo)
 
     ready = []
     for issue in issues:
@@ -114,16 +103,16 @@ def poll_issues() -> list[dict]:
         title = issue["title"]
 
         # Check if we're already tracking this issue
-        existing = db.get_issue(issue_number)
+        existing = db.get_issue(issue_number, workspace_id=workspace_id)
 
         if existing is None:
             # New issue — check if there's already an open PR for it
-            existing_pr = _find_open_pr_for_issue(issue_number)
+            existing_pr = _find_open_pr_for_issue(issue_number, github_repo=repo)
 
             if existing_pr:
                 # PR already exists — seed as pr_created so PR monitor picks it up
-                db.upsert_issue(issue_number, title, status="pr_created")
-                db.update_issue(issue_number, pr_number=existing_pr)
+                db.upsert_issue(issue_number, title, status="pr_created", workspace_id=workspace_id)
+                db.update_issue(issue_number, workspace_id=workspace_id, pr_number=existing_pr)
                 logger.info(
                     "Issue #%d already has open PR #%d — seeded as pr_created for monitoring",
                     issue_number, existing_pr,
@@ -131,9 +120,10 @@ def poll_issues() -> list[dict]:
                 continue
 
             # No existing PR — add to DB and dispatch if triggered
-            db.upsert_issue(issue_number, title, status="pending")
+            db.upsert_issue(issue_number, title, status="pending", workspace_id=workspace_id)
 
-            if _issue_has_trigger(issue_number):
+            if _issue_has_trigger(issue_number, github_repo=repo):
+                issue["workspace_id"] = workspace_id
                 ready.append(issue)
                 logger.info("New issue triggered: #%d — %s", issue_number, title)
             else:
@@ -148,7 +138,8 @@ def poll_issues() -> list[dict]:
                 continue
 
             # Check trigger on each poll (someone may have commented since last check)
-            if _issue_has_trigger(issue_number):
+            if _issue_has_trigger(issue_number, github_repo=repo):
+                issue["workspace_id"] = workspace_id
                 ready.append(issue)
             else:
                 logger.debug("Issue #%d still waiting for trigger comment", issue_number)

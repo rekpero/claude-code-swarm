@@ -5,6 +5,44 @@ All notable changes to Claude Code Agent Swarm will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.1.0] - 2025-03-04
+
+### Added
+- **Multi-workspace support**: manage multiple GitHub repositories from a single orchestrator instance — add workspaces by URL, auto-clone, and switch between them in the dashboard
+- **Workspace manager** (`workspace_manager.py`): new module handling workspace lifecycle — create, clone (background thread with GH_TOKEN auth), update, delete, and repo structure detection
+- **Monorepo detection**: auto-detects monorepo setups by scanning for `pnpm-workspace.yaml`, `lerna.json`, `turbo.json`, `nx.json`, and `package.json` workspaces field; lists sub-packages from `packages/`, `apps/`, `services/`, `libs/`, `modules/` directories
+- **Per-workspace env var management**: set environment variables per workspace and per env file path (supports monorepo sub-paths like `apps/web/.env`); variables are stored in DB and written to disk
+- **Dashboard: workspace switcher** (top-left dropdown) with "All Workspaces" aggregate view, per-workspace filtering for agents/issues/PRs/metrics, and status badges (active/cloning/error)
+- **Dashboard: add workspace modal** — enter a GitHub repo URL, optional name, and base branch; clone starts automatically in the background
+- **Dashboard: workspace settings panel** (gear icon) — edit name/URL/branch, view detected repo structure (monorepo packages, discovered `.env` files), manage env vars with key-value editor, delete workspace with confirmation
+- **Dashboard: .env file upload** — upload a local `.env` file from your machine; parsed client-side and merged into the env editor for review before saving
+- **Database: `workspaces` table** — stores workspace metadata (id, name, github_repo, repo_url, local_path, base_branch, status, is_monorepo, structure_json)
+- **Database: `workspace_env` table** — stores env vars per workspace with composite unique constraint on (workspace_id, env_key, env_file)
+- **Database: `workspace_id` column** added to `issues`, `agents`, and `pr_reviews` tables for per-workspace tracking
+- **Database: issues table migration** — seamless migration from old schema (`issue_number` as PK) to new schema (`id` autoincrement PK + composite `UNIQUE(issue_number, workspace_id)`)
+- **Backward compatibility**: on first startup, auto-creates a "default" workspace from existing `.env` config (`GITHUB_REPO`, `TARGET_REPO_PATH`, `BASE_BRANCH`) and backfills all existing issues/agents/pr_reviews with the default workspace_id
+- `WORKSPACES_DIR` config setting (default: `/root/workspaces`) for workspace clone locations
+- Dashboard API: `POST/GET/PUT/DELETE /api/workspaces`, `GET /api/workspaces/{id}/structure`, `PUT/GET /api/workspaces/{id}/env`, `GET /api/workspaces/{id}/env-files`, `POST /api/workspaces/{id}/env-load`
+- All existing API endpoints (`/api/agents`, `/api/issues`, `/api/prs`, `/api/metrics`) now accept optional `?workspace_id=` query parameter for filtering
+
+### Changed
+- **All core modules parameterized for multi-workspace**: `worktree.py`, `prompts.py`, `issue_poller.py`, `agent_pool.py`, `pr_monitor.py`, and `main.py` now accept workspace config instead of relying on global constants
+- Main orchestration loop iterates over all active workspaces per poll cycle
+- `config.py`: `GITHUB_REPO` and `TARGET_REPO_PATH` validation removed from `validate_environment()` — these are now optional in multi-workspace mode (workspaces can be added via dashboard instead)
+- Worktree directory is now per-workspace: `<workspace_local_path>-worktrees/`
+- Agent processes receive workspace-specific env vars in addition to global ones
+
+### Fixed
+- **FastAPI error responses**: replaced Flask-style tuple returns (`{"error": ...}, 400`) with proper `JSONResponse(content={...}, status_code=...)` across all dashboard error paths
+- **SQLite FK validation failure**: removed `PRAGMA foreign_keys=ON` and broken `FOREIGN KEY (issue_number) REFERENCES issues(issue_number)` from agents table — `issue_number` is no longer unique in the new composite schema
+- **`cleanup_worktree` missing `repo_path`**: all 11 call sites in `agent_pool.py`, `main.py`, and `worktree.py` now pass the correct workspace `repo_path` so worktree removal runs against the right git repo
+- **`_has_unpushed_commits` using global `BASE_BRANCH`**: now accepts a `base_branch` parameter and uses the workspace's configured branch
+- **`upsert_issue` NULL workspace_id dedup failure**: SQLite treats NULLs as distinct in UNIQUE constraints, so `ON CONFLICT(issue_number, workspace_id)` wouldn't fire for NULL workspace_id — fixed with explicit SELECT+UPDATE path for the NULL case
+- **`save_workspace_env_bulk` not deleting removed keys**: old keys persisted when a user saved a new set via the dashboard — now deletes existing keys for the (workspace_id, env_file) pair before inserting
+- **Git clone authentication**: `GH_TOKEN` as env var doesn't help `git clone` over HTTPS — fixed by embedding token in clone URL, then resetting remote URL and configuring credential helper post-clone
+
+---
+
 ## [1.0.15] - 2025-03-01
 
 ### Added

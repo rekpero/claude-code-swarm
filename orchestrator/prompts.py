@@ -6,12 +6,13 @@ from orchestrator.config import GITHUB_REPO, SKILLS_ENABLED, TARGET_REPO_PATH
 logger = logging.getLogger(__name__)
 
 
-def _discover_installed_skills() -> list[str]:
+def _discover_installed_skills(target_repo_path: Path | str | None = None) -> list[str]:
     """Discover skills installed in the target repo and globally."""
     skills: list[str] = []
+    repo_path = Path(target_repo_path) if target_repo_path else TARGET_REPO_PATH
 
     # Check target repo .claude/skills/
-    repo_skills = TARGET_REPO_PATH / ".claude" / "skills"
+    repo_skills = repo_path / ".claude" / "skills"
     if repo_skills.is_dir():
         for entry in repo_skills.iterdir():
             if entry.is_dir() or entry.is_symlink():
@@ -29,12 +30,12 @@ def _discover_installed_skills() -> list[str]:
     return sorted(skills)
 
 
-def _skills_block() -> str:
+def _skills_block(target_repo_path: Path | str | None = None) -> str:
     """Return the skills hint if skills are enabled, empty string otherwise."""
     if not SKILLS_ENABLED:
         return ""
 
-    skills = _discover_installed_skills()
+    skills = _discover_installed_skills(target_repo_path)
     if not skills:
         return ""
 
@@ -46,9 +47,10 @@ invoke it with the Skill tool. You can also use relevant skills proactively when
 matches their domain."""
 
 
-def build_implement_prompt(issue_number: int) -> str:
-    owner, repo = GITHUB_REPO.split("/", 1)
-    skills = _skills_block()
+def build_implement_prompt(issue_number: int, github_repo: str | None = None, target_repo_path: Path | str | None = None) -> str:
+    repo = github_repo or GITHUB_REPO
+    owner, repo_name = repo.split("/", 1)
+    skills = _skills_block(target_repo_path)
     return f"""Read the AGENT.md file at the root of this repository FIRST and follow every guideline strictly.
 
 Your task: Implement the feature or fix described in issue #{issue_number}.
@@ -99,10 +101,11 @@ def _format_unresolved_threads(threads: list[dict]) -> str:
     return "\n".join(lines)
 
 
-def build_fix_review_prompt(pr_number: int, unresolved_threads: list[dict] | None = None) -> str:
-    owner, repo = GITHUB_REPO.split("/", 1)
+def build_fix_review_prompt(pr_number: int, unresolved_threads: list[dict] | None = None, github_repo: str | None = None, target_repo_path: Path | str | None = None) -> str:
+    repo = github_repo or GITHUB_REPO
+    owner, repo_name = repo.split("/", 1)
 
-    skills = _skills_block()
+    skills = _skills_block(target_repo_path)
 
     if unresolved_threads is not None:
         # Pre-fetched threads — embed directly in prompt
@@ -136,7 +139,7 @@ Your task: Fix all UNRESOLVED review comments on PR #{pr_number}.
 {skills}
 Steps:
 1. Run `gh pr view {pr_number} --comments` to see the PR description and all comments.
-2. Run `gh api repos/{owner}/{repo}/pulls/{pr_number}/comments` to get all inline review comment details.
+2. Run `gh api repos/{owner}/{repo_name}/pulls/{pr_number}/comments` to get all inline review comment details.
 3. For each review comment, understand the issue and implement the fix.
 4. Run the project's test suite to verify your changes.
 5. If tests fail, fix the issues and re-run tests.
@@ -149,8 +152,8 @@ Important:
 - If a comment is unclear, add a reply comment asking for clarification using `gh pr comment`."""
 
 
-def build_resume_implement_prompt(issue_number: int) -> str:
-    skills = _skills_block()
+def build_resume_implement_prompt(issue_number: int, github_repo: str | None = None, target_repo_path: Path | str | None = None) -> str:
+    skills = _skills_block(target_repo_path)
     return f"""Read the AGENT.md file at the root of this repository FIRST and follow every guideline strictly.
 
 Your task: CONTINUE implementing the feature or fix described in issue #{issue_number}.
@@ -191,9 +194,10 @@ Important:
 - The issue body IS the plan. Follow it precisely for remaining work."""
 
 
-def build_resume_fix_review_prompt(pr_number: int, unresolved_threads: list[dict] | None = None) -> str:
-    owner, repo = GITHUB_REPO.split("/", 1)
-    skills = _skills_block()
+def build_resume_fix_review_prompt(pr_number: int, unresolved_threads: list[dict] | None = None, github_repo: str | None = None, target_repo_path: Path | str | None = None) -> str:
+    repo = github_repo or GITHUB_REPO
+    owner, repo_name = repo.split("/", 1)
+    skills = _skills_block(target_repo_path)
 
     if unresolved_threads is not None:
         thread_count = len(unresolved_threads)
@@ -234,7 +238,7 @@ work. You must pick up where the previous agent left off — do NOT start from s
 Steps:
 1. Run `git log --oneline -10` and `git diff` to see what's already been done.
 2. Run `gh pr view {pr_number} --comments` to see all PR comments.
-3. Run `gh api repos/{owner}/{repo}/pulls/{pr_number}/comments` to get inline review comment details.
+3. Run `gh api repos/{owner}/{repo_name}/pulls/{pr_number}/comments` to get inline review comment details.
 4. For each review comment, check if it has already been addressed by the previous agent. Only fix the remaining ones.
 5. Run the project's test suite to verify your changes.
 6. If tests fail, fix the issues and re-run tests.

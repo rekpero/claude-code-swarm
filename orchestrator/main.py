@@ -18,6 +18,7 @@ from orchestrator.config import (
 from orchestrator.issue_poller import poll_issues
 from orchestrator.pr_monitor import PRMonitor
 from orchestrator.rate_limit_watcher import RateLimitWatcher
+from orchestrator.workspace_manager import ensure_default_workspace
 from orchestrator.worktree import cleanup_worktree
 
 logging.basicConfig(
@@ -35,20 +36,14 @@ _auth_paused = False
 def _pid_is_alive(pid: int) -> bool:
     """Check if a process with the given PID is still running."""
     try:
-        os.kill(pid, 0)  # signal 0 = check existence, don't actually send a signal
+        os.kill(pid, 0)
         return True
     except (OSError, ProcessLookupError):
         return False
 
 
 def _recover_stale_agents():
-    """On startup, handle agents still marked as 'running' or 'rate_limited' in the DB.
-
-    If the agent process (PID) is still alive, leave it alone — it survived
-    the orchestrator restart and will finish on its own.
-    If the process is dead, mark the agent as failed and reset the issue.
-    Rate-limited agents keep their worktrees — the rate_limit_watcher will resume them.
-    """
+    """On startup, handle agents still marked as 'running' or 'rate_limited' in the DB."""
     stale = db.get_running_agents()
     if not stale:
         return
@@ -57,8 +52,8 @@ def _recover_stale_agents():
         pid = agent.get("pid")
         agent_id = agent["agent_id"]
         issue_num = agent["issue_number"]
+        workspace_id = agent.get("workspace_id")
 
-        # If we have a PID and it's still alive, the agent is still working
         if pid and _pid_is_alive(pid):
             logger.info(
                 "Agent %s (PID %d) for issue #%s is still running — leaving it alone",
@@ -66,26 +61,25 @@ def _recover_stale_agents():
             )
             continue
 
-        # Process is dead — mark as failed
         logger.warning(
             "Agent %s (PID %s) for issue #%s is dead — marking as failed",
             agent_id, pid or "unknown", issue_num,
         )
         db.finish_agent(agent_id, status="failed", error_message="Agent process died during orchestrator restart")
 
-        # Reset the issue to pending so it can be retried
-        issue = db.get_issue(issue_num)
+        issue = db.get_issue(issue_num, workspace_id=workspace_id)
         if issue and issue["status"] == "in_progress":
-            db.update_issue(issue_num, status="pending")
+            db.update_issue(issue_num, workspace_id=workspace_id, status="pending")
 
-        # Clean up the worktree only if process is dead
         if agent.get("worktree_path"):
             try:
-                cleanup_worktree(agent["worktree_path"])
+                # Resolve repo_path from workspace for correct worktree cleanup
+                ws = db.get_workspace(workspace_id) if workspace_id else None
+                repo_path = ws["local_path"] if ws else None
+                cleanup_worktree(agent["worktree_path"], repo_path=repo_path)
             except Exception:
                 pass
 
-    # Rate-limited agents: log them but leave them alone — the watcher handles them
     rate_limited = db.get_rate_limited_agents()
     if rate_limited:
         logger.info(
@@ -112,16 +106,21 @@ def main():
     db.init_db()
     logger.info("Database initialized")
 
+    # Ensure default workspace exists (backward compat)
+    default_ws = ensure_default_workspace()
+    if default_ws:
+        logger.info("Default workspace created: %s (%s)", default_ws["name"], default_ws["id"])
+
     # Recover from previous crash
     _recover_stale_agents()
 
     # Create agent pool
     pool = AgentPool()
 
-    # Create PR monitor with dispatch callback
+    # Create PR monitor with dispatch callback (now workspace-aware)
     pr_monitor = PRMonitor(
-        dispatch_fix_callback=lambda pr_num, branch, issue_num, threads=None: pool.dispatch_fix_review(
-            pr_num, branch, issue_num, threads
+        dispatch_fix_callback=lambda pr_num, branch, issue_num, workspace=None, threads=None: pool.dispatch_fix_review(
+            pr_num, branch, issue_num, workspace, threads
         )
     )
 
@@ -160,7 +159,7 @@ def main():
     rate_limit_thread.start()
     logger.info("Rate limit watcher started")
 
-    # Main loop: poll issues and dispatch agents
+    # Main loop: poll issues across all active workspaces and dispatch agents
     logger.info("Swarm orchestrator running. Poll interval: %ds", POLL_INTERVAL_SECONDS)
     logger.info("Dashboard: http://localhost:%d", DASHBOARD_PORT)
 
@@ -172,36 +171,51 @@ def main():
         except Exception as e:
             consecutive_errors += 1
             logger.error("Poll cycle error (%d consecutive): %s", consecutive_errors, e)
-            # If we get repeated failures, back off to avoid hammering
             if consecutive_errors >= 3:
                 backoff = min(consecutive_errors * POLL_INTERVAL_SECONDS, 600)
                 logger.warning("Backing off for %ds due to repeated errors", backoff)
                 _shutdown_event.wait(timeout=backoff)
                 continue
 
-        # Wait for next poll interval (or shutdown)
         _shutdown_event.wait(timeout=POLL_INTERVAL_SECONDS)
 
     logger.info("Swarm orchestrator stopped")
 
 
 def _poll_and_dispatch(pool: AgentPool):
-    """Poll for new issues and dispatch agents."""
-    ready_issues = poll_issues()
+    """Poll for new issues across all active workspaces and dispatch agents."""
+    workspaces = db.get_active_workspaces()
 
-    for issue in ready_issues:
-        if not pool.can_dispatch:
-            logger.info("Agent pool full, deferring remaining issues to next cycle")
-            break
+    if not workspaces:
+        logger.debug("No active workspaces, skipping poll")
+        return
 
-        issue_number = issue["number"]
-        logger.info("Dispatching agent for issue #%d: %s", issue_number, issue["title"])
-        agent_id = pool.dispatch_implement(issue_number)
+    for workspace in workspaces:
+        try:
+            ready_issues = poll_issues(
+                github_repo=workspace["github_repo"],
+                workspace_id=workspace["id"],
+            )
 
-        if agent_id:
-            logger.info("Agent %s dispatched for issue #%d", agent_id, issue_number)
-        else:
-            logger.warning("Failed to dispatch agent for issue #%d", issue_number)
+            for issue in ready_issues:
+                if not pool.can_dispatch:
+                    logger.info("Agent pool full, deferring remaining issues to next cycle")
+                    return  # Return entirely — next cycle will pick up remaining
+
+                issue_number = issue["number"]
+                logger.info(
+                    "Dispatching agent for issue #%d (%s): %s",
+                    issue_number, workspace["name"], issue["title"],
+                )
+                agent_id = pool.dispatch_implement(issue_number, workspace=workspace)
+
+                if agent_id:
+                    logger.info("Agent %s dispatched for issue #%d", agent_id, issue_number)
+                else:
+                    logger.warning("Failed to dispatch agent for issue #%d", issue_number)
+
+        except Exception as e:
+            logger.error("Error polling workspace %s (%s): %s", workspace["name"], workspace["id"], e)
 
 
 def _start_dashboard():
