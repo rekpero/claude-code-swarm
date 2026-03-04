@@ -316,12 +316,38 @@ def save_env_vars(workspace_id: str, env_dict: dict[str, str], env_file: str = "
     db.save_workspace_env_bulk(workspace_id, env_dict, env_file)
 
     # Write to disk
-    _write_env_file_to_disk(workspace["local_path"], env_file, env_dict)
+    _write_env_file_to_disk(workspace_id, workspace["local_path"], env_file, env_dict)
 
 
 def get_env_vars(workspace_id: str, env_file: str = ".env") -> dict[str, str]:
-    """Get env vars for a workspace from DB."""
-    return db.get_workspace_env(workspace_id, env_file)
+    """Get env vars for a workspace with disk sync.
+
+    If the disk file has been modified since the last sync, re-imports from disk.
+    If DB has nothing for this file, falls back to reading from disk.
+    """
+    workspace = db.get_workspace(workspace_id)
+    if not workspace:
+        return db.get_workspace_env(workspace_id, env_file)
+
+    file_path = Path(workspace["local_path"]) / env_file
+
+    # Check if disk file is newer than our last sync
+    if file_path.exists():
+        disk_mtime = file_path.stat().st_mtime
+        last_synced_mtime = db.get_env_sync_mtime(workspace_id, env_file)
+
+        if last_synced_mtime is None or disk_mtime > last_synced_mtime:
+            # Disk is newer (or never synced) — re-import from disk
+            logger.info("Env file %s changed on disk, re-syncing for workspace %s", env_file, workspace_id)
+            return load_env_from_disk(workspace_id, env_file)
+
+    # DB is up to date
+    env_dict = db.get_workspace_env(workspace_id, env_file)
+    if env_dict:
+        return env_dict
+
+    # DB empty, file doesn't exist — nothing to return
+    return {}
 
 
 def get_all_env_files(workspace_id: str) -> list[str]:
@@ -329,8 +355,8 @@ def get_all_env_files(workspace_id: str) -> list[str]:
     return db.get_workspace_env_files(workspace_id)
 
 
-def _write_env_file_to_disk(local_path: str, env_file: str, env_dict: dict[str, str]):
-    """Write env vars to a .env file on disk."""
+def _write_env_file_to_disk(workspace_id: str, local_path: str, env_file: str, env_dict: dict[str, str]):
+    """Write env vars to a .env file on disk and record the mtime."""
     file_path = Path(local_path) / env_file
     file_path.parent.mkdir(parents=True, exist_ok=True)
 
@@ -344,17 +370,12 @@ def _write_env_file_to_disk(local_path: str, env_file: str, env_dict: dict[str, 
     file_path.write_text("\n".join(lines) + "\n")
     logger.info("Wrote %d env vars to %s", len(env_dict), file_path)
 
+    # Record mtime so get_env_vars doesn't think disk changed
+    db.set_env_sync_mtime(workspace_id, env_file, file_path.stat().st_mtime)
 
-def load_env_from_disk(workspace_id: str, env_file: str = ".env") -> dict[str, str]:
-    """Load env vars from an existing .env file on disk into DB."""
-    workspace = db.get_workspace(workspace_id)
-    if not workspace:
-        return {}
 
-    file_path = Path(workspace["local_path"]) / env_file
-    if not file_path.exists():
-        return {}
-
+def _parse_env_file(file_path: Path) -> dict[str, str]:
+    """Parse a .env file into a dict."""
     env_dict = {}
     with open(file_path) as f:
         for line in f:
@@ -365,10 +386,24 @@ def load_env_from_disk(workspace_id: str, env_file: str = ".env") -> dict[str, s
                 value = value.strip().strip('"').strip("'")
                 if key:
                     env_dict[key] = value
+    return env_dict
 
-    # Save to DB
-    if env_dict:
-        db.save_workspace_env_bulk(workspace_id, env_dict, env_file)
+
+def load_env_from_disk(workspace_id: str, env_file: str = ".env") -> dict[str, str]:
+    """Load env vars from an existing .env file on disk into DB and record sync mtime."""
+    workspace = db.get_workspace(workspace_id)
+    if not workspace:
+        return {}
+
+    file_path = Path(workspace["local_path"]) / env_file
+    if not file_path.exists():
+        return {}
+
+    env_dict = _parse_env_file(file_path)
+
+    # Save to DB and record sync mtime
+    db.save_workspace_env_bulk(workspace_id, env_dict, env_file)
+    db.set_env_sync_mtime(workspace_id, env_file, file_path.stat().st_mtime)
 
     return env_dict
 

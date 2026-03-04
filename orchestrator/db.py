@@ -34,6 +34,15 @@ CREATE TABLE IF NOT EXISTS workspace_env (
     UNIQUE(workspace_id, env_key, env_file)
 );
 
+CREATE TABLE IF NOT EXISTS workspace_env_sync (
+    workspace_id TEXT NOT NULL,
+    env_file TEXT NOT NULL,
+    disk_mtime REAL NOT NULL,
+    synced_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    PRIMARY KEY (workspace_id, env_file),
+    FOREIGN KEY (workspace_id) REFERENCES workspaces(id)
+);
+
 CREATE TABLE IF NOT EXISTS issues (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     issue_number INTEGER NOT NULL,
@@ -297,6 +306,33 @@ def delete_workspace_env_file(workspace_id: str, env_file: str):
     conn.execute(
         "DELETE FROM workspace_env WHERE workspace_id = ? AND env_file = ?",
         (workspace_id, env_file),
+    )
+    conn.execute(
+        "DELETE FROM workspace_env_sync WHERE workspace_id = ? AND env_file = ?",
+        (workspace_id, env_file),
+    )
+    conn.commit()
+
+
+def get_env_sync_mtime(workspace_id: str, env_file: str) -> float | None:
+    """Get the last-synced disk mtime for a workspace env file."""
+    conn = _get_connection()
+    row = conn.execute(
+        "SELECT disk_mtime FROM workspace_env_sync WHERE workspace_id = ? AND env_file = ?",
+        (workspace_id, env_file),
+    ).fetchone()
+    return row["disk_mtime"] if row else None
+
+
+def set_env_sync_mtime(workspace_id: str, env_file: str, disk_mtime: float):
+    """Record the disk mtime after syncing an env file."""
+    conn = _get_connection()
+    conn.execute(
+        """INSERT INTO workspace_env_sync (workspace_id, env_file, disk_mtime, synced_at)
+           VALUES (?, ?, ?, ?)
+           ON CONFLICT(workspace_id, env_file) DO UPDATE SET
+             disk_mtime=excluded.disk_mtime, synced_at=excluded.synced_at""",
+        (workspace_id, env_file, disk_mtime, _now()),
     )
     conn.commit()
 
