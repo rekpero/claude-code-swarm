@@ -219,7 +219,7 @@ def detect_repo_structure(local_path: str) -> dict:
         except (json.JSONDecodeError, IOError):
             pass
 
-    # Detect packages/apps directories
+    # Detect packages/apps directories (standard monorepo layout)
     package_dirs = ["packages", "apps", "services", "libs", "modules"]
     for pkg_dir_name in package_dirs:
         pkg_dir = root / pkg_dir_name
@@ -230,6 +230,24 @@ def detect_repo_structure(local_path: str) -> dict:
                     result["packages"].append({"name": child.name, "path": rel_path})
             if result["packages"]:
                 result["is_monorepo"] = True
+
+    # Detect top-level sub-projects (non-standard monorepo layout)
+    # If there are multiple top-level dirs with their own package.json, Dockerfile,
+    # Cargo.toml, go.mod, etc., treat the repo as a monorepo.
+    if not result["is_monorepo"]:
+        project_markers = ["package.json", "Dockerfile", "Cargo.toml", "go.mod", "pyproject.toml", "pom.xml", "build.gradle"]
+        skip_dirs = {"node_modules", ".git", ".github", ".vscode", "__pycache__", "dist", "build", "target", ".next", "coverage"}
+        sub_projects = []
+        for child in sorted(root.iterdir()):
+            if not child.is_dir() or child.name.startswith(".") or child.name in skip_dirs:
+                continue
+            for marker in project_markers:
+                if (child / marker).exists():
+                    sub_projects.append({"name": child.name, "path": child.name})
+                    break
+        if len(sub_projects) >= 2:
+            result["is_monorepo"] = True
+            result["packages"].extend(sub_projects)
 
     # Find all .env* files in the repo
     env_patterns = [".env", ".env.example", ".env.local", ".env.development", ".env.production", ".env.test"]

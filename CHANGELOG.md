@@ -5,6 +5,19 @@ All notable changes to Claude Code Agent Swarm will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.1.1] - 2026-03-04
+
+### Fixed
+- **Monorepo detection for non-standard layouts**: repos with top-level sub-project directories (containing `package.json`, `Dockerfile`, `Cargo.toml`, etc.) are now correctly detected as monorepos, not just those using standard `packages/`/`apps/` layouts
+- **Env file upload accepts all file types**: removed restrictive `accept` attribute so `.txt`, `.env`, and any other file can be uploaded
+- **Env upload + target path workflow**: uploading a `.env` file with a target path specified now correctly saves to that path; previously tab switching wiped the uploaded vars and only the current tab was saved
+- **Multi-tab env var persistence**: all env file tabs are now saved on settings save (not just the active tab); introduced `settingsAllEnvVars` multi-tab cache and `_collectCurrentEnvRows()` helper to preserve DOM state across tab switches
+
+### Added
+- **Local path display**: workspace settings panel now shows the local clone path for reference
+
+---
+
 ## [1.1.0] - 2025-03-04
 
 ### Added

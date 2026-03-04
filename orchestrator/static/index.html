@@ -465,6 +465,7 @@ let wsDropdownOpen = false;
 let settingsWs = null;
 let settingsEnvFile = '.env';
 let settingsEnvVars = {};
+let settingsAllEnvVars = {};  // { "envFilePath": { KEY: VAL, ... }, ... } — tracks all tabs
 
 function wsFilter() {
   return currentWorkspaceId ? `workspace_id=${currentWorkspaceId}` : '';
@@ -571,11 +572,13 @@ async function openWorkspaceSettings() {
 
   document.getElementById('ws-settings-title').textContent = `Settings: ${ws.name}`;
   settingsEnvFile = '.env';
+  settingsAllEnvVars = {};
 
   let html = `
     <div class="modal-field"><label>Workspace Name</label><input type="text" id="ws-edit-name" value="${esc(ws.name)}"></div>
     <div class="modal-field"><label>Repository URL</label><input type="text" id="ws-edit-url" value="${esc(ws.repo_url)}"></div>
     <div class="modal-field"><label>Base Branch</label><input type="text" id="ws-edit-branch" value="${esc(ws.base_branch)}"></div>
+    <div class="modal-field"><label>Local Path</label><div style="padding:6px 0;font-size:12px;color:var(--text-dim);font-family:monospace">${esc(ws.local_path || 'Unknown')}</div></div>
     <div class="modal-field"><label>Status</label> ${statusBadge(ws.status)}</div>
 
     <div class="structure-section">
@@ -596,7 +599,7 @@ async function openWorkspaceSettings() {
           <button class="btn btn-sm" onclick="addEnvRow()">+ Add Variable</button>
           <label class="btn btn-sm" style="cursor:pointer;margin:0">
             Upload .env file
-            <input type="file" id="env-file-upload" accept=".env,.env.*,*" style="display:none" onchange="handleEnvFileUpload(this)">
+            <input type="file" id="env-file-upload" style="display:none" onchange="handleEnvFileUpload(this)">
           </label>
         </div>
         <div style="display:flex;gap:6px;align-items:center">
@@ -625,7 +628,23 @@ function renderEnvFileTabs(files) {
   loadEnvVars(settingsEnvFile);
 }
 
+function _collectCurrentEnvRows() {
+  // Collect env vars from the DOM rows into settingsEnvVars
+  const rows = document.querySelectorAll('#env-rows .env-row');
+  const vars = {};
+  rows.forEach(row => {
+    const key = row.querySelector('.env-key').value.trim();
+    const val = row.querySelector('.env-val').value;
+    if (key) vars[key] = val;
+  });
+  return vars;
+}
+
 async function switchEnvFile(file) {
+  // Save current tab's DOM state before switching
+  settingsEnvVars = _collectCurrentEnvRows();
+  settingsAllEnvVars[settingsEnvFile] = settingsEnvVars;
+
   settingsEnvFile = file;
   document.querySelectorAll('.env-file-tab').forEach(t => t.classList.toggle('active', t.textContent === file));
   await loadEnvVars(file);
@@ -633,8 +652,15 @@ async function switchEnvFile(file) {
 
 async function loadEnvVars(file) {
   if (!settingsWs) return;
+  // Use cached vars if we already have them (user edited or uploaded)
+  if (settingsAllEnvVars[file] !== undefined) {
+    settingsEnvVars = settingsAllEnvVars[file];
+    renderEnvRows();
+    return;
+  }
   const data = await fetchJSON(API + `/api/workspaces/${settingsWs.id}/env?env_file=${encodeURIComponent(file)}`);
   settingsEnvVars = data?.vars || {};
+  settingsAllEnvVars[file] = settingsEnvVars;
   renderEnvRows();
 }
 
@@ -678,8 +704,18 @@ function addEnvFileTab() {
   const file = input.value.trim();
   if (!file) return;
   input.value = '';
+
+  // Save current tab's state before switching
+  settingsEnvVars = _collectCurrentEnvRows();
+  settingsAllEnvVars[settingsEnvFile] = settingsEnvVars;
+
+  // Switch to new file tab
   settingsEnvFile = file;
-  settingsEnvVars = {};
+  if (!settingsAllEnvVars[file]) {
+    settingsAllEnvVars[file] = {};
+  }
+  settingsEnvVars = settingsAllEnvVars[file];
+
   const tabs = document.getElementById('env-file-tabs');
   const existing = [...tabs.children].find(t => t.textContent === file);
   if (!existing) {
@@ -700,7 +736,38 @@ function handleEnvFileUpload(input) {
   reader.onload = function(e) {
     const text = e.target.result;
     const parsed = parseEnvFileContent(text);
-    settingsEnvVars = {...settingsEnvVars, ...parsed};
+
+    // Check if a target path is specified — if so, switch to that tab first
+    const targetInput = document.getElementById('env-new-file');
+    const targetPath = targetInput ? targetInput.value.trim() : '';
+    if (targetPath) {
+      // Save current tab state
+      settingsEnvVars = _collectCurrentEnvRows();
+      settingsAllEnvVars[settingsEnvFile] = settingsEnvVars;
+
+      // Switch to target path tab
+      settingsEnvFile = targetPath;
+      settingsAllEnvVars[targetPath] = parsed;
+      settingsEnvVars = parsed;
+      targetInput.value = '';
+
+      // Add tab if it doesn't exist
+      const tabs = document.getElementById('env-file-tabs');
+      const existing = [...tabs.children].find(t => t.textContent === targetPath);
+      if (!existing) {
+        const tab = document.createElement('div');
+        tab.className = 'env-file-tab';
+        tab.textContent = targetPath;
+        tab.onclick = () => switchEnvFile(targetPath);
+        tabs.appendChild(tab);
+      }
+      document.querySelectorAll('.env-file-tab').forEach(t => t.classList.toggle('active', t.textContent === targetPath));
+    } else {
+      // No target path — merge into current tab
+      settingsEnvVars = {...settingsEnvVars, ...parsed};
+      settingsAllEnvVars[settingsEnvFile] = settingsEnvVars;
+    }
+
     renderEnvRows();
     input.value = '';
   };
@@ -746,21 +813,18 @@ async function saveWorkspaceSettings() {
     });
   }
 
-  // Save env vars from current tab
-  const rows = document.querySelectorAll('#env-rows .env-row');
-  const envVars = {};
-  rows.forEach(row => {
-    const key = row.querySelector('.env-key').value.trim();
-    const val = row.querySelector('.env-val').value;
-    if (key) envVars[key] = val;
-  });
+  // Collect current tab's DOM state into the store
+  settingsAllEnvVars[settingsEnvFile] = _collectCurrentEnvRows();
 
-  if (Object.keys(envVars).length > 0 || Object.keys(settingsEnvVars).length > 0) {
-    await fetch(API + `/api/workspaces/${settingsWs.id}/env`, {
-      method: 'PUT',
-      headers: {'Content-Type': 'application/json'},
-      body: JSON.stringify({vars: envVars, env_file: settingsEnvFile}),
-    });
+  // Save ALL env file tabs that have vars
+  for (const [envFile, vars] of Object.entries(settingsAllEnvVars)) {
+    if (Object.keys(vars).length > 0) {
+      await fetch(API + `/api/workspaces/${settingsWs.id}/env`, {
+        method: 'PUT',
+        headers: {'Content-Type': 'application/json'},
+        body: JSON.stringify({vars, env_file: envFile}),
+      });
+    }
   }
 
   closeModal('modal-ws-settings');
