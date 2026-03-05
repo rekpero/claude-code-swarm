@@ -261,6 +261,27 @@ class PRMonitor:
                     continue
 
                 if unresolved_count > 0 or ci_failed:
+                    # If CI failed but there are no review comments, check if a
+                    # fix_review agent already completed for this PR.  If the agent
+                    # ran and CI still fails with nothing to fix, the failure is
+                    # external (e.g. deploy/Vercel config) — escalate instead of looping.
+                    if ci_failed and unresolved_count == 0:
+                        completed_fix_agents = [
+                            a for a in db.get_all_agents(workspace_id=workspace_id)
+                            if a.get("pr_number") == pr_number
+                            and a.get("agent_type") == "fix_review"
+                            and a.get("status") == "completed"
+                        ]
+                        if completed_fix_agents:
+                            logger.warning(
+                                "PR #%d: CI still failing after %d completed fix agent(s) with 0 unresolved "
+                                "threads. Escalating to needs_human — the CI failure is likely external.",
+                                pr_number, len(completed_fix_agents),
+                            )
+                            db.update_issue(issue_number, workspace_id=workspace_id, status="needs_human")
+                            self._label_needs_human(issue_number, github_repo=github_repo)
+                            continue
+
                     reason_parts = []
                     if unresolved_count > 0:
                         reason_parts.append(f"{unresolved_count} unresolved thread(s)")

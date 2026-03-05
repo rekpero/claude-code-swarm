@@ -1155,6 +1155,22 @@ function formatReviewThreads(threads) {
   }).join('')}</div>`;
 }
 
+async function retryIssue(issueNumber, workspaceId) {
+  const newStatus = 'pr_created';
+  const qp = workspaceId ? `?workspace_id=${workspaceId}` : '';
+  const res = await fetch(API + `/api/issues/${issueNumber}/status` + qp, {
+    method: 'PUT',
+    headers: {'Content-Type': 'application/json'},
+    body: JSON.stringify({status: newStatus}),
+  });
+  if (res.ok) {
+    updateIssues();
+  } else {
+    const err = await res.json().catch(() => ({}));
+    alert('Failed to retry: ' + (err.error || res.statusText));
+  }
+}
+
 async function updateIssues() {
   const qp = wsFilter();
   const data = await fetchJSON(API + '/api/issues' + (qp ? '?' + qp : ''));
@@ -1166,9 +1182,12 @@ async function updateIssues() {
     return;
   }
   el.innerHTML = `<table class="issue-table">
-    <tr><th>#</th><th>Title</th><th>Status</th><th>PR</th><th>Attempts</th><th>Workspace</th><th>Updated</th></tr>
+    <tr><th>#</th><th>Title</th><th>Status</th><th>PR</th><th>Attempts</th><th>Workspace</th><th>Updated</th><th></th></tr>
     ${issues.map(i => {
       const wsName = workspaces.find(w => w.id === i.workspace_id)?.name || '';
+      const retryBtn = i.status === 'needs_human'
+        ? `<button class="btn btn-sm" onclick="retryIssue(${i.issue_number}, '${i.workspace_id || ''}')">Retry</button>`
+        : '';
       return `<tr>
         <td>${i.issue_number}</td>
         <td>${esc(i.title)}</td>
@@ -1177,6 +1196,7 @@ async function updateIssues() {
         <td>${i.attempts}</td>
         <td style="font-size:11px;color:var(--text-dim)">${esc(wsName)}</td>
         <td>${timeAgo(i.updated_at)}</td>
+        <td>${retryBtn}</td>
       </tr>`;
     }).join('')}
   </table>`;

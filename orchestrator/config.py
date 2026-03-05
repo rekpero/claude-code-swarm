@@ -46,6 +46,11 @@ RATE_LIMIT_RETRY_INTERVAL = int(os.environ.get("RATE_LIMIT_RETRY_INTERVAL", "300
 # Max times we'll resume a single agent after rate limits before giving up.
 MAX_RATE_LIMIT_RESUMES = int(os.environ.get("MAX_RATE_LIMIT_RESUMES", "5"))
 
+# === Git Author Identity ===
+# Set these so agent commits use a GitHub-recognised identity (avoids Vercel / deploy rejections).
+GIT_AUTHOR_NAME = os.environ.get("GIT_AUTHOR_NAME", "")
+GIT_AUTHOR_EMAIL = os.environ.get("GIT_AUTHOR_EMAIL", "")
+
 # === Skills ===
 # Set to "true" to enable Claude Code skills for agents.
 # Skills must be installed first via: ./run.sh install-skills
@@ -137,6 +142,8 @@ def print_config():
     print(f"  MAX_RATE_RESUMES:      {MAX_RATE_LIMIT_RESUMES}")
     print(f"  SKILLS_ENABLED:        {SKILLS_ENABLED}")
     print(f"  DASHBOARD_PORT:        {DASHBOARD_PORT}")
+    print(f"  GIT_AUTHOR_NAME:       {GIT_AUTHOR_NAME or '(not set — agent default)'}")
+    print(f"  GIT_AUTHOR_EMAIL:      {GIT_AUTHOR_EMAIL or '(not set — agent default)'}")
     token_preview = CLAUDE_CODE_OAUTH_TOKEN[:12] + "..." if CLAUDE_CODE_OAUTH_TOKEN else "(not set)"
     gh_preview = GH_TOKEN[:8] + "..." if GH_TOKEN else "(not set)"
     print(f"  CLAUDE_TOKEN:          {token_preview}")

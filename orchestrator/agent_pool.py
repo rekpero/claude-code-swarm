@@ -17,6 +17,8 @@ from orchestrator.config import (
     AGENT_TIMEOUT_SECONDS,
     CLAUDE_CODE_OAUTH_TOKEN,
     GH_TOKEN,
+    GIT_AUTHOR_EMAIL,
+    GIT_AUTHOR_NAME,
     GITHUB_REPO,
     MAX_CONCURRENT_AGENTS,
     MAX_RATE_LIMIT_RESUMES,
@@ -317,6 +319,15 @@ class AgentPool:
             "CLAUDE_CODE_OAUTH_TOKEN": CLAUDE_CODE_OAUTH_TOKEN,
             "GH_TOKEN": GH_TOKEN,
         }
+
+        # Set git author identity so commits are attributed to a real GitHub user
+        # (avoids Vercel / deploy rejections for unknown commit authors).
+        if GIT_AUTHOR_NAME:
+            env["GIT_AUTHOR_NAME"] = GIT_AUTHOR_NAME
+            env["GIT_COMMITTER_NAME"] = GIT_AUTHOR_NAME
+        if GIT_AUTHOR_EMAIL:
+            env["GIT_AUTHOR_EMAIL"] = GIT_AUTHOR_EMAIL
+            env["GIT_COMMITTER_EMAIL"] = GIT_AUTHOR_EMAIL
 
         # Inject workspace-specific env vars
         if workspace_id:
@@ -644,6 +655,13 @@ class AgentPool:
             "CLAUDE_CODE_OAUTH_TOKEN": CLAUDE_CODE_OAUTH_TOKEN,
             "GH_TOKEN": GH_TOKEN,
         }
+
+        if GIT_AUTHOR_NAME:
+            env["GIT_AUTHOR_NAME"] = GIT_AUTHOR_NAME
+            env["GIT_COMMITTER_NAME"] = GIT_AUTHOR_NAME
+        if GIT_AUTHOR_EMAIL:
+            env["GIT_AUTHOR_EMAIL"] = GIT_AUTHOR_EMAIL
+            env["GIT_COMMITTER_EMAIL"] = GIT_AUTHOR_EMAIL
 
         # Inject workspace-specific env vars
         if workspace_id:

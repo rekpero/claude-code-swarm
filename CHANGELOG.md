@@ -5,6 +5,19 @@ All notable changes to Claude Code Agent Swarm will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+
+## [1.1.3] - 2026-03-06
+
+### Added
+- **Git author identity config**: new `GIT_AUTHOR_NAME` / `GIT_AUTHOR_EMAIL` env vars so agent commits are attributed to a GitHub-recognised identity — avoids Vercel and other deploy platform rejections for unknown commit authors
+- **Issue status update API**: `PUT /api/issues/{issue_number}/status` endpoint allows changing an issue's status (e.g. retrying a `needs_human` issue)
+- **Dashboard: Retry button**: issues in `needs_human` status now show a "Retry" button that resets them to `pr_created` for another round of PR monitoring
+
+### Fixed
+- **CI failure infinite loop**: when CI keeps failing after a `fix_review` agent completes with zero unresolved review threads, the PR monitor now escalates to `needs_human` instead of dispatching another fix agent — prevents endless loops on external failures (e.g. Vercel deploy config)
+
+---
+
 ## [1.1.2] - 2026-03-06
 
 ### Fixed

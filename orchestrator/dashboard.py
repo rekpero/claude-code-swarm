@@ -214,6 +214,23 @@ async def list_prs(workspace_id: str | None = Query(None)):
     return {"prs": list(pr_map.values())}
 
 
+class UpdateIssueStatusRequest(BaseModel):
+    status: str
+
+
+@app.put("/api/issues/{issue_number}/status")
+async def update_issue_status(issue_number: int, req: UpdateIssueStatusRequest, workspace_id: str | None = Query(None)):
+    """Update an issue's status (e.g. retry a needs_human issue)."""
+    allowed = {"pending", "pr_created", "needs_human", "resolved"}
+    if req.status not in allowed:
+        return JSONResponse(content={"error": f"Invalid status. Allowed: {allowed}"}, status_code=400)
+    issue = db.get_issue(issue_number, workspace_id=workspace_id)
+    if not issue:
+        return JSONResponse(content={"error": "Issue not found"}, status_code=404)
+    db.update_issue(issue_number, workspace_id=workspace_id, status=req.status)
+    return {"ok": True, "issue_number": issue_number, "status": req.status}
+
+
 @app.get("/api/metrics")
 async def get_metrics(workspace_id: str | None = Query(None)):
     """Aggregate stats, optionally filtered by workspace."""
