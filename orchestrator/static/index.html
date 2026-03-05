@@ -959,6 +959,12 @@ function toggleAgentLogs(agentId) {
       toggleEl.querySelector('.chevron').classList.add('open');
       toggleEl.querySelector('.toggle-label').textContent = 'Hide Logs';
     }
+    // Lazy-load logs for finished agents on first expand
+    const state = agentLogState[agentId];
+    if (!state || (!state.done && state.lastId === 0)) {
+      logsEl.innerHTML = '<div style="color:var(--text-dim);padding:8px;font-style:italic">Loading logs...</div>';
+      fetchAgentLogs(agentId, true);
+    }
   }
 }
 
@@ -1090,8 +1096,9 @@ async function updateAgents(append = false) {
 
   for (const a of display) {
     const finished = isAgentFinished(a.status);
+    // Only fetch logs for running/rate-limited agents, or finished agents the user has expanded
+    if (finished && !expandedAgentLogs.has(a.agent_id)) continue;
     const state = agentLogState[a.agent_id];
-    // Skip finished agents whose logs are fully fetched
     if (finished && state?.done) continue;
     fetchAgentLogs(a.agent_id, finished);
   }
