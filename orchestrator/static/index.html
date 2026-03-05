@@ -460,7 +460,7 @@ const POLL_MS = 3000;
 
 // Workspace state
 let workspaces = [];
-let currentWorkspaceId = null; // null = all workspaces
+let currentWorkspaceId = sessionStorage.getItem('currentWorkspaceId') || null;
 let wsDropdownOpen = false;
 
 // Current settings workspace data (for settings modal)
@@ -501,6 +501,8 @@ function renderWsDropdown() {
 
 function selectWorkspace(id) {
   currentWorkspaceId = id;
+  if (id) sessionStorage.setItem('currentWorkspaceId', id);
+  else sessionStorage.removeItem('currentWorkspaceId');
   wsDropdownOpen = false;
   document.getElementById('ws-dropdown').classList.remove('open');
 
@@ -518,6 +520,8 @@ function selectWorkspace(id) {
     indEl.className = 'ws-status ws-status-active';
     settingsBtn.style.display = 'none';
   }
+  allLoadedAgents = [];
+  agentOffset = 0;
   pollAll();
 }
 
@@ -870,6 +874,11 @@ async function updateWorkspaces() {
     if (ws) {
       document.getElementById('ws-current-name').textContent = ws.name;
       document.getElementById('ws-indicator').className = 'ws-status ws-status-' + ws.status;
+      document.getElementById('ws-settings-toggle').style.display = '';
+    } else {
+      // Stored workspace no longer exists — reset to all
+      currentWorkspaceId = null;
+      sessionStorage.removeItem('currentWorkspaceId');
     }
   }
 }
@@ -953,27 +962,59 @@ function toggleAgentLogs(agentId) {
   }
 }
 
-async function updateAgents() {
+let agentPageSize = 10;
+let agentOffset = 0;
+let agentTotal = 0;
+let allLoadedAgents = [];
+
+async function loadMoreAgents() {
+  agentOffset += agentPageSize;
+  await updateAgents(true);
+}
+
+async function updateAgents(append = false) {
   const qp = wsFilter();
-  const data = await fetchJSON(API + '/api/agents' + (qp ? '?' + qp : ''));
+  if (!append) agentOffset = 0;
+  const params = new URLSearchParams(qp);
+  // On normal refresh, fetch enough to cover all loaded pages so we get status updates
+  const fetchLimit = append ? agentPageSize : Math.max(agentPageSize, allLoadedAgents.length);
+  params.set('limit', fetchLimit);
+  params.set('offset', append ? agentOffset : 0);
+  const data = await fetchJSON(API + '/api/agents?' + params.toString());
   if (!data) return;
   const el = document.getElementById('agents-list');
   const agents = data.agents || [];
-  if (agents.length === 0) {
+  agentTotal = data.total || 0;
+
+  if (append) {
+    allLoadedAgents = [...allLoadedAgents, ...agents];
+  } else {
+    // Preserve any extra agents loaded beyond the first page
+    const extraCount = allLoadedAgents.length - fetchLimit;
+    if (extraCount > 0) {
+      // Re-fetch returned updated first N agents; keep tail from previous load
+      allLoadedAgents = [...agents, ...allLoadedAgents.slice(fetchLimit)];
+    } else {
+      allLoadedAgents = agents;
+    }
+  }
+
+  if (allLoadedAgents.length === 0) {
     el.innerHTML = '<div class="empty-state">No agents tracked yet</div>';
     currentAgentIds = [];
     return;
   }
-  const running = agents.filter(a => a.status === 'running');
-  const rateLimited = agents.filter(a => a.status === 'rate_limited');
-  const recent = agents.filter(a => !['running', 'rate_limited'].includes(a.status)).slice(0, 5);
-  const display = [...running, ...rateLimited, ...recent];
+  const display = allLoadedAgents;
   const newIds = display.map(a => a.agent_id);
 
   const listChanged = newIds.length !== currentAgentIds.length || newIds.some((id, i) => id !== currentAgentIds[i]);
 
   if (listChanged) {
-    for (const id of currentAgentIds) delete agentLogState[id];
+    // Only clear log state for agents that are no longer displayed
+    const newIdSet = new Set(newIds);
+    for (const id of currentAgentIds) {
+      if (!newIdSet.has(id)) delete agentLogState[id];
+    }
     currentAgentIds = newIds;
 
     el.innerHTML = display.map(a => {
@@ -999,6 +1040,8 @@ async function updateAgents() {
         <div class="log-stream" id="logs-${a.agent_id}"${!logsVisible ? ' hidden' : ''}></div>
       </div>`;
     }).join('');
+    // Append load-more button placeholder
+    el.insertAdjacentHTML('beforeend', '<div id="agents-load-more"></div>');
   } else {
     for (const a of display) {
       const card = document.getElementById(`card-${a.agent_id}`);
@@ -1034,6 +1077,17 @@ async function updateAgents() {
       }
     }
   }
+  // Show or update "Load More" button
+  let loadMoreEl = document.getElementById('agents-load-more');
+  if (!loadMoreEl) {
+    el.insertAdjacentHTML('beforeend', '<div id="agents-load-more"></div>');
+    loadMoreEl = document.getElementById('agents-load-more');
+  }
+  const hasMore = allLoadedAgents.length < agentTotal;
+  loadMoreEl.innerHTML = hasMore
+    ? `<button class="btn" style="margin:12px auto;display:block" onclick="loadMoreAgents()">Load More (${allLoadedAgents.length} of ${agentTotal})</button>`
+    : (agentTotal > agentPageSize ? `<div style="text-align:center;color:var(--text-dim);font-size:12px;margin:8px 0">All ${agentTotal} agents loaded</div>` : '');
+
   for (const a of display) {
     const finished = isAgentFinished(a.status);
     const state = agentLogState[a.agent_id];

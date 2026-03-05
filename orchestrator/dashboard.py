@@ -162,13 +162,18 @@ async def load_env_from_disk(workspace_id: str, env_file: str = Query(".env")):
 # === Existing Endpoints (now workspace-filterable) ===
 
 @app.get("/api/agents")
-async def list_agents(workspace_id: str | None = Query(None)):
-    """List all agents with current status."""
-    agents = db.get_all_agents(workspace_id=workspace_id)
+async def list_agents(
+    workspace_id: str | None = Query(None),
+    limit: int = Query(20, ge=1, le=200),
+    offset: int = Query(0, ge=0),
+):
+    """List agents with server-side pagination."""
+    agents = db.get_all_agents(workspace_id=workspace_id, limit=limit, offset=offset)
+    total = db.count_agents(workspace_id=workspace_id)
     for agent in agents:
         if agent["status"] == "running" and not agent.get("turns_used"):
             agent["turns_used"] = db.get_agent_turn_count(agent["agent_id"])
-    return {"agents": agents}
+    return {"agents": agents, "total": total, "limit": limit, "offset": offset}
 
 
 @app.get("/api/agents/{agent_id}/logs")

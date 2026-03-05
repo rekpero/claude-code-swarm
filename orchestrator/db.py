@@ -461,17 +461,28 @@ def get_running_agents() -> list[dict]:
     return [dict(r) for r in rows]
 
 
-def get_all_agents(workspace_id: str | None = None) -> list[dict]:
+def get_all_agents(workspace_id: str | None = None, limit: int = 0, offset: int = 0) -> list[dict]:
+    conn = _get_connection()
+    base = "SELECT * FROM agents"
+    params: list = []
+    if workspace_id:
+        base += " WHERE workspace_id = ?"
+        params.append(workspace_id)
+    base += " ORDER BY started_at DESC"
+    if limit > 0:
+        base += " LIMIT ? OFFSET ?"
+        params.extend([limit, offset])
+    rows = conn.execute(base, params).fetchall()
+    return [dict(r) for r in rows]
+
+
+def count_agents(workspace_id: str | None = None) -> int:
     conn = _get_connection()
     if workspace_id:
-        rows = conn.execute(
-            "SELECT * FROM agents WHERE workspace_id = ? ORDER BY started_at DESC", (workspace_id,)
-        ).fetchall()
+        row = conn.execute("SELECT COUNT(*) FROM agents WHERE workspace_id = ?", (workspace_id,)).fetchone()
     else:
-        rows = conn.execute(
-            "SELECT * FROM agents ORDER BY started_at DESC"
-        ).fetchall()
-    return [dict(r) for r in rows]
+        row = conn.execute("SELECT COUNT(*) FROM agents").fetchone()
+    return row[0]
 
 
 def get_rate_limited_agents() -> list[dict]:

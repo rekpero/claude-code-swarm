@@ -12,6 +12,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **Git author identity config**: new `GIT_AUTHOR_NAME` / `GIT_AUTHOR_EMAIL` env vars so agent commits are attributed to a GitHub-recognised identity — avoids Vercel and other deploy platform rejections for unknown commit authors
 - **Issue status update API**: `PUT /api/issues/{issue_number}/status` endpoint allows changing an issue's status (e.g. retrying a `needs_human` issue)
 - **Dashboard: Retry button**: issues in `needs_human` status now show a "Retry" button that resets them to `pr_created` for another round of PR monitoring
+- **Dashboard: agent list pagination** — `/api/agents` now supports server-side `limit` and `offset` parameters (default: 10 per page); the dashboard shows the most recent agents with a "Load More" button to fetch older ones, drastically reducing payload size when hundreds of agents exist
 
 ### Fixed
 - **CI failure infinite loop**: when CI keeps failing after a `fix_review` agent completes with zero unresolved review threads, the PR monitor now escalates to `needs_human` instead of dispatching another fix agent — prevents endless loops on external failures (e.g. Vercel deploy config)
