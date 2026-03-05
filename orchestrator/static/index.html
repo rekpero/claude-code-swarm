@@ -518,7 +518,7 @@ function selectWorkspace(id) {
     indEl.className = 'ws-status ws-status-active';
     settingsBtn.style.display = 'none';
   }
-  poll();
+  pollAll();
 }
 
 function openAddWorkspace() {
@@ -1034,19 +1034,28 @@ async function updateAgents() {
       }
     }
   }
-  for (const a of display) fetchAgentLogs(a.agent_id);
+  for (const a of display) {
+    const finished = isAgentFinished(a.status);
+    const state = agentLogState[a.agent_id];
+    // Skip finished agents whose logs are fully fetched
+    if (finished && state?.done) continue;
+    fetchAgentLogs(a.agent_id, finished);
+  }
 }
 
-async function fetchAgentLogs(agentId) {
+async function fetchAgentLogs(agentId, agentFinished = false) {
   const el = document.getElementById(`logs-${agentId}`);
   if (!el) return;
-  if (!agentLogState[agentId]) agentLogState[agentId] = { lastId: 0 };
+  if (!agentLogState[agentId]) agentLogState[agentId] = { lastId: 0, done: false };
   const state = agentLogState[agentId];
+  if (state.done) return;
   const data = await fetchJSON(API + `/api/agents/${agentId}/logs?since=${state.lastId}`);
   if (!data) return;
   const events = data.events || [];
   if (events.length === 0) {
     if (el.children.length === 0) el.innerHTML = '<div class="log-line log-placeholder" style="opacity:0.5">Waiting for events...</div>';
+    // If agent is finished and no new events, all logs are loaded — stop polling
+    if (agentFinished) state.done = true;
     return;
   }
   const placeholder = el.querySelector('.log-placeholder');
@@ -1062,6 +1071,8 @@ async function fetchAgentLogs(agentId) {
     el.appendChild(line);
   }
   if (wasNearBottom) el.scrollTop = el.scrollHeight;
+  // If agent is finished and this was the last batch of events, mark done
+  if (agentFinished && events.length < 200) state.done = true;
 }
 
 function formatToolUse(b) {
@@ -1198,12 +1209,23 @@ async function updatePRs() {
   </table>`;
 }
 
-async function poll() {
-  await Promise.all([updateWorkspaces(), updateMetrics(), updateAgents(), updateIssues(), updatePRs()]);
+const SLOW_POLL_MS = 30000;
+
+async function pollFast() {
+  await updateAgents();
 }
 
-poll();
-setInterval(poll, POLL_MS);
+async function pollSlow() {
+  await Promise.all([updateWorkspaces(), updateMetrics(), updateIssues(), updatePRs()]);
+}
+
+async function pollAll() {
+  await Promise.all([pollFast(), pollSlow()]);
+}
+
+pollAll();
+setInterval(pollFast, POLL_MS);
+setInterval(pollSlow, SLOW_POLL_MS);
 </script>
 </body>
 </html>

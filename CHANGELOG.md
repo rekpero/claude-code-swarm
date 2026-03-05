@@ -5,6 +5,18 @@ All notable changes to Claude Code Agent Swarm will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.1.2] - 2026-03-06
+
+### Fixed
+- **Dashboard: excessive API polling eliminated** — workspaces, metrics, issues, and PRs were being polled every 3 seconds alongside agent logs; they are now on a separate 30-second slow-poll loop since they change infrequently
+- **Dashboard: finished agent logs polled indefinitely** — log fetches for completed/failed/timeout agents continued firing every 3 seconds even after all events were loaded; agents are now marked `done` after a fetch returns no new events (or fewer than the page limit), and are skipped on all subsequent ticks
+- **Dashboard: `selectWorkspace` calling deleted `poll()` function** — switching workspaces threw a JS error after the polling refactor; fixed to call `pollAll()`
+
+### Changed
+- Dashboard polling split into two independent intervals: **fast (3s)** for agent status and live logs, **slow (30s)** for workspaces, metrics, issues, and PRs
+
+---
+
 ## [1.1.1] - 2026-03-04
 
 ### Fixed
