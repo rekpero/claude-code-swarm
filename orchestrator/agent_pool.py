@@ -33,7 +33,7 @@ from orchestrator.prompts import (
     build_resume_implement_prompt,
 )
 from orchestrator.stream_parser import AgentEvent, extract_pr_number, extract_session_id, parse_stream_line
-from orchestrator.worktree import cleanup_worktree, create_worktree, create_worktree_for_pr, ensure_repo_updated
+from orchestrator.worktree import cleanup_worktree, copy_env_files_to_worktree, create_worktree, create_worktree_for_pr, ensure_repo_updated
 
 # Patterns that indicate Claude usage/rate limit errors (case-insensitive).
 _RATE_LIMIT_PATTERNS = [
@@ -184,6 +184,9 @@ class AgentPool:
             logger.error("Failed to create worktree for issue #%d: %s", issue_number, e)
             return None
 
+        # Copy .env files from the workspace into the worktree (they are gitignored)
+        copy_env_files_to_worktree(worktree_path, local_path, workspace_id=workspace.get("id") if workspace else None)
+
         prompt = build_implement_prompt(issue_number, github_repo=github_repo, target_repo_path=local_path)
 
         try:
@@ -248,6 +251,9 @@ class AgentPool:
         except Exception as e:
             logger.error("Failed to create worktree for PR #%d: %s", pr_number, e)
             return None
+
+        # Copy .env files from the workspace into the worktree (they are gitignored)
+        copy_env_files_to_worktree(worktree_path, local_path, workspace_id=workspace.get("id") if workspace else None)
 
         prompt = build_fix_review_prompt(pr_number, unresolved_threads, github_repo=github_repo, target_repo_path=local_path)
 

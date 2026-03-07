@@ -1,4 +1,5 @@
 import logging
+import shutil
 import subprocess
 from pathlib import Path
 
@@ -96,6 +97,62 @@ def create_worktree_for_pr(
     logger.info("Worktree reset to origin/%s", branch_name)
 
     return str(worktree_path)
+
+
+def copy_env_files_to_worktree(
+    worktree_path: str,
+    repo_path: str,
+    workspace_id: str | None = None,
+) -> None:
+    """Copy .env files from the source repo into the worktree.
+
+    Uses two strategies:
+    1. Copy any .env* files found on disk in the source repo.
+    2. If a workspace_id is provided, also write any DB-managed env files
+       that don't already exist on disk (e.g. user added them via the dashboard
+       but they were cleaned up from the source repo).
+    """
+    src = Path(repo_path)
+    dst = Path(worktree_path)
+    copied: list[str] = []
+
+    # Strategy 1: copy .env* files from the source repo root and subdirs
+    for env_file in src.rglob(".env*"):
+        # Skip directories, .envrc, and files inside node_modules / .git
+        rel = env_file.relative_to(src)
+        parts = rel.parts
+        if env_file.is_dir():
+            continue
+        if any(p.startswith(".git") or p == "node_modules" for p in parts):
+            continue
+
+        target = dst / rel
+        target.parent.mkdir(parents=True, exist_ok=True)
+        shutil.copy2(str(env_file), str(target))
+        copied.append(str(rel))
+
+    # Strategy 2: write DB-managed env files that weren't already on disk
+    if workspace_id:
+        from orchestrator import db
+
+        for env_file_path in db.get_workspace_env_files(workspace_id):
+            if env_file_path in copied:
+                continue
+            env_dict = db.get_workspace_env(workspace_id, env_file_path)
+            if not env_dict:
+                continue
+            target = dst / env_file_path
+            target.parent.mkdir(parents=True, exist_ok=True)
+            lines = []
+            for key, value in sorted(env_dict.items()):
+                if " " in value or '"' in value or "'" in value or "\n" in value:
+                    value = f'"{value}"'
+                lines.append(f"{key}={value}")
+            target.write_text("\n".join(lines) + "\n")
+            copied.append(env_file_path)
+
+    if copied:
+        logger.info("Copied %d env file(s) to worktree %s: %s", len(copied), worktree_path, ", ".join(copied))
 
 
 def cleanup_worktree(path: str, repo_path: Path | str | None = None):

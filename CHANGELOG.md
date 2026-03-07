@@ -6,6 +6,13 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 
+## [1.1.4] - 2026-03-07
+
+### Fixed
+- **Env files missing in agent worktrees**: `.env` files (including monorepo subdirectory env files like `marketplace/.env`) were not copied into git worktrees since they are gitignored — agents using dotenv or similar would fail to find any env configuration. Worktrees now receive copies of all `.env*` files from the source repo and any DB-managed env files from the dashboard.
+
+---
+
 ## [1.1.3] - 2026-03-06
 
 ### Added
