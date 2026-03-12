@@ -18,7 +18,6 @@ from orchestrator.config import (
 from orchestrator.issue_poller import poll_issues
 from orchestrator.pr_monitor import PRMonitor
 from orchestrator.rate_limit_watcher import RateLimitWatcher
-from orchestrator.workspace_manager import ensure_default_workspace
 from orchestrator.worktree import cleanup_worktree
 
 logging.basicConfig(
@@ -105,11 +104,6 @@ def main():
     # Initialize database
     db.init_db()
     logger.info("Database initialized")
-
-    # Ensure default workspace exists (backward compat)
-    default_ws = ensure_default_workspace()
-    if default_ws:
-        logger.info("Default workspace created: %s (%s)", default_ws["name"], default_ws["id"])
 
     # Recover from previous crash
     _recover_stale_agents()

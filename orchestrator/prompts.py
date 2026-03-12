@@ -1,7 +1,7 @@
 import logging
 from pathlib import Path
 
-from orchestrator.config import GITHUB_REPO, SKILLS_ENABLED, TARGET_REPO_PATH
+from orchestrator.config import SKILLS_ENABLED
 
 logger = logging.getLogger(__name__)
 
@@ -9,7 +9,7 @@ logger = logging.getLogger(__name__)
 def _discover_installed_skills(target_repo_path: Path | str | None = None) -> list[str]:
     """Discover skills installed in the target repo and globally."""
     skills: list[str] = []
-    repo_path = Path(target_repo_path) if target_repo_path else TARGET_REPO_PATH
+    repo_path = Path(target_repo_path) if target_repo_path else None
 
     # Check target repo .claude/skills/
     repo_skills = repo_path / ".claude" / "skills"
@@ -48,7 +48,7 @@ matches their domain."""
 
 
 def build_implement_prompt(issue_number: int, github_repo: str | None = None, target_repo_path: Path | str | None = None) -> str:
-    repo = github_repo or GITHUB_REPO
+    repo = github_repo
     owner, repo_name = repo.split("/", 1)
     skills = _skills_block(target_repo_path)
     return f"""Read the AGENT.md file at the root of this repository FIRST and follow every guideline strictly.
@@ -102,7 +102,7 @@ def _format_unresolved_threads(threads: list[dict]) -> str:
 
 
 def build_fix_review_prompt(pr_number: int, unresolved_threads: list[dict] | None = None, github_repo: str | None = None, target_repo_path: Path | str | None = None) -> str:
-    repo = github_repo or GITHUB_REPO
+    repo = github_repo
     owner, repo_name = repo.split("/", 1)
 
     skills = _skills_block(target_repo_path)
@@ -195,7 +195,7 @@ Important:
 
 
 def build_resume_fix_review_prompt(pr_number: int, unresolved_threads: list[dict] | None = None, github_repo: str | None = None, target_repo_path: Path | str | None = None) -> str:
-    repo = github_repo or GITHUB_REPO
+    repo = github_repo
     owner, repo_name = repo.split("/", 1)
     skills = _skills_block(target_repo_path)
 

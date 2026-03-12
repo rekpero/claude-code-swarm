@@ -10,7 +10,6 @@ from orchestrator import db
 from orchestrator.config import (
     CI_WAIT_TIMEOUT_SECONDS,
     GH_TOKEN,
-    GITHUB_REPO,
     MAX_PR_FIX_RETRIES,
     PR_POLL_INTERVAL_SECONDS,
 )
@@ -27,7 +26,7 @@ def _run_gh(*args: str) -> subprocess.CompletedProcess:
 
 def get_pr_comments(pr_number: int, github_repo: str | None = None) -> list[dict]:
     """Fetch all review comments on a PR (REST API — no resolution status)."""
-    repo = github_repo or GITHUB_REPO
+    repo = github_repo
     owner, repo_name = repo.split("/", 1)
     result = _run_gh(
         "api", f"repos/{owner}/{repo_name}/pulls/{pr_number}/comments",
@@ -45,7 +44,7 @@ def get_pr_comments(pr_number: int, github_repo: str | None = None) -> list[dict
 
 def get_unresolved_threads(pr_number: int, github_repo: str | None = None) -> list[dict] | None:
     """Fetch unresolved review threads with full details using the GraphQL API."""
-    repo = github_repo or GITHUB_REPO
+    repo = github_repo
     owner, repo_name = repo.split("/", 1)
     query = """
     query($owner: String!, $repo: String!, $pr: Int!) {
@@ -100,7 +99,7 @@ def get_unresolved_threads(pr_number: int, github_repo: str | None = None) -> li
 
 def get_pr_checks(pr_number: int, github_repo: str | None = None) -> list[dict]:
     """Fetch CI check status for a PR."""
-    repo = github_repo or GITHUB_REPO
+    repo = github_repo
     result = _run_gh(
         "pr", "checks", str(pr_number),
         "--repo", repo,
@@ -117,7 +116,7 @@ def get_pr_checks(pr_number: int, github_repo: str | None = None) -> list[dict]:
 
 def get_pr_branch(pr_number: int, github_repo: str | None = None) -> str | None:
     """Get the head branch name for a PR."""
-    repo = github_repo or GITHUB_REPO
+    repo = github_repo
     result = _run_gh(
         "pr", "view", str(pr_number),
         "--repo", repo,
@@ -134,7 +133,7 @@ def get_pr_branch(pr_number: int, github_repo: str | None = None) -> str | None:
 
 def is_pr_merged(pr_number: int, github_repo: str | None = None) -> bool:
     """Check if a PR has been merged."""
-    repo = github_repo or GITHUB_REPO
+    repo = github_repo
     result = _run_gh(
         "pr", "view", str(pr_number),
         "--repo", repo,
@@ -342,7 +341,7 @@ class PRMonitor:
 
     def _label_needs_human(self, issue_number: int, github_repo: str | None = None):
         """Add 'needs-human' label to the GitHub issue."""
-        repo = github_repo or GITHUB_REPO
+        repo = github_repo
         try:
             _run_gh(
                 "issue", "edit", str(issue_number),

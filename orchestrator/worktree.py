@@ -3,14 +3,12 @@ import shutil
 import subprocess
 from pathlib import Path
 
-from orchestrator.config import BASE_BRANCH, TARGET_REPO_PATH, WORKTREE_DIR
-
 logger = logging.getLogger(__name__)
 
 
 def _run_git(*args: str, repo_path: Path | str | None = None, check: bool = True) -> subprocess.CompletedProcess:
     """Run a git command against a repo."""
-    target = str(repo_path) if repo_path else str(TARGET_REPO_PATH)
+    target = str(repo_path)
     cmd = ["git", "-C", target] + list(args)
     logger.debug("Running: %s", " ".join(cmd))
     result = subprocess.run(cmd, capture_output=True, text=True, timeout=60)
@@ -21,10 +19,10 @@ def _run_git(*args: str, repo_path: Path | str | None = None, check: bool = True
     return result
 
 
-def ensure_repo_updated(repo_path: Path | str | None = None, base_branch: str | None = None):
+def ensure_repo_updated(repo_path: Path | str, base_branch: str = "main"):
     """Fetch and pull latest changes from origin."""
-    target = repo_path or TARGET_REPO_PATH
-    branch = base_branch or BASE_BRANCH
+    target = repo_path
+    branch = base_branch
     logger.info("Updating target repo at %s", target)
     _run_git("fetch", "origin", repo_path=target)
     _run_git("pull", "origin", branch, repo_path=target, check=False)
@@ -32,14 +30,14 @@ def ensure_repo_updated(repo_path: Path | str | None = None, base_branch: str | 
 
 def create_worktree(
     issue_number: int,
-    repo_path: Path | str | None = None,
-    worktree_dir: Path | str | None = None,
-    base_branch: str | None = None,
+    repo_path: Path | str,
+    worktree_dir: Path | str,
+    base_branch: str = "main",
 ) -> str:
     """Create a git worktree for an issue. Returns the worktree path."""
-    target = repo_path or TARGET_REPO_PATH
-    wt_dir = Path(worktree_dir) if worktree_dir else WORKTREE_DIR
-    base = base_branch or BASE_BRANCH
+    target = repo_path
+    wt_dir = Path(worktree_dir)
+    base = base_branch
     worktree_path = wt_dir / f"issue-{issue_number}"
     branch_name = f"fix/issue-{issue_number}"
 
@@ -67,12 +65,12 @@ def create_worktree(
 def create_worktree_for_pr(
     pr_number: int,
     branch_name: str,
-    repo_path: Path | str | None = None,
-    worktree_dir: Path | str | None = None,
+    repo_path: Path | str,
+    worktree_dir: Path | str,
 ) -> str:
     """Create a git worktree for fixing PR review comments. Returns the path."""
-    target = repo_path or TARGET_REPO_PATH
-    wt_dir = Path(worktree_dir) if worktree_dir else WORKTREE_DIR
+    target = repo_path
+    wt_dir = Path(worktree_dir)
     worktree_path = wt_dir / f"pr-fix-{pr_number}"
 
     wt_dir.mkdir(parents=True, exist_ok=True)
@@ -185,9 +183,9 @@ def list_worktrees(repo_path: Path | str | None = None) -> list[dict]:
     return worktrees
 
 
-def cleanup_all_worktrees(worktree_dir: Path | str | None = None, repo_path: Path | str | None = None):
+def cleanup_all_worktrees(worktree_dir: Path | str, repo_path: Path | str | None = None):
     """Remove all worktrees in a directory. Used during shutdown."""
-    wt_dir = Path(worktree_dir) if worktree_dir else WORKTREE_DIR
+    wt_dir = Path(worktree_dir)
     if not wt_dir.exists():
         return
     for child in wt_dir.iterdir():

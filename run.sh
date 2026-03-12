@@ -115,13 +115,9 @@ _ensure_env() {
 
   read -rp "CLAUDE_CODE_OAUTH_TOKEN (from 'claude setup-token'): " TOKEN
   read -rp "GH_TOKEN (GitHub PAT): " GH
-  read -rp "GITHUB_REPO (e.g. owner/repo): " REPO
-  read -rp "TARGET_REPO_PATH (absolute path to local clone): " TARGET
 
   sed -i "s|^CLAUDE_CODE_OAUTH_TOKEN=.*|CLAUDE_CODE_OAUTH_TOKEN=${TOKEN}|" "$DIR/.env"
   sed -i "s|^GH_TOKEN=.*|GH_TOKEN=${GH}|" "$DIR/.env"
-  sed -i "s|^GITHUB_REPO=.*|GITHUB_REPO=${REPO}|" "$DIR/.env"
-  sed -i "s|^TARGET_REPO_PATH=.*|TARGET_REPO_PATH=${TARGET}|" "$DIR/.env"
 
   echo ""
   echo ".env configured. You can edit $DIR/.env to change settings later."
@@ -295,12 +291,6 @@ DEFAULT_SKILL_REPOS=(
   "vercel-labs/agent-skills"
 )
 
-_get_target_repo_path() {
-  if [ -f "$DIR/.env" ]; then
-    grep "^TARGET_REPO_PATH=" "$DIR/.env" | cut -d'=' -f2-
-  fi
-}
-
 cmd_install_skills() {
   local global_flag=""
   local repos=()
@@ -362,18 +352,11 @@ cmd_install_skills() {
     repos=("${DEFAULT_SKILL_REPOS[@]}")
   fi
 
-  # Determine install directory
-  local target_dir=""
+  # Always install globally (workspaces are managed via dashboard)
   if [ -z "$global_flag" ]; then
-    local repo_path
-    repo_path=$(_get_target_repo_path)
-    if [ -n "$repo_path" ] && [ -d "$repo_path" ]; then
-      target_dir="$repo_path"
-    else
-      echo "WARNING: TARGET_REPO_PATH not set or not found. Installing globally."
-      global_flag="--global"
-    fi
+    global_flag="--global"
   fi
+  local target_dir=""
 
   echo "Installing skills from ${#repos[@]} repo(s)..."
   if [ -n "$global_flag" ]; then
@@ -464,42 +447,21 @@ cmd_uninstall_skills() {
     esac
   done
 
-  local target_dir=""
-  if [ -z "$global_flag" ]; then
-    target_dir=$(_get_target_repo_path)
-  fi
-
-  local cmd=(npx skills remove --agent claude-code -y)
-  if [ -n "$global_flag" ]; then
-    cmd+=("--global")
-  fi
+  local cmd=(npx skills remove --agent claude-code -y --global)
   if [ -n "$skill_filter" ]; then
     cmd+=("--skill" "$skill_filter")
   else
     cmd+=("--skill" "*")
   fi
 
-  if [ -n "$target_dir" ] && [ -z "$global_flag" ]; then
-    (cd "$target_dir" && "${cmd[@]}") || true
-  else
-    "${cmd[@]}" || true
-  fi
+  "${cmd[@]}" || true
 
   echo "Done."
 }
 
 cmd_list_skills() {
-  local target_dir
-  target_dir=$(_get_target_repo_path)
-
-  echo "Installed skills:"
+  echo "Installed skills (global: ~/.claude/skills/):"
   echo ""
-  if [ -n "$target_dir" ] && [ -d "$target_dir" ]; then
-    echo "--- Target repo: $target_dir ---"
-    (cd "$target_dir" && npx skills list 2>&1) || echo "  (none)"
-  fi
-  echo ""
-  echo "--- Global: ~/.claude/skills/ ---"
   npx skills list --global 2>&1 || echo "  (none)"
 }
 

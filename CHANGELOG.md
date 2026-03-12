@@ -6,6 +6,21 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 
+## [1.2.0] - 2026-03-12
+
+### Removed
+- **Legacy single-repo env vars**: `GITHUB_REPO`, `TARGET_REPO_PATH`, and `BASE_BRANCH` environment variables have been removed from `config.py`, `.env`, `.env.example`, `run.sh`, and `README.md` — all repository configuration is now managed exclusively through workspaces via the dashboard
+- **`WORKTREE_DIR` global config**: worktree directories are now derived from each workspace's `local_path` (e.g. `{local_path}-worktrees`)
+- **`ensure_default_workspace()` auto-migration**: the backward-compatibility function that created a default workspace from legacy env vars has been removed from `workspace_manager.py` and `main.py` — all workspaces must now be created via the dashboard
+
+### Changed
+- **`_workspace_config()` now requires a workspace dict** — the fallback to global `GITHUB_REPO`/`TARGET_REPO_PATH`/`WORKTREE_DIR` has been removed; all agent dispatch paths must provide a workspace
+- **`worktree.py` functions require explicit parameters** — `create_worktree()`, `create_worktree_for_pr()`, `ensure_repo_updated()`, and `cleanup_all_worktrees()` no longer fall back to global config values; `repo_path`, `worktree_dir`, and `base_branch` must be passed by callers
+- **Skills install globally by default** — `run.sh install-skills` no longer reads `TARGET_REPO_PATH` to determine a target repo; skills are installed to `~/.claude/skills/` by default
+- **`run.sh` setup flow simplified** — interactive setup now only prompts for `CLAUDE_CODE_OAUTH_TOKEN` and `GH_TOKEN`
+
+---
+
 ## [1.1.4] - 2026-03-07
 
 ### Fixed

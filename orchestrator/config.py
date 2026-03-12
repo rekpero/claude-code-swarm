@@ -1,7 +1,6 @@
 import os
 import shutil
 import subprocess
-import sys
 from pathlib import Path
 
 from dotenv import load_dotenv
@@ -11,13 +10,6 @@ load_dotenv()
 # === Authentication ===
 CLAUDE_CODE_OAUTH_TOKEN = os.environ.get("CLAUDE_CODE_OAUTH_TOKEN", "")
 GH_TOKEN = os.environ.get("GH_TOKEN", "")
-
-# === Repository ===
-GITHUB_REPO = os.environ.get("GITHUB_REPO", "owner/repo")
-BASE_BRANCH = os.environ.get("BASE_BRANCH", "main")
-
-# === Target Repo Path ===
-TARGET_REPO_PATH = Path(os.environ.get("TARGET_REPO_PATH", ".")).resolve()
 
 # === Issue Polling ===
 POLL_INTERVAL_SECONDS = int(os.environ.get("POLL_INTERVAL_SECONDS", "300"))
@@ -63,12 +55,6 @@ DASHBOARD_PORT = int(os.environ.get("DASHBOARD_PORT", "8420"))
 WORKSPACES_DIR = Path(os.environ.get("WORKSPACES_DIR", "/root/workspaces"))
 
 # === Paths ===
-WORKTREE_DIR = Path(
-    os.environ.get(
-        "WORKTREE_DIR",
-        str(TARGET_REPO_PATH.parent / f"{TARGET_REPO_PATH.name}-worktrees"),
-    )
-)
 DB_PATH = Path(
     os.environ.get(
         "DB_PATH",
@@ -88,9 +74,6 @@ def validate_environment() -> list[str]:
         errors.append("CLAUDE_CODE_OAUTH_TOKEN is not set")
     if not GH_TOKEN:
         errors.append("GH_TOKEN is not set")
-
-    # GITHUB_REPO and TARGET_REPO_PATH are optional in multi-workspace mode.
-    # Workspaces can be added via the dashboard instead.
 
     # Check claude CLI
     if not shutil.which("claude"):
@@ -124,10 +107,6 @@ def validate_environment() -> list[str]:
 def print_config():
     """Print current configuration (redacting secrets)."""
     print("=== Swarm Configuration ===")
-    print(f"  GITHUB_REPO:           {GITHUB_REPO}")
-    print(f"  BASE_BRANCH:           {BASE_BRANCH}")
-    print(f"  TARGET_REPO_PATH:      {TARGET_REPO_PATH}")
-    print(f"  WORKTREE_DIR:          {WORKTREE_DIR}")
     print(f"  DB_PATH:               {DB_PATH}")
     print(f"  POLL_INTERVAL:         {POLL_INTERVAL_SECONDS}s")
     print(f"  ISSUE_LABEL:           {ISSUE_LABEL}")

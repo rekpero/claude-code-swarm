@@ -78,9 +78,6 @@ All settings are in `.env` (or environment variables):
 |---|---|---|
 | `CLAUDE_CODE_OAUTH_TOKEN` | *(required)* | From `claude setup-token` (Max plan) |
 | `GH_TOKEN` | *(required)* | GitHub PAT for private repo access |
-| `GITHUB_REPO` | *(required)* | Target repo, e.g. `owner/repo` |
-| `TARGET_REPO_PATH` | *(required)* | Local clone path, e.g. `/home/user/my-project` |
-| `BASE_BRANCH` | `main` | Branch agents fork from |
 | `MAX_CONCURRENT_AGENTS` | `3` | Max parallel agents |
 | `AGENT_MAX_TURNS_IMPLEMENT` | `30` | Max Claude turns for new issues |
 | `AGENT_MAX_TURNS_FIX` | `20` | Max Claude turns for fixing review comments |

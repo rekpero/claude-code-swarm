@@ -19,12 +19,9 @@ from orchestrator.config import (
     GH_TOKEN,
     GIT_AUTHOR_EMAIL,
     GIT_AUTHOR_NAME,
-    GITHUB_REPO,
     MAX_CONCURRENT_AGENTS,
     MAX_RATE_LIMIT_RESUMES,
     SKILLS_ENABLED,
-    TARGET_REPO_PATH,
-    WORKTREE_DIR,
 )
 from orchestrator.prompts import (
     build_fix_review_prompt,
@@ -53,22 +50,15 @@ _RATE_LIMIT_PATTERNS = [
 logger = logging.getLogger(__name__)
 
 
-def _workspace_config(workspace: dict | None) -> tuple[str, str, str, str]:
-    """Extract (github_repo, local_path, worktree_dir, base_branch) from workspace dict or fallback to globals."""
-    if workspace:
-        local_path = workspace["local_path"]
-        worktree_dir = local_path + "-worktrees"
-        return (
-            workspace["github_repo"],
-            local_path,
-            worktree_dir,
-            workspace.get("base_branch", "main"),
-        )
+def _workspace_config(workspace: dict) -> tuple[str, str, str, str]:
+    """Extract (github_repo, local_path, worktree_dir, base_branch) from workspace dict."""
+    local_path = workspace["local_path"]
+    worktree_dir = local_path + "-worktrees"
     return (
-        GITHUB_REPO,
-        str(TARGET_REPO_PATH),
-        str(WORKTREE_DIR),
-        "main",
+        workspace["github_repo"],
+        local_path,
+        worktree_dir,
+        workspace.get("base_branch", "main"),
     )
 
 
@@ -384,7 +374,7 @@ class AgentPool:
             return
 
         # Resolve repo_path for worktree cleanup
-        repo_path = agent._workspace.get("local_path") if agent._workspace else str(TARGET_REPO_PATH)
+        repo_path = agent._workspace["local_path"] if agent._workspace else None
 
         while agent.is_running:
             if agent.is_timed_out:
@@ -446,8 +436,8 @@ class AgentPool:
         agent_id = agent.agent_id
         branch_name = f"fix/issue-{agent.issue_number}"
         workspace = agent._workspace
-        github_repo = workspace["github_repo"] if workspace else GITHUB_REPO
-        repo_path = workspace.get("local_path") if workspace else str(TARGET_REPO_PATH)
+        github_repo = workspace["github_repo"]
+        repo_path = workspace["local_path"]
 
         # 1. Try to detect PR number from agent events
         pr_num = extract_pr_number(agent.events)
@@ -501,7 +491,7 @@ class AgentPool:
 
     def _find_pr_for_branch(self, branch_name: str, github_repo: str | None = None) -> int | None:
         """Check GitHub for an existing PR from this branch."""
-        repo = github_repo or GITHUB_REPO
+        repo = github_repo
         try:
             result = subprocess.run(
                 ["gh", "pr", "list", "--repo", repo, "--head", branch_name, "--json", "number", "--limit", "1"],
@@ -555,7 +545,7 @@ class AgentPool:
 
     def _create_pr_for_branch(self, branch_name: str, issue_number: int, github_repo: str | None = None) -> int | None:
         """Create a PR for the given branch."""
-        repo = github_repo or GITHUB_REPO
+        repo = github_repo
         try:
             result = subprocess.run(
                 [
@@ -599,7 +589,7 @@ class AgentPool:
 
         # Resolve repo_path for worktree cleanup
         workspace = db.get_workspace(workspace_id) if workspace_id else None
-        repo_path = workspace["local_path"] if workspace else str(TARGET_REPO_PATH)
+        repo_path = workspace["local_path"] if workspace else None
 
         if resume_count > MAX_RATE_LIMIT_RESUMES:
             logger.warning(
@@ -622,8 +612,8 @@ class AgentPool:
 
         # Resolve workspace for prompt building
         workspace = db.get_workspace(workspace_id) if workspace_id else None
-        github_repo = workspace["github_repo"] if workspace else GITHUB_REPO
-        local_path = workspace["local_path"] if workspace else str(TARGET_REPO_PATH)
+        github_repo = workspace["github_repo"] if workspace else None
+        local_path = workspace["local_path"] if workspace else None
 
         # Build the appropriate resume prompt
         if agent_type == "implement":

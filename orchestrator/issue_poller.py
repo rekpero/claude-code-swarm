@@ -6,7 +6,7 @@ import os
 import subprocess
 
 from orchestrator import db
-from orchestrator.config import GH_TOKEN, GITHUB_REPO, ISSUE_LABEL, MAX_ISSUE_RETRIES, TRIGGER_MENTION
+from orchestrator.config import GH_TOKEN, ISSUE_LABEL, MAX_ISSUE_RETRIES, TRIGGER_MENTION
 
 logger = logging.getLogger(__name__)
 
@@ -24,7 +24,7 @@ def _run_gh(*args: str) -> subprocess.CompletedProcess:
 
 def _find_open_pr_for_issue(issue_number: int, github_repo: str | None = None) -> int | None:
     """Check GitHub for an existing open PR that references this issue."""
-    repo = github_repo or GITHUB_REPO
+    repo = github_repo
     branch_name = f"fix/issue-{issue_number}"
     try:
         result = _run_gh(
@@ -51,7 +51,7 @@ def _issue_has_trigger(issue_number: int, github_repo: str | None = None) -> boo
     if not TRIGGER_MENTION:
         return True  # Trigger disabled — all labeled issues are eligible
 
-    repo = github_repo or GITHUB_REPO
+    repo = github_repo
     try:
         result = _run_gh(
             "issue", "view", str(issue_number),
@@ -82,7 +82,7 @@ def poll_issues(github_repo: str | None = None, workspace_id: str | None = None)
     Returns a list of issue dicts ready for dispatch. Each dict includes a
     'workspace_id' key for tracking.
     """
-    repo = github_repo or GITHUB_REPO
+    repo = github_repo
     logger.info("Polling issues for repo %s with label '%s'", repo, ISSUE_LABEL)
 
     result = _run_gh(
