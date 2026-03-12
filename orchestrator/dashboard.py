@@ -267,8 +267,13 @@ async def start_planning(req: StartPlanningRequest):
     session_id = str(uuid.uuid4())
     db.create_planning_session(session_id, req.workspace_id)
 
-    result = planner.start_planning(session_id, req.workspace_id, req.message)
+    try:
+        result = planner.start_planning(session_id, req.workspace_id, req.message)
+    except Exception:
+        db.delete_planning_session(session_id)
+        raise
     if result == "workspace_not_found":
+        db.delete_planning_session(session_id)
         return JSONResponse(content={"error": "Workspace not found"}, status_code=404)
     if result == "already_generating":
         return JSONResponse(content={"error": "Generation already in progress"}, status_code=409)
