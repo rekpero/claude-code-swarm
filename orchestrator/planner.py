@@ -37,22 +37,26 @@ def is_generating(session_id: str) -> bool:
     return proc.poll() is None
 
 
-def start_planning(session_id: str, workspace_id: str, user_message: str) -> bool:
+def start_planning(session_id: str, workspace_id: str, user_message: str) -> str:
     """Add user message, build prompt, and launch background planning thread.
 
     If the session already has messages (refinement), the full conversation
     history is included in the prompt.
 
-    Returns True if planning was successfully started, False if a generation is
-    already in progress for this session.  The check and the claim are performed
-    atomically under _active_lock to eliminate the TOCTOU race between callers
-    that call is_generating() and start_planning() separately.
+    Returns a status string indicating the outcome:
+      - ``"ok"``                  — planning was successfully started.
+      - ``"already_generating"``  — a generation is already in progress.
+      - ``"workspace_not_found"`` — the workspace no longer exists.
+
+    The check and the claim are performed atomically under _active_lock to
+    eliminate the TOCTOU race between callers that call is_generating() and
+    start_planning() separately.
     """
     # Atomically check and claim the session slot before doing any work.
     with _active_lock:
         proc = _active.get(session_id)
         if session_id in _starting or (proc is not None and proc.poll() is None):
-            return False
+            return "already_generating"
         _starting.add(session_id)
 
     # Persist user message
@@ -64,7 +68,7 @@ def start_planning(session_id: str, workspace_id: str, user_message: str) -> boo
             _starting.discard(session_id)
         db.update_planning_session(session_id, status="error")
         logger.error("Planning session %s: workspace %s not found", session_id, workspace_id)
-        return False
+        return "workspace_not_found"
 
     # Build conversation history (all messages before the one we just added)
     all_messages = db.get_planning_messages(session_id)
@@ -82,7 +86,7 @@ def start_planning(session_id: str, workspace_id: str, user_message: str) -> boo
         name=f"planner-{session_id[:8]}",
     )
     thread.start()
-    return True
+    return "ok"
 
 
 def _run_planning_agent(session_id: str, workspace: dict, prompt: str):

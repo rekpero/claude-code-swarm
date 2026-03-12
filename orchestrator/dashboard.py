@@ -267,8 +267,11 @@ async def start_planning(req: StartPlanningRequest):
     session_id = str(uuid.uuid4())
     db.create_planning_session(session_id, req.workspace_id)
 
-    if not planner.start_planning(session_id, req.workspace_id, req.message):
+    result = planner.start_planning(session_id, req.workspace_id, req.message)
+    if result == "workspace_not_found":
         return JSONResponse(content={"error": "Workspace not found"}, status_code=404)
+    if result == "already_generating":
+        return JSONResponse(content={"error": "Generation already in progress"}, status_code=409)
 
     session = db.get_planning_session(session_id)
     messages = db.get_planning_messages(session_id)
@@ -296,8 +299,11 @@ async def refine_plan(session_id: str, req: RefinePlanRequest):
 
     # start_planning atomically checks and claims the session slot, eliminating
     # the TOCTOU race between is_generating() and start_planning().
-    if not planner.start_planning(session_id, session["workspace_id"], req.message):
+    result = planner.start_planning(session_id, session["workspace_id"], req.message)
+    if result == "already_generating":
         return JSONResponse(content={"error": "Generation already in progress"}, status_code=409)
+    if result == "workspace_not_found":
+        return JSONResponse(content={"error": "Workspace not found"}, status_code=404)
 
     session = db.get_planning_session(session_id)
     messages = db.get_planning_messages(session_id)
