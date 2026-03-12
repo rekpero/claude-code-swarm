@@ -1704,20 +1704,30 @@ function renderMarkdown(text) {
     .replace(/</g, '&lt;')
     .replace(/>/g, '&gt;');
 
-  // Code blocks (``` ... ```)
+  // Use placeholders to protect code spans from bold/italic processing
+  const protected_ = [];
+  const protect = (content) => {
+    const token = `\x00MDCODE${protected_.length}\x00`;
+    protected_.push(content);
+    return token;
+  };
+
+  // Code blocks (``` ... ```) — protect before bold/italic
   html = html.replace(/```(\w*)\n([\s\S]*?)```/g, (_, lang, code) =>
-    `<pre><code>${code.trimEnd()}</code></pre>`
+    protect(`<pre><code>${code.trimEnd()}</code></pre>`)
   );
 
-  // Inline code
-  html = html.replace(/`([^`\n]+)`/g, '<code>$1</code>');
+  // Inline code — protect before bold/italic
+  html = html.replace(/`([^`\n]+)`/g, (_, code) =>
+    protect(`<code>${code}</code>`)
+  );
 
   // Headers (must come before bold/italic to avoid conflicts)
   html = html.replace(/^### (.+)$/gm, '<h3>$1</h3>');
   html = html.replace(/^## (.+)$/gm, '<h2>$1</h2>');
   html = html.replace(/^# (.+)$/gm, '<h1>$1</h1>');
 
-  // Bold and italic
+  // Bold and italic (safe — code spans are now placeholders)
   html = html.replace(/\*\*\*(.+?)\*\*\*/g, '<strong><em>$1</em></strong>');
   html = html.replace(/\*\*(.+?)\*\*/g, '<strong>$1</strong>');
   html = html.replace(/\*(.+?)\*/g, '<em>$1</em>');
@@ -1744,11 +1754,16 @@ function renderMarkdown(text) {
     return `<ol>${items}</ol>`;
   });
 
-  // Paragraphs — wrap lines not already in block elements
-  html = html.replace(/^(?!<[houlp]|<pre|<table|<li|<\/)(.*\S.*)$/gm, '<p>$1</p>');
+  // Paragraphs — wrap lines not already in block elements or placeholders
+  html = html.replace(/^(?!<[houlp]|<pre|<table|<li|<\/|\x00)(.*\S.*)$/gm, '<p>$1</p>');
 
   // Line breaks within paragraphs
   html = html.replace(/\n/g, '<br>');
+
+  // Restore protected code spans
+  protected_.forEach((content, i) => {
+    html = html.replace(`\x00MDCODE${i}\x00`, content);
+  });
 
   return html;
 }
