@@ -175,6 +175,12 @@ def _run_planning_agent(session_id: str, workspace: dict, prompt: str):
         stderr_thread.join()
     except Exception as e:
         logger.error("Planning agent stream error for session %s: %s", session_id, e)
+        try:
+            process.terminate()
+            process.wait(timeout=5)
+        except subprocess.TimeoutExpired:
+            process.kill()
+            process.wait()
         stderr_thread.join()
     finally:
         with _active_lock:
