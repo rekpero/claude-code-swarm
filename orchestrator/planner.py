@@ -125,9 +125,25 @@ def _run_planning_agent(session_id: str, workspace: dict, prompt: str):
 
     # Replace the _starting sentinel with the actual process atomically so that
     # is_generating() always sees a consistent state.
+    # If cancel_planning() was called while we were spawning, session_id will
+    # no longer be in _starting — detect that and abort rather than registering
+    # a process the caller believes was already cancelled.
     with _active_lock:
+        cancelled = session_id not in _starting
         _starting.discard(session_id)
-        _active[session_id] = process
+        if not cancelled:
+            _active[session_id] = process
+
+    if cancelled:
+        logger.info("Planning session %s was cancelled during spawn; terminating process", session_id)
+        try:
+            process.terminate()
+            process.wait(timeout=5)
+        except subprocess.TimeoutExpired:
+            process.kill()
+            process.wait()
+        db.update_planning_session(session_id, status="active")
+        return
 
     plan_text: str | None = None
 
@@ -279,6 +295,7 @@ def cancel_planning(session_id: str):
     """Terminate the active planning subprocess for this session, if any."""
     with _active_lock:
         proc = _active.pop(session_id, None)
+        _starting.discard(session_id)  # also cancel sessions still starting
 
     if proc and proc.poll() is None:
         try:
