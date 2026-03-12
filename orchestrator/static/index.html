@@ -730,7 +730,7 @@ function selectWorkspace(id) {
     nameEl.textContent = ws.name;
     indEl.className = 'ws-status ws-status-' + ws.status;
     settingsBtn.style.display = '';
-    if (planBtn) planBtn.style.display = '';
+    if (planBtn) planBtn.style.display = 'inline-block';
   } else {
     nameEl.textContent = 'All Workspaces';
     indEl.className = 'ws-status ws-status-active';
@@ -1092,6 +1092,8 @@ async function updateWorkspaces() {
       document.getElementById('ws-current-name').textContent = ws.name;
       document.getElementById('ws-indicator').className = 'ws-status ws-status-' + ws.status;
       document.getElementById('ws-settings-toggle').style.display = '';
+      const planBtn = document.getElementById('btn-plan-issue');
+      if (planBtn) planBtn.style.display = 'inline-block';
     } else {
       // Stored workspace no longer exists — reset to all
       currentWorkspaceId = null;
