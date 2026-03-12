@@ -59,7 +59,7 @@ def start_planning(session_id: str, workspace_id: str, user_message: str) -> boo
             _starting.discard(session_id)
         db.update_planning_session(session_id, status="error")
         logger.error("Planning session %s: workspace %s not found", session_id, workspace_id)
-        return True
+        return False
 
     # Build conversation history (all messages before the one we just added)
     all_messages = db.get_planning_messages(session_id)
