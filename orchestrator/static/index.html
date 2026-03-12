@@ -389,13 +389,99 @@
     background: var(--surface);
     border: 1px solid var(--border);
     border-radius: 12px;
-    padding: 24px;
-    width: 860px;
+    width: 1060px;
     max-width: 96vw;
     max-height: 88vh;
     display: flex;
-    flex-direction: column;
+    flex-direction: row;
     gap: 0;
+    overflow: hidden;
+  }
+
+  .planner-sidebar {
+    width: 240px;
+    min-width: 240px;
+    border-right: 1px solid var(--border);
+    display: flex;
+    flex-direction: column;
+    background: rgba(0,0,0,0.15);
+  }
+  .planner-sidebar-header {
+    padding: 16px 14px 10px;
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    border-bottom: 1px solid var(--border);
+  }
+  .planner-sidebar-header span {
+    font-size: 11px;
+    text-transform: uppercase;
+    letter-spacing: 0.5px;
+    color: var(--text-dim);
+    font-weight: 600;
+  }
+  .planner-sidebar-list {
+    flex: 1;
+    overflow-y: auto;
+    padding: 6px 0;
+  }
+  .planner-session-item {
+    padding: 10px 14px;
+    cursor: pointer;
+    border-left: 3px solid transparent;
+    transition: background 0.1s;
+  }
+  .planner-session-item:hover { background: rgba(255,255,255,0.04); }
+  .planner-session-item.active {
+    background: rgba(108, 92, 231, 0.1);
+    border-left-color: var(--accent);
+  }
+  .planner-session-item .session-preview {
+    font-size: 12px;
+    color: var(--text);
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    margin-bottom: 3px;
+  }
+  .planner-session-item .session-meta {
+    font-size: 10px;
+    color: var(--text-dim);
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+  }
+  .planner-session-item .session-delete {
+    opacity: 0;
+    background: none;
+    border: none;
+    color: var(--red, #e74c3c);
+    cursor: pointer;
+    font-size: 13px;
+    padding: 0 2px;
+    line-height: 1;
+  }
+  .planner-session-item:hover .session-delete { opacity: 0.6; }
+  .planner-session-item .session-delete:hover { opacity: 1; }
+  .planner-session-status {
+    display: inline-block;
+    font-size: 9px;
+    padding: 1px 5px;
+    border-radius: 3px;
+    text-transform: uppercase;
+    font-weight: 600;
+  }
+  .planner-session-status.status-completed { background: rgba(0,184,148,0.15); color: var(--green); }
+  .planner-session-status.status-active { background: rgba(108,92,231,0.15); color: var(--accent); }
+  .planner-session-status.status-generating { background: rgba(253,203,110,0.15); color: var(--yellow); }
+  .planner-session-status.status-error { background: rgba(231,76,60,0.15); color: var(--red, #e74c3c); }
+
+  .planner-main {
+    flex: 1;
+    display: flex;
+    flex-direction: column;
+    padding: 24px;
+    min-width: 0;
   }
 
   .planner-header {
@@ -627,30 +713,39 @@
 <!-- Issue Planner Modal -->
 <div class="modal-overlay" id="modal-planner">
   <div class="planner-modal">
-    <div class="planner-header">
-      <h3>Plan Issue</h3>
-      <button class="btn" onclick="closePlanner()">Close</button>
-    </div>
-    <div class="planner-chat" id="planner-chat"></div>
-    <div id="planner-generating" style="display:none" class="planner-generating">
-      <span class="planner-spinner"></span>
-      Claude is analyzing the codebase and generating a plan&hellip;
-    </div>
-    <div class="planner-input-row">
-      <textarea id="planner-input" placeholder="Describe the feature or fix you want to implement…" onkeydown="plannerInputKeydown(event)"></textarea>
-      <div class="planner-input-buttons">
-        <button class="btn btn-primary" id="planner-send-btn" onclick="sendPlannerMessage()">Generate Plan</button>
-        <button class="btn" id="planner-cancel-btn" style="display:none" onclick="cancelPlanning()">Cancel</button>
+    <div class="planner-sidebar">
+      <div class="planner-sidebar-header">
+        <span>Sessions</span>
+        <button class="btn btn-sm" onclick="startNewPlannerSession()">+ New</button>
       </div>
+      <div class="planner-sidebar-list" id="planner-sidebar-list"></div>
     </div>
-    <div class="planner-create-area" id="planner-create-area" style="display:none">
-      <div style="flex:1">
-        <label>Issue Title</label>
-        <input type="text" id="planner-issue-title" placeholder="Brief title for the GitHub issue">
+    <div class="planner-main">
+      <div class="planner-header">
+        <h3>Plan Issue</h3>
+        <button class="btn" onclick="closePlanner()">Close</button>
       </div>
-      <button class="btn btn-primary" onclick="createIssueFromPlan()">Create GitHub Issue</button>
+      <div class="planner-chat" id="planner-chat"></div>
+      <div id="planner-generating" style="display:none" class="planner-generating">
+        <span class="planner-spinner"></span>
+        Claude is analyzing the codebase and generating a plan&hellip;
+      </div>
+      <div class="planner-input-row">
+        <textarea id="planner-input" placeholder="Describe the feature or fix you want to implement…" onkeydown="plannerInputKeydown(event)"></textarea>
+        <div class="planner-input-buttons">
+          <button class="btn btn-primary" id="planner-send-btn" onclick="sendPlannerMessage()">Generate Plan</button>
+          <button class="btn" id="planner-cancel-btn" style="display:none" onclick="cancelPlanning()">Cancel</button>
+        </div>
+      </div>
+      <div class="planner-create-area" id="planner-create-area" style="display:none">
+        <div style="flex:1">
+          <label>Issue Title</label>
+          <input type="text" id="planner-issue-title" placeholder="Brief title for the GitHub issue">
+        </div>
+        <button class="btn btn-primary" onclick="createIssueFromPlan()">Create GitHub Issue</button>
+      </div>
+      <div id="planner-issue-result" style="display:none"></div>
     </div>
-    <div id="planner-issue-result" style="display:none"></div>
   </div>
 </div>
 
@@ -1532,8 +1627,21 @@ setInterval(pollSlow, SLOW_POLL_MS);
 let plannerSessionId = null;
 let plannerPollTimer = null;
 let plannerHasPlan = false;
+let plannerSessions = [];
 
 function openIssuePlanner() {
+  document.getElementById('modal-planner').classList.add('open');
+  loadPlannerSessions().then(() => {
+    // If no active session, start fresh
+    if (!plannerSessionId) {
+      startNewPlannerSession();
+    }
+    document.getElementById('planner-input').focus();
+  });
+}
+
+function startNewPlannerSession() {
+  if (plannerPollTimer) { clearTimeout(plannerPollTimer); plannerPollTimer = null; }
   plannerSessionId = null;
   plannerHasPlan = false;
   document.getElementById('planner-chat').innerHTML = '';
@@ -1544,13 +1652,90 @@ function openIssuePlanner() {
   document.getElementById('planner-create-area').style.display = 'none';
   document.getElementById('planner-issue-result').style.display = 'none';
   document.getElementById('planner-issue-title').value = '';
-  document.getElementById('modal-planner').classList.add('open');
+  renderPlannerSidebar();
   document.getElementById('planner-input').focus();
+}
+
+async function loadPlannerSessions() {
+  if (!currentWorkspaceId) return;
+  const data = await fetchJSON(API + `/api/workspaces/${currentWorkspaceId}/planning-sessions`);
+  if (data) plannerSessions = data.sessions || [];
+  renderPlannerSidebar();
+}
+
+function renderPlannerSidebar() {
+  const list = document.getElementById('planner-sidebar-list');
+  if (!plannerSessions.length) {
+    list.innerHTML = '<div style="padding:14px;font-size:11px;color:var(--text-dim);text-align:center">No previous sessions</div>';
+    return;
+  }
+  list.innerHTML = plannerSessions.map(s => {
+    const isActive = s.id === plannerSessionId;
+    const preview = s.first_message || s.title || 'Untitled session';
+    const truncated = preview.length > 60 ? preview.slice(0, 57) + '…' : preview;
+    const timeStr = timeAgo(s.updated_at);
+    const statusClass = 'status-' + (s.status || 'active');
+    const statusLabel = s.status === 'completed' ? '✓' : (s.status || 'active');
+    return `<div class="planner-session-item ${isActive ? 'active' : ''}" onclick="resumePlannerSession('${s.id}')">
+      <div class="session-preview">${esc(truncated)}</div>
+      <div class="session-meta">
+        <span><span class="planner-session-status ${statusClass}">${esc(statusLabel)}</span> ${timeStr}</span>
+        <button class="session-delete" onclick="event.stopPropagation();deletePlannerSession('${s.id}')" title="Delete">×</button>
+      </div>
+    </div>`;
+  }).join('');
+}
+
+async function resumePlannerSession(sessionId) {
+  if (plannerPollTimer) { clearTimeout(plannerPollTimer); plannerPollTimer = null; }
+  plannerSessionId = sessionId;
+  plannerHasPlan = false;
+
+  const data = await fetchJSON(API + `/api/planning/${sessionId}`);
+  if (!data || data.error) {
+    alert('Failed to load session');
+    return;
+  }
+
+  renderPlannerMessages(data.messages || []);
+  renderPlannerSidebar();
+
+  // Restore issue result if completed
+  const resultEl = document.getElementById('planner-issue-result');
+  if (data.session?.status === 'completed' && data.session.issue_url) {
+    resultEl.style.display = 'block';
+    const link = `<a href="${esc(data.session.issue_url)}" target="_blank">${esc(data.session.issue_url)}</a>`;
+    resultEl.innerHTML = `<div class="planner-issue-link">✓ Issue created: ${link}</div>`;
+  } else {
+    resultEl.style.display = 'none';
+  }
+
+  // If still generating, resume polling
+  if (data.generating || data.session?.status === 'generating') {
+    setPlannerGenerating(true);
+    pollPlannerSession();
+  } else {
+    setPlannerGenerating(false);
+    document.getElementById('planner-send-btn').textContent = plannerHasPlan ? 'Refine Plan' : 'Generate Plan';
+  }
+
+  document.getElementById('planner-issue-title').value = data.session?.title || '';
+  document.getElementById('planner-input').focus();
+}
+
+async function deletePlannerSession(sessionId) {
+  if (!confirm('Delete this planning session?')) return;
+  await fetch(API + `/api/planning/${sessionId}`, {method: 'DELETE'});
+  if (plannerSessionId === sessionId) {
+    startNewPlannerSession();
+  }
+  await loadPlannerSessions();
 }
 
 function closePlanner() {
   if (plannerPollTimer) { clearTimeout(plannerPollTimer); plannerPollTimer = null; }
   document.getElementById('modal-planner').classList.remove('open');
+  // Session state is preserved — reopening will show the same session
 }
 
 function plannerInputKeydown(e) {
@@ -1581,6 +1766,7 @@ async function sendPlannerMessage() {
       data = await r.json();
       if (data.error) { setPlannerGenerating(false); alert('Error: ' + data.error); return; }
       plannerSessionId = data.session.id;
+      loadPlannerSessions();
     } else {
       // Refinement message
       const r = await fetch(API + `/api/planning/${plannerSessionId}/messages`, {
@@ -1691,8 +1877,9 @@ async function createIssueFromPlan() {
       : (data.issue_number != null ? `Issue #${esc(String(data.issue_number))}` : 'Issue created');
     resultEl.innerHTML = `<div class="planner-issue-link">✓ Issue created: ${link}</div>`;
 
-    // Refresh issue queue
+    // Refresh issue queue and sidebar
     updateIssues();
+    loadPlannerSessions();
   } catch(e) {
     alert('Failed to create issue: ' + e.message);
   }

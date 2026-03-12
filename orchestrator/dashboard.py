@@ -236,6 +236,27 @@ class CreateIssueRequest(BaseModel):
 
 # === Planning Endpoints ===
 
+@app.get("/api/workspaces/{workspace_id}/planning-sessions")
+async def list_planning_sessions(workspace_id: str):
+    """List all planning sessions for a workspace."""
+    workspace = db.get_workspace(workspace_id)
+    if not workspace:
+        return JSONResponse(content={"error": "Workspace not found"}, status_code=404)
+    sessions = db.list_planning_sessions(workspace_id)
+    return {"sessions": sessions}
+
+
+@app.delete("/api/planning/{session_id}")
+async def delete_planning_session(session_id: str):
+    """Delete a planning session and its messages."""
+    session = db.get_planning_session(session_id)
+    if not session:
+        return JSONResponse(content={"error": "Session not found"}, status_code=404)
+    planner.cancel_planning(session_id)
+    db.delete_planning_session(session_id)
+    return {"ok": True}
+
+
 @app.post("/api/planning")
 async def start_planning(req: StartPlanningRequest):
     """Create a planning session and start generating a plan."""

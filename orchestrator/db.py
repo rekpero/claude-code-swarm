@@ -680,6 +680,28 @@ def get_planning_messages(session_id: str) -> list[dict]:
     return [dict(r) for r in rows]
 
 
+def list_planning_sessions(workspace_id: str, limit: int = 50, offset: int = 0) -> list[dict]:
+    conn = _get_connection()
+    rows = conn.execute(
+        """SELECT ps.*, (SELECT content FROM planning_messages pm
+            WHERE pm.session_id = ps.id AND pm.role = 'user'
+            ORDER BY pm.id ASC LIMIT 1) AS first_message
+           FROM planning_sessions ps
+           WHERE ps.workspace_id = ?
+           ORDER BY ps.updated_at DESC
+           LIMIT ? OFFSET ?""",
+        (workspace_id, limit, offset),
+    ).fetchall()
+    return [dict(r) for r in rows]
+
+
+def delete_planning_session(session_id: str):
+    conn = _get_connection()
+    conn.execute("DELETE FROM planning_messages WHERE session_id = ?", (session_id,))
+    conn.execute("DELETE FROM planning_sessions WHERE id = ?", (session_id,))
+    conn.commit()
+
+
 # === Metrics ===
 
 
