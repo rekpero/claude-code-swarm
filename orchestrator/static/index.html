@@ -1762,7 +1762,7 @@ function renderMarkdown(text) {
 
   // Restore protected code spans
   protected_.forEach((content, i) => {
-    html = html.replace(`\x00MDCODE${i}\x00`, content);
+    html = html.replace(`\x00MDCODE${i}\x00`, () => content);
   });
 
   return html;
