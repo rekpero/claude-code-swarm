@@ -368,6 +368,189 @@
   .log-toggle .chevron.open { transform: rotate(90deg); }
   .pr-toggle { cursor: pointer; color: var(--accent); font-size: 11px; user-select: none; }
   .pr-toggle:hover { text-decoration: underline; }
+
+  /* Issue Planner */
+  .btn-planner {
+    display: none;
+    padding: 6px 14px;
+    background: var(--accent);
+    border: 1px solid var(--accent);
+    border-radius: 6px;
+    color: white;
+    cursor: pointer;
+    font-family: inherit;
+    font-size: 12px;
+    font-weight: 600;
+    transition: opacity 0.15s;
+  }
+  .btn-planner:hover { opacity: 0.85; }
+
+  .planner-modal {
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: 12px;
+    padding: 24px;
+    width: 860px;
+    max-width: 96vw;
+    max-height: 88vh;
+    display: flex;
+    flex-direction: column;
+    gap: 0;
+  }
+
+  .planner-header {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    margin-bottom: 16px;
+  }
+  .planner-header h3 { font-size: 16px; }
+
+  .planner-chat {
+    flex: 1;
+    overflow-y: auto;
+    min-height: 200px;
+    max-height: 420px;
+    padding: 8px 0;
+    display: flex;
+    flex-direction: column;
+    gap: 12px;
+    margin-bottom: 14px;
+  }
+
+  .planner-msg-user {
+    background: rgba(108, 92, 231, 0.12);
+    border: 1px solid rgba(108, 92, 231, 0.25);
+    border-radius: 8px;
+    padding: 10px 14px;
+    font-size: 13px;
+    align-self: flex-end;
+    max-width: 90%;
+  }
+
+  .planner-msg-assistant {
+    background: var(--bg);
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    padding: 12px 16px;
+    font-size: 13px;
+    line-height: 1.6;
+    max-width: 100%;
+  }
+  /* Markdown rendering within assistant messages */
+  .planner-msg-assistant h1,
+  .planner-msg-assistant h2,
+  .planner-msg-assistant h3 {
+    margin: 12px 0 6px;
+    font-size: 14px;
+    color: var(--text);
+  }
+  .planner-msg-assistant h1 { font-size: 15px; }
+  .planner-msg-assistant p { margin: 6px 0; color: var(--text-dim); }
+  .planner-msg-assistant ul,
+  .planner-msg-assistant ol { margin: 6px 0 6px 20px; color: var(--text-dim); }
+  .planner-msg-assistant li { margin: 2px 0; }
+  .planner-msg-assistant pre {
+    background: rgba(0,0,0,0.3);
+    border: 1px solid var(--border);
+    border-radius: 4px;
+    padding: 8px 10px;
+    overflow-x: auto;
+    margin: 8px 0;
+    font-size: 12px;
+  }
+  .planner-msg-assistant code {
+    background: rgba(0,0,0,0.25);
+    border-radius: 3px;
+    padding: 1px 5px;
+    font-size: 12px;
+    font-family: inherit;
+  }
+  .planner-msg-assistant pre code { background: none; padding: 0; }
+  .planner-msg-assistant strong { color: var(--text); font-weight: 600; }
+  .planner-msg-assistant em { font-style: italic; color: var(--text-dim); }
+  .planner-msg-assistant table { border-collapse: collapse; width: 100%; margin: 8px 0; font-size: 12px; }
+  .planner-msg-assistant th,
+  .planner-msg-assistant td { border: 1px solid var(--border); padding: 5px 10px; text-align: left; }
+  .planner-msg-assistant th { color: var(--text); font-weight: 600; background: rgba(255,255,255,0.03); }
+
+  .planner-generating {
+    font-style: italic;
+    color: var(--accent);
+    font-size: 12px;
+    padding: 8px 0;
+    display: flex;
+    align-items: center;
+    gap: 8px;
+  }
+  .planner-spinner {
+    width: 12px;
+    height: 12px;
+    border: 2px solid var(--accent);
+    border-top-color: transparent;
+    border-radius: 50%;
+    display: inline-block;
+    animation: spin 0.8s linear infinite;
+  }
+  @keyframes spin { to { transform: rotate(360deg); } }
+
+  .planner-input-row {
+    display: flex;
+    gap: 8px;
+    margin-bottom: 12px;
+  }
+  .planner-input-row textarea {
+    flex: 1;
+    padding: 8px 10px;
+    background: var(--bg);
+    border: 1px solid var(--border);
+    border-radius: 6px;
+    color: var(--text);
+    font-family: inherit;
+    font-size: 13px;
+    resize: vertical;
+    min-height: 60px;
+    max-height: 140px;
+  }
+  .planner-input-row textarea:focus { outline: none; border-color: var(--accent); }
+  .planner-input-buttons { display: flex; flex-direction: column; gap: 6px; }
+
+  .planner-create-area {
+    border-top: 1px solid var(--border);
+    padding-top: 14px;
+    display: flex;
+    gap: 8px;
+    align-items: flex-end;
+  }
+  .planner-create-area input {
+    flex: 1;
+    padding: 8px 10px;
+    background: var(--bg);
+    border: 1px solid var(--border);
+    border-radius: 6px;
+    color: var(--text);
+    font-family: inherit;
+    font-size: 13px;
+  }
+  .planner-create-area input:focus { outline: none; border-color: var(--accent); }
+  .planner-create-area label {
+    font-size: 11px;
+    color: var(--text-dim);
+    text-transform: uppercase;
+    letter-spacing: 0.5px;
+    display: block;
+    margin-bottom: 4px;
+  }
+  .planner-issue-link {
+    margin-top: 10px;
+    padding: 8px 12px;
+    background: rgba(0, 184, 148, 0.1);
+    border: 1px solid var(--green);
+    border-radius: 6px;
+    font-size: 13px;
+    color: var(--green);
+  }
+  .planner-issue-link a { color: var(--green); text-decoration: underline; }
 </style>
 </head>
 <body>
@@ -384,6 +567,7 @@
       <div class="ws-dropdown" id="ws-dropdown"></div>
     </div>
     <button class="ws-settings-btn" id="ws-settings-toggle" onclick="openWorkspaceSettings()" title="Workspace Settings" style="display:none">&#9881;</button>
+    <button class="btn-planner" id="btn-plan-issue" onclick="openIssuePlanner()">+ Plan Issue</button>
   </div>
   <div class="header-meta">
     <span id="agent-count">&mdash;</span> |
@@ -437,6 +621,36 @@
       <button class="btn" onclick="closeModal('modal-add-ws')">Cancel</button>
       <button class="btn btn-primary" onclick="addWorkspace()">Add & Clone</button>
     </div>
+  </div>
+</div>
+
+<!-- Issue Planner Modal -->
+<div class="modal-overlay" id="modal-planner">
+  <div class="planner-modal">
+    <div class="planner-header">
+      <h3>Plan Issue</h3>
+      <button class="btn" onclick="closePlanner()">Close</button>
+    </div>
+    <div class="planner-chat" id="planner-chat"></div>
+    <div id="planner-generating" style="display:none" class="planner-generating">
+      <span class="planner-spinner"></span>
+      Claude is analyzing the codebase and generating a plan&hellip;
+    </div>
+    <div class="planner-input-row">
+      <textarea id="planner-input" placeholder="Describe the feature or fix you want to implement…" onkeydown="plannerInputKeydown(event)"></textarea>
+      <div class="planner-input-buttons">
+        <button class="btn btn-primary" id="planner-send-btn" onclick="sendPlannerMessage()">Generate Plan</button>
+        <button class="btn" id="planner-cancel-btn" style="display:none" onclick="cancelPlanning()">Cancel</button>
+      </div>
+    </div>
+    <div class="planner-create-area" id="planner-create-area" style="display:none">
+      <div style="flex:1">
+        <label>Issue Title</label>
+        <input type="text" id="planner-issue-title" placeholder="Brief title for the GitHub issue">
+      </div>
+      <button class="btn btn-primary" onclick="createIssueFromPlan()">Create GitHub Issue</button>
+    </div>
+    <div id="planner-issue-result" style="display:none"></div>
   </div>
 </div>
 
@@ -511,14 +725,17 @@ function selectWorkspace(id) {
   const indEl = document.getElementById('ws-indicator');
   const settingsBtn = document.getElementById('ws-settings-toggle');
 
+  const planBtn = document.getElementById('btn-plan-issue');
   if (ws) {
     nameEl.textContent = ws.name;
     indEl.className = 'ws-status ws-status-' + ws.status;
     settingsBtn.style.display = '';
+    if (planBtn) planBtn.style.display = '';
   } else {
     nameEl.textContent = 'All Workspaces';
     indEl.className = 'ws-status ws-status-active';
     settingsBtn.style.display = 'none';
+    if (planBtn) planBtn.style.display = 'none';
   }
   allLoadedAgents = [];
   agentOffset = 0;
@@ -1307,6 +1524,234 @@ async function pollAll() {
 pollAll();
 setInterval(pollFast, POLL_MS);
 setInterval(pollSlow, SLOW_POLL_MS);
+
+// ===== Issue Planner =====
+
+let plannerSessionId = null;
+let plannerPollTimer = null;
+let plannerHasPlan = false;
+
+function openIssuePlanner() {
+  plannerSessionId = null;
+  plannerHasPlan = false;
+  document.getElementById('planner-chat').innerHTML = '';
+  document.getElementById('planner-input').value = '';
+  document.getElementById('planner-generating').style.display = 'none';
+  document.getElementById('planner-send-btn').textContent = 'Generate Plan';
+  document.getElementById('planner-cancel-btn').style.display = 'none';
+  document.getElementById('planner-create-area').style.display = 'none';
+  document.getElementById('planner-issue-result').style.display = 'none';
+  document.getElementById('planner-issue-title').value = '';
+  document.getElementById('modal-planner').classList.add('open');
+  document.getElementById('planner-input').focus();
+}
+
+function closePlanner() {
+  if (plannerPollTimer) { clearTimeout(plannerPollTimer); plannerPollTimer = null; }
+  document.getElementById('modal-planner').classList.remove('open');
+}
+
+function plannerInputKeydown(e) {
+  if (e.key === 'Enter' && (e.ctrlKey || e.metaKey)) {
+    e.preventDefault();
+    sendPlannerMessage();
+  }
+}
+
+async function sendPlannerMessage() {
+  const input = document.getElementById('planner-input');
+  const msg = input.value.trim();
+  if (!msg) return;
+  if (!currentWorkspaceId) { alert('Please select a workspace first.'); return; }
+
+  input.value = '';
+  setPlannerGenerating(true);
+
+  try {
+    let data;
+    if (!plannerSessionId) {
+      // First message — create session
+      const r = await fetch(API + '/api/planning', {
+        method: 'POST',
+        headers: {'Content-Type': 'application/json'},
+        body: JSON.stringify({workspace_id: currentWorkspaceId, message: msg}),
+      });
+      data = await r.json();
+      if (data.error) { setPlannerGenerating(false); alert('Error: ' + data.error); return; }
+      plannerSessionId = data.session.id;
+    } else {
+      // Refinement message
+      const r = await fetch(API + `/api/planning/${plannerSessionId}/messages`, {
+        method: 'POST',
+        headers: {'Content-Type': 'application/json'},
+        body: JSON.stringify({message: msg}),
+      });
+      data = await r.json();
+      if (data.error) { setPlannerGenerating(false); alert('Error: ' + data.error); return; }
+    }
+
+    renderPlannerMessages(data.messages || []);
+    pollPlannerSession();
+  } catch(e) {
+    setPlannerGenerating(false);
+    alert('Failed to send message: ' + e.message);
+  }
+}
+
+function setPlannerGenerating(generating) {
+  const sendBtn = document.getElementById('planner-send-btn');
+  const cancelBtn = document.getElementById('planner-cancel-btn');
+  const genEl = document.getElementById('planner-generating');
+  const input = document.getElementById('planner-input');
+
+  genEl.style.display = generating ? 'flex' : 'none';
+  sendBtn.disabled = generating;
+  input.disabled = generating;
+  cancelBtn.style.display = generating ? '' : 'none';
+}
+
+function pollPlannerSession() {
+  if (!plannerSessionId) return;
+  if (plannerPollTimer) clearTimeout(plannerPollTimer);
+
+  plannerPollTimer = setTimeout(async () => {
+    const data = await fetchJSON(API + `/api/planning/${plannerSessionId}`);
+    if (!data) { pollPlannerSession(); return; }
+
+    renderPlannerMessages(data.messages || []);
+
+    if (data.generating || data.session?.status === 'generating') {
+      pollPlannerSession();
+    } else {
+      setPlannerGenerating(false);
+      // Show send button label based on context
+      const sendBtn = document.getElementById('planner-send-btn');
+      sendBtn.textContent = plannerHasPlan ? 'Refine Plan' : 'Generate Plan';
+
+      if (data.session?.status === 'error') {
+        // Error already shown in messages if any
+      }
+    }
+  }, 2000);
+}
+
+function renderPlannerMessages(messages) {
+  const chat = document.getElementById('planner-chat');
+  chat.innerHTML = messages.map(m => {
+    if (m.role === 'user') {
+      return `<div class="planner-msg-user">${esc(m.content)}</div>`;
+    } else {
+      plannerHasPlan = true;
+      return `<div class="planner-msg-assistant">${renderMarkdown(m.content)}</div>`;
+    }
+  }).join('');
+
+  // Auto-scroll to bottom
+  chat.scrollTop = chat.scrollHeight;
+
+  // Show create issue area if there's at least one assistant message
+  const hasAssistant = messages.some(m => m.role === 'assistant');
+  document.getElementById('planner-create-area').style.display = hasAssistant ? 'flex' : 'none';
+
+  // Update send button label
+  const sendBtn = document.getElementById('planner-send-btn');
+  if (!sendBtn.disabled) {
+    sendBtn.textContent = plannerHasPlan ? 'Refine Plan' : 'Generate Plan';
+  }
+}
+
+async function cancelPlanning() {
+  if (!plannerSessionId) return;
+  if (plannerPollTimer) { clearTimeout(plannerPollTimer); plannerPollTimer = null; }
+  await fetch(API + `/api/planning/${plannerSessionId}/cancel`, {method: 'POST'});
+  setPlannerGenerating(false);
+  document.getElementById('planner-send-btn').textContent = plannerHasPlan ? 'Refine Plan' : 'Generate Plan';
+}
+
+async function createIssueFromPlan() {
+  const title = document.getElementById('planner-issue-title').value.trim();
+  if (!title) { alert('Please enter an issue title.'); return; }
+  if (!plannerSessionId) return;
+
+  try {
+    const r = await fetch(API + `/api/planning/${plannerSessionId}/create-issue`, {
+      method: 'POST',
+      headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({title}),
+    });
+    const data = await r.json();
+    if (data.error) { alert('Failed to create issue: ' + data.error); return; }
+
+    const resultEl = document.getElementById('planner-issue-result');
+    resultEl.style.display = 'block';
+    const link = data.issue_url
+      ? `<a href="${esc(data.issue_url)}" target="_blank">${esc(data.issue_url)}</a>`
+      : `Issue #${data.issue_number}`;
+    resultEl.innerHTML = `<div class="planner-issue-link">✓ Issue created: ${link}</div>`;
+
+    // Refresh issue queue
+    updateIssues();
+  } catch(e) {
+    alert('Failed to create issue: ' + e.message);
+  }
+}
+
+function renderMarkdown(text) {
+  if (!text) return '';
+  // Escape HTML first, then apply markdown patterns
+  let html = text
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;');
+
+  // Code blocks (``` ... ```)
+  html = html.replace(/```(\w*)\n([\s\S]*?)```/g, (_, lang, code) =>
+    `<pre><code>${code.trimEnd()}</code></pre>`
+  );
+
+  // Inline code
+  html = html.replace(/`([^`\n]+)`/g, '<code>$1</code>');
+
+  // Headers (must come before bold/italic to avoid conflicts)
+  html = html.replace(/^### (.+)$/gm, '<h3>$1</h3>');
+  html = html.replace(/^## (.+)$/gm, '<h2>$1</h2>');
+  html = html.replace(/^# (.+)$/gm, '<h1>$1</h1>');
+
+  // Bold and italic
+  html = html.replace(/\*\*\*(.+?)\*\*\*/g, '<strong><em>$1</em></strong>');
+  html = html.replace(/\*\*(.+?)\*\*/g, '<strong>$1</strong>');
+  html = html.replace(/\*(.+?)\*/g, '<em>$1</em>');
+
+  // Tables (simple: | col | col |)
+  html = html.replace(/(\|.+\|\n)(\|[-| :]+\|\n)((?:\|.+\|\n?)*)/g, (_, header, sep, rows) => {
+    const thCells = header.split('|').filter(c => c.trim()).map(c => `<th>${c.trim()}</th>`).join('');
+    const trRows = rows.trim().split('\n').filter(Boolean).map(row => {
+      const tds = row.split('|').filter(c => c.trim()).map(c => `<td>${c.trim()}</td>`).join('');
+      return `<tr>${tds}</tr>`;
+    }).join('');
+    return `<table><tr>${thCells}</tr>${trRows}</table>`;
+  });
+
+  // Unordered lists
+  html = html.replace(/((?:^[-*+] .+\n?)+)/gm, match => {
+    const items = match.trim().split('\n').map(l => `<li>${l.replace(/^[-*+] /, '')}</li>`).join('');
+    return `<ul>${items}</ul>`;
+  });
+
+  // Ordered lists
+  html = html.replace(/((?:^\d+\. .+\n?)+)/gm, match => {
+    const items = match.trim().split('\n').map(l => `<li>${l.replace(/^\d+\. /, '')}</li>`).join('');
+    return `<ol>${items}</ol>`;
+  });
+
+  // Paragraphs — wrap lines not already in block elements
+  html = html.replace(/^(?!<[houlp]|<pre|<table|<li|<\/)(.*\S.*)$/gm, '<p>$1</p>');
+
+  // Line breaks within paragraphs
+  html = html.replace(/\n/g, '<br>');
+
+  return html;
+}
 </script>
 </body>
 </html>

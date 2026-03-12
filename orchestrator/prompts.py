@@ -47,6 +47,57 @@ invoke it with the Skill tool. You can also use relevant skills proactively when
 matches their domain."""
 
 
+def build_planning_prompt(user_description: str, conversation_history: list[dict] | None = None) -> str:
+    """Build a prompt for the planning agent to analyze the codebase and produce an implementation plan.
+
+    Args:
+        user_description: The user's feature/fix description.
+        conversation_history: List of prior messages [{"role": "user"|"assistant", "content": str}]
+    """
+    history_block = ""
+    if conversation_history:
+        lines = []
+        for msg in conversation_history:
+            role = msg.get("role", "user")
+            content = msg.get("content", "")
+            lines.append(f"[{role.upper()}]: {content}")
+        history_block = "\n\nPrior conversation:\n" + "\n\n".join(lines) + "\n"
+
+    return f"""You are a senior software architect. Your job is to analyze this codebase and produce a detailed, actionable implementation plan for the following request:
+
+{user_description}{history_block}
+
+Step 1 — Explore the codebase thoroughly:
+- Read the main configuration files, entry points, and package manifests (e.g. package.json, pyproject.toml, requirements.txt)
+- Identify the relevant source files, modules, and patterns related to the request
+- Understand the project structure, conventions, and existing patterns
+
+Step 2 — Produce a markdown implementation plan with these sections:
+## Summary
+Brief description of what will be implemented.
+
+## Files to Modify
+Table of existing files that need changes, with the type of change (Add, Edit, Remove).
+
+## Files to Create
+List of new files to be created, if any.
+
+## Implementation Steps
+Numbered list of concrete implementation steps. Be specific: mention exact function names, method signatures, data structures, and patterns to follow.
+
+## Testing
+How to verify the implementation works.
+
+## Edge Cases
+Important edge cases or pitfalls to watch out for.
+
+Important:
+- Be specific and actionable. The plan should be detailed enough for another developer (or AI agent) to follow without ambiguity.
+- Reference actual file paths and existing code patterns from the codebase.
+- The output will be used as a GitHub issue body, so format it clearly in markdown.
+- Only use Read, Glob, and Grep tools to explore — do not modify any files."""
+
+
 def build_implement_prompt(issue_number: int, github_repo: str | None = None, target_repo_path: Path | str | None = None) -> str:
     repo = github_repo
     owner, repo_name = repo.split("/", 1)
