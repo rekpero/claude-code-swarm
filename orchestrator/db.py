@@ -646,9 +646,15 @@ def get_planning_session(session_id: str) -> dict | None:
     return dict(row) if row else None
 
 
+_PLANNING_SESSION_ALLOWED_COLS = {"status", "title", "issue_number", "issue_url", "updated_at"}
+
+
 def update_planning_session(session_id: str, **kwargs):
     conn = _get_connection()
     kwargs["updated_at"] = _now()
+    invalid = set(kwargs) - _PLANNING_SESSION_ALLOWED_COLS
+    if invalid:
+        raise ValueError(f"Invalid column(s) for update_planning_session: {invalid}")
     sets = ", ".join(f"{k} = ?" for k in kwargs)
     vals = list(kwargs.values()) + [session_id]
     conn.execute(f"UPDATE planning_sessions SET {sets} WHERE id = ?", vals)

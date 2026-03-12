@@ -15,32 +15,51 @@ logger = logging.getLogger(__name__)
 
 # Tracks active planning subprocesses: session_id -> subprocess.Popen
 _active: dict[str, subprocess.Popen] = {}
+# Sessions that have been claimed for a new start but whose subprocess has not
+# yet been registered in _active.  Both sets are protected by _active_lock.
+_starting: set[str] = set()
 _active_lock = threading.Lock()
 
 
 def is_generating(session_id: str) -> bool:
     """Return True if a planning subprocess is currently running for this session."""
     with _active_lock:
+        if session_id in _starting:
+            return True
         proc = _active.get(session_id)
     if proc is None:
         return False
     return proc.poll() is None
 
 
-def start_planning(session_id: str, workspace_id: str, user_message: str):
+def start_planning(session_id: str, workspace_id: str, user_message: str) -> bool:
     """Add user message, build prompt, and launch background planning thread.
 
     If the session already has messages (refinement), the full conversation
     history is included in the prompt.
+
+    Returns True if planning was successfully started, False if a generation is
+    already in progress for this session.  The check and the claim are performed
+    atomically under _active_lock to eliminate the TOCTOU race between callers
+    that call is_generating() and start_planning() separately.
     """
+    # Atomically check and claim the session slot before doing any work.
+    with _active_lock:
+        proc = _active.get(session_id)
+        if session_id in _starting or (proc is not None and proc.poll() is None):
+            return False
+        _starting.add(session_id)
+
     # Persist user message
     db.add_planning_message(session_id, "user", user_message)
 
     workspace = db.get_workspace(workspace_id)
     if not workspace:
+        with _active_lock:
+            _starting.discard(session_id)
         db.update_planning_session(session_id, status="error")
         logger.error("Planning session %s: workspace %s not found", session_id, workspace_id)
-        return
+        return True
 
     # Build conversation history (all messages before the one we just added)
     all_messages = db.get_planning_messages(session_id)
@@ -58,6 +77,7 @@ def start_planning(session_id: str, workspace_id: str, user_message: str):
         name=f"planner-{session_id[:8]}",
     )
     thread.start()
+    return True
 
 
 def _run_planning_agent(session_id: str, workspace: dict, prompt: str):
@@ -98,13 +118,30 @@ def _run_planning_agent(session_id: str, workspace: dict, prompt: str):
         )
     except Exception as e:
         logger.error("Failed to spawn planning agent for session %s: %s", session_id, e)
+        with _active_lock:
+            _starting.discard(session_id)
         db.update_planning_session(session_id, status="error")
         return
 
+    # Replace the _starting sentinel with the actual process atomically so that
+    # is_generating() always sees a consistent state.
     with _active_lock:
+        _starting.discard(session_id)
         _active[session_id] = process
 
     plan_text: str | None = None
+
+    # Drain stderr in a background thread to prevent pipe buffer deadlock.
+    # The subprocess emits significant output on stderr (due to --verbose), and
+    # leaving stderr unread while blocking on stdout causes a classic deadlock
+    # when the 64 KB OS pipe buffer fills up.
+    stderr_chunks: list[str] = []
+    stderr_thread = threading.Thread(
+        target=lambda: stderr_chunks.extend(process.stderr.readlines()),
+        daemon=True,
+        name=f"stderr-{session_id[:8]}",
+    )
+    stderr_thread.start()
 
     try:
         for line in process.stdout:
@@ -135,10 +172,13 @@ def _run_planning_agent(session_id: str, workspace: dict, prompt: str):
                     plan_text = "\n".join(text_parts)
 
         process.wait()
+        stderr_thread.join()
     except Exception as e:
         logger.error("Planning agent stream error for session %s: %s", session_id, e)
+        stderr_thread.join()
     finally:
         with _active_lock:
+            _starting.discard(session_id)
             _active.pop(session_id, None)
 
     return_code = process.returncode
@@ -147,7 +187,7 @@ def _run_planning_agent(session_id: str, workspace: dict, prompt: str):
         db.update_planning_session(session_id, status="active")
         logger.info("Planning agent completed for session %s", session_id)
     else:
-        stderr_output = process.stderr.read() if process.stderr else ""
+        stderr_output = "".join(stderr_chunks)
         error_detail = stderr_output[:300] if stderr_output else f"Exit code {return_code}"
         logger.error("Planning agent failed for session %s: %s", session_id, error_detail)
         # Store whatever partial plan we got, or an error message

@@ -272,10 +272,10 @@ async def refine_plan(session_id: str, req: RefinePlanRequest):
     if not session:
         return JSONResponse(content={"error": "Session not found"}, status_code=404)
 
-    if planner.is_generating(session_id):
+    # start_planning atomically checks and claims the session slot, eliminating
+    # the TOCTOU race between is_generating() and start_planning().
+    if not planner.start_planning(session_id, session["workspace_id"], req.message):
         return JSONResponse(content={"error": "Generation already in progress"}, status_code=409)
-
-    planner.start_planning(session_id, session["workspace_id"], req.message)
 
     session = db.get_planning_session(session_id)
     messages = db.get_planning_messages(session_id)
