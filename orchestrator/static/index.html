@@ -1688,7 +1688,7 @@ async function createIssueFromPlan() {
     resultEl.style.display = 'block';
     const link = data.issue_url
       ? `<a href="${esc(data.issue_url)}" target="_blank">${esc(data.issue_url)}</a>`
-      : `Issue #${data.issue_number}`;
+      : (data.issue_number != null ? `Issue #${esc(String(data.issue_number))}` : 'Issue created');
     resultEl.innerHTML = `<div class="planner-issue-link">✓ Issue created: ${link}</div>`;
 
     // Refresh issue queue

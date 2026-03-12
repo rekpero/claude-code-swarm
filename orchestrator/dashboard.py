@@ -246,7 +246,8 @@ async def start_planning(req: StartPlanningRequest):
     session_id = str(uuid.uuid4())
     db.create_planning_session(session_id, req.workspace_id)
 
-    planner.start_planning(session_id, req.workspace_id, req.message)
+    if not planner.start_planning(session_id, req.workspace_id, req.message):
+        return JSONResponse(content={"error": "Workspace not found"}, status_code=404)
 
     session = db.get_planning_session(session_id)
     messages = db.get_planning_messages(session_id)
