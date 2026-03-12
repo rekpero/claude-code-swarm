@@ -18,6 +18,11 @@ _active: dict[str, subprocess.Popen] = {}
 # Sessions that have been claimed for a new start but whose subprocess has not
 # yet been registered in _active.  Both sets are protected by _active_lock.
 _starting: set[str] = set()
+# Sessions that were externally cancelled via cancel_planning() while their
+# subprocess was already running.  _run_planning_agent checks this set after
+# the finally block and skips the post-run DB status update so that the
+# cancel_planning() write of status='active' is never overwritten.
+_cancelled: set[str] = set()
 _active_lock = threading.Lock()
 
 
@@ -203,6 +208,22 @@ def _run_planning_agent(session_id: str, workspace: dict, prompt: str):
             _starting.discard(session_id)
             _active.pop(session_id, None)
 
+    # If cancel_planning() terminated this subprocess externally, skip the
+    # post-run status update entirely.  cancel_planning() is responsible for
+    # writing status='active' and has already done so (or will do so); writing
+    # 'error' or a stale 'active' here would race with and potentially
+    # overwrite that update.
+    with _active_lock:
+        was_cancelled = session_id in _cancelled
+        _cancelled.discard(session_id)
+
+    if was_cancelled:
+        logger.info(
+            "Planning session %s was cancelled externally; skipping post-run status update",
+            session_id,
+        )
+        return
+
     return_code = process.returncode
     if return_code == 0 and plan_text:
         db.add_planning_message(session_id, "assistant", plan_text)
@@ -296,6 +317,11 @@ def cancel_planning(session_id: str):
     with _active_lock:
         proc = _active.pop(session_id, None)
         _starting.discard(session_id)  # also cancel sessions still starting
+        if proc is not None:
+            # Mark the session as externally cancelled so that
+            # _run_planning_agent skips its post-finally DB status update and
+            # doesn't overwrite the status='active' we set below.
+            _cancelled.add(session_id)
 
     if proc and proc.poll() is None:
         try:
