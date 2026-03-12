@@ -59,33 +59,43 @@ def start_planning(session_id: str, workspace_id: str, user_message: str) -> str
             return "already_generating"
         _starting.add(session_id)
 
-    # Persist user message
-    db.add_planning_message(session_id, "user", user_message)
+    try:
+        # Persist user message
+        db.add_planning_message(session_id, "user", user_message)
 
-    workspace = db.get_workspace(workspace_id)
-    if not workspace:
+        workspace = db.get_workspace(workspace_id)
+        if not workspace:
+            with _active_lock:
+                _starting.discard(session_id)
+            db.update_planning_session(session_id, status="error")
+            logger.error("Planning session %s: workspace %s not found", session_id, workspace_id)
+            return "workspace_not_found"
+
+        # Build conversation history (all messages before the one we just added)
+        all_messages = db.get_planning_messages(session_id)
+        # The last message is the one we just added; history = everything before it
+        history = [{"role": m["role"], "content": m["content"]} for m in all_messages[:-1]]
+
+        prompt = build_planning_prompt(user_message, conversation_history=history if history else None)
+
+        db.update_planning_session(session_id, status="generating")
+
+        thread = threading.Thread(
+            target=_run_planning_agent,
+            args=(session_id, workspace, prompt),
+            daemon=True,
+            name=f"planner-{session_id[:8]}",
+        )
+        thread.start()
+    except Exception:
         with _active_lock:
             _starting.discard(session_id)
-        db.update_planning_session(session_id, status="error")
-        logger.error("Planning session %s: workspace %s not found", session_id, workspace_id)
-        return "workspace_not_found"
-
-    # Build conversation history (all messages before the one we just added)
-    all_messages = db.get_planning_messages(session_id)
-    # The last message is the one we just added; history = everything before it
-    history = [{"role": m["role"], "content": m["content"]} for m in all_messages[:-1]]
-
-    prompt = build_planning_prompt(user_message, conversation_history=history if history else None)
-
-    db.update_planning_session(session_id, status="generating")
-
-    thread = threading.Thread(
-        target=_run_planning_agent,
-        args=(session_id, workspace, prompt),
-        daemon=True,
-        name=f"planner-{session_id[:8]}",
-    )
-    thread.start()
+        try:
+            db.update_planning_session(session_id, status="error")
+        except Exception:
+            pass
+        logger.exception("Failed to start planning for session %s", session_id)
+        raise
     return "ok"
 
 
