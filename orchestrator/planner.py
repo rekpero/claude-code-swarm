@@ -360,13 +360,16 @@ def _run_planning_agent_impl(session_id: str, workspace: dict, prompt: str):
                                 "name": tool_name,
                                 "input": tool_input,
                             }
-                # Emit intermediate reasoning text before tool-use events so the
-                # chat UI shows Claude's thinking inline (like Claude.ai / ChatGPT).
-                if text_parts and tool_use_summaries:
+                # Emit all text from Claude as thinking events so the chat UI
+                # shows Claude's reasoning inline (like Claude.ai / ChatGPT).
+                # Previously this only fired when tool use was also present, which
+                # hid reasoning-only messages (e.g. when Claude writes analysis
+                # text between tool calls, or narrates what it is about to do).
+                if text_parts:
                     reasoning = " ".join(t.strip() for t in text_parts if t.strip())
                     if reasoning:
-                        if len(reasoning) > 400:
-                            reasoning = reasoning[:397] + "..."
+                        if len(reasoning) > 600:
+                            reasoning = reasoning[:597] + "..."
                         try:
                             db.insert_planning_event(session_id, "thinking", reasoning)
                         except Exception:
