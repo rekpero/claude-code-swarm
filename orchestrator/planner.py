@@ -1,5 +1,6 @@
 """Planning agent — analyzes codebase and produces implementation plans."""
 
+import collections
 import json
 import logging
 import os
@@ -25,6 +26,11 @@ _starting: set[str] = set()
 # the finally block and skips the post-run DB status update so that the
 # cancel_planning() write of status='active' is never overwritten.
 _cancelled: set[str] = set()
+# Sessions whose subprocess is currently being terminated by cancel_planning().
+# The entry is present from the moment _active is popped until proc.terminate()
+# + proc.wait() completes.  create_issue_from_plan() blocks on this set so it
+# cannot proceed concurrently with an in-flight cancellation.
+_cancelling: set[str] = set()
 _active_lock = threading.Lock()
 
 # Per-session issue-creation guard.  Prevents duplicate GitHub issues when the
@@ -41,9 +47,9 @@ def is_generating(session_id: str) -> bool:
         if session_id in _starting:
             return True
         proc = _active.get(session_id)
-    if proc is None:
-        return False
-    return proc.poll() is None
+        if proc is None:
+            return False
+        return proc.poll() is None
 
 
 def start_planning(session_id: str, workspace_id: str, user_message: str) -> str:
@@ -254,9 +260,20 @@ def _run_planning_agent_impl(session_id: str, workspace: dict, prompt: str):
     # The subprocess emits significant output on stderr (due to --verbose), and
     # leaving stderr unread while blocking on stdout causes a classic deadlock
     # when the 64 KB OS pipe buffer fills up.
+    # Only the last _STDERR_TAIL_LINES lines are retained; the first 300 chars
+    # of that tail are used for error diagnostics.  This avoids loading
+    # potentially many megabytes of --verbose output into memory.
+    _STDERR_TAIL_LINES = 20
     stderr_chunks: list[str] = []
+
+    def _drain_stderr() -> None:
+        tail: collections.deque[str] = collections.deque(maxlen=_STDERR_TAIL_LINES)
+        for line in process.stderr:
+            tail.append(line)
+        stderr_chunks.extend(tail)
+
     stderr_thread = threading.Thread(
-        target=lambda: stderr_chunks.extend(process.stderr.readlines()),
+        target=_drain_stderr,
         daemon=True,
         name=f"stderr-{session_id[:8]}",
     )
@@ -610,7 +627,7 @@ def create_issue_from_plan(session_id: str, title: str = "") -> dict:
     # a partially-updated or still-in-progress plan.
     with _active_lock:
         proc = _active.get(session_id)
-        if session_id in _starting or (proc is not None and proc.poll() is None):
+        if session_id in _starting or session_id in _cancelling or (proc is not None and proc.poll() is None):
             raise RuntimeError("Plan generation is still in progress")
 
     # Acquire per-session issue-creation lock to prevent duplicate issues from
@@ -740,18 +757,25 @@ def cancel_planning(session_id: str):
         # and silently discard the successfully-generated plan.
         if in_starting or (proc is not None and proc.poll() is None):
             _cancelled.add(session_id)
+            # Signal that termination is in progress so create_issue_from_plan
+            # cannot proceed concurrently with this cancellation window.
+            _cancelling.add(session_id)
 
-    if proc and proc.poll() is None:
-        try:
-            proc.terminate()
-            proc.wait(timeout=5)
-        except subprocess.TimeoutExpired:
-            proc.kill()
+    try:
+        if proc and proc.poll() is None:
             try:
-                proc.wait(timeout=10)
+                proc.terminate()
+                proc.wait(timeout=5)
             except subprocess.TimeoutExpired:
-                logger.warning("Process for session %s did not exit after SIGKILL", session_id)
-        logger.info("Cancelled planning agent for session %s", session_id)
+                proc.kill()
+                try:
+                    proc.wait(timeout=10)
+                except subprocess.TimeoutExpired:
+                    logger.warning("Process for session %s did not exit after SIGKILL", session_id)
+            logger.info("Cancelled planning agent for session %s", session_id)
+    finally:
+        with _active_lock:
+            _cancelling.discard(session_id)
     # NOTE: do NOT write status here — the background thread (_run_planning_agent_impl)
     # detects cancellation via the _cancelled set and performs the status='active'
     # write itself, after all cleanup is done.  Writing here would race with the
