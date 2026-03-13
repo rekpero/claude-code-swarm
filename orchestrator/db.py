@@ -117,6 +117,15 @@ CREATE TABLE IF NOT EXISTS planning_messages (
     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
     FOREIGN KEY (session_id) REFERENCES planning_sessions(id)
 );
+
+CREATE TABLE IF NOT EXISTS planning_events (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    session_id TEXT NOT NULL,
+    event_type TEXT NOT NULL,
+    summary TEXT NOT NULL,
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    FOREIGN KEY (session_id) REFERENCES planning_sessions(id)
+);
 """
 
 
@@ -698,8 +707,31 @@ def list_planning_sessions(workspace_id: str, limit: int = 50, offset: int = 0) 
 def delete_planning_session(session_id: str):
     conn = _get_connection()
     conn.execute("DELETE FROM planning_messages WHERE session_id = ?", (session_id,))
+    conn.execute("DELETE FROM planning_events WHERE session_id = ?", (session_id,))
     conn.execute("DELETE FROM planning_sessions WHERE id = ?", (session_id,))
     conn.commit()
+
+
+def insert_planning_event(session_id: str, event_type: str, summary: str):
+    conn = _get_connection()
+    conn.execute(
+        """INSERT INTO planning_events (session_id, event_type, summary, created_at)
+           VALUES (?, ?, ?, ?)""",
+        (session_id, event_type, summary, _now()),
+    )
+    conn.commit()
+
+
+def get_planning_events(session_id: str, since_id: int = 0, limit: int = 200) -> list[dict]:
+    conn = _get_connection()
+    rows = conn.execute(
+        """SELECT * FROM planning_events
+           WHERE session_id = ? AND id > ?
+           ORDER BY id
+           LIMIT ?""",
+        (session_id, since_id, limit),
+    ).fetchall()
+    return [dict(r) for r in rows]
 
 
 # === Metrics ===

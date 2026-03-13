@@ -201,11 +201,30 @@ def _run_planning_agent(session_id: str, workspace: dict, prompt: str):
             elif msg_type == "assistant":
                 # Capture the last assistant text block as fallback
                 content_blocks = data.get("message", {}).get("content", [])
-                text_parts = [
-                    b.get("text", "")
-                    for b in content_blocks
-                    if isinstance(b, dict) and b.get("type") == "text"
-                ]
+                text_parts = []
+                for block in content_blocks:
+                    if not isinstance(block, dict):
+                        continue
+                    block_type = block.get("type")
+                    if block_type == "text":
+                        text_parts.append(block.get("text", ""))
+                    elif block_type == "tool_use":
+                        tool_name = block.get("name", "tool")
+                        tool_input = block.get("input", {})
+                        if tool_name == "Read":
+                            summary = f"Reading {tool_input.get('file_path', '?')}"
+                        elif tool_name == "Glob":
+                            summary = f"Searching for {tool_input.get('pattern', '?')}"
+                        elif tool_name == "Grep":
+                            pattern = tool_input.get('pattern', '?')
+                            path = tool_input.get('path', '')
+                            summary = f"Grepping for '{pattern}'" + (f" in {path}" if path else "")
+                        else:
+                            summary = f"Using {tool_name}"
+                        try:
+                            db.insert_planning_event(session_id, "tool_use", summary)
+                        except Exception:
+                            pass
                 if text_parts:
                     plan_text = "\n".join(text_parts)
 
@@ -261,9 +280,35 @@ def _run_planning_agent(session_id: str, workspace: dict, prompt: str):
             db.update_planning_session(session_id, status="error")
 
 
-def create_issue_from_plan(session_id: str, title: str) -> dict:
+def _generate_title_from_plan(plan_body: str) -> str:
+    """Auto-generate a concise issue title from the plan body."""
+    # Try to extract from ## Summary section (first non-empty line after heading)
+    summary_match = re.search(r"^## Summary\s*\n+(.+?)(?:\n\n|\n#)", plan_body, re.MULTILINE | re.DOTALL)
+    if summary_match:
+        first_line = summary_match.group(1).strip().split("\n")[0].strip()
+        first_line = re.sub(r"^\s*[-*]\s*", "", first_line)  # strip list marker
+        first_line = re.sub(r"\*+|`+", "", first_line)  # strip markdown emphasis
+        if first_line and len(first_line) <= 120:
+            return first_line[:100]
+
+    # Try first markdown heading
+    heading_match = re.search(r"^#{1,3}\s+(.+)$", plan_body, re.MULTILINE)
+    if heading_match:
+        return heading_match.group(1).strip()[:100]
+
+    # Fallback: first non-empty, non-heading line
+    for line in plan_body.split("\n"):
+        line = line.strip()
+        if line and not line.startswith("#"):
+            return re.sub(r"\*+|`+", "", line)[:100]
+
+    return "Implementation Plan"
+
+
+def create_issue_from_plan(session_id: str, title: str = "") -> dict:
     """Create a GitHub issue from the last assistant message in the session.
 
+    If *title* is empty, a title is auto-generated from the plan content.
     Returns a dict with issue_number and issue_url on success, or raises on error.
     """
     session = db.get_planning_session(session_id)
@@ -290,6 +335,11 @@ def create_issue_from_plan(session_id: str, title: str) -> dict:
     heading_match = re.search(r"^(#{1,3}\s)", plan_body, re.MULTILINE)
     if heading_match:
         plan_body = plan_body[heading_match.start():]
+
+    # Auto-generate title if not provided
+    if not title:
+        title = _generate_title_from_plan(plan_body)
+        logger.info("Auto-generated issue title for session %s: %s", session_id, title)
 
     github_repo = workspace["github_repo"]
 

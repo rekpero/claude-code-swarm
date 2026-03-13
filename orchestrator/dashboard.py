@@ -231,7 +231,7 @@ class RefinePlanRequest(BaseModel):
 
 
 class CreateIssueRequest(BaseModel):
-    title: str
+    title: str = ""
 
 
 # === Planning Endpoints ===
@@ -293,6 +293,16 @@ async def get_planning_session(session_id: str):
     messages = db.get_planning_messages(session_id)
     generating = planner.is_generating(session_id)
     return {"session": session, "messages": messages, "generating": generating}
+
+
+@app.get("/api/planning/{session_id}/events")
+async def get_planning_events(session_id: str, since: int = Query(0)):
+    """Get streaming progress events for a planning session."""
+    session = db.get_planning_session(session_id)
+    if not session:
+        return JSONResponse(content={"error": "Session not found"}, status_code=404)
+    events = db.get_planning_events(session_id, since_id=since)
+    return {"events": events}
 
 
 @app.post("/api/planning/{session_id}/messages")

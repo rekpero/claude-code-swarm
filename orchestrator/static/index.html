@@ -637,6 +637,27 @@
     color: var(--green);
   }
   .planner-issue-link a { color: var(--green); text-decoration: underline; }
+
+  /* Streaming progress events */
+  .planner-events {
+    margin-bottom: 8px;
+  }
+  .planner-event {
+    display: flex;
+    align-items: center;
+    gap: 7px;
+    padding: 4px 8px;
+    margin-bottom: 3px;
+    background: rgba(108, 92, 231, 0.06);
+    border-left: 2px solid var(--accent);
+    border-radius: 0 4px 4px 0;
+    font-size: 11px;
+    color: var(--text-dim);
+    animation: fadeIn 0.2s ease;
+  }
+  .planner-event .event-icon { font-size: 12px; flex-shrink: 0; }
+  .planner-event .event-text { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  @keyframes fadeIn { from { opacity: 0; transform: translateX(-4px); } to { opacity: 1; transform: translateX(0); } }
 </style>
 </head>
 <body>
@@ -726,6 +747,7 @@
         <button class="btn" onclick="closePlanner()">Close</button>
       </div>
       <div class="planner-chat" id="planner-chat"></div>
+      <div id="planner-events" class="planner-events" style="display:none"></div>
       <div id="planner-generating" style="display:none" class="planner-generating">
         <span class="planner-spinner"></span>
         Claude is analyzing the codebase and generating a plan&hellip;
@@ -739,8 +761,8 @@
       </div>
       <div class="planner-create-area" id="planner-create-area" style="display:none">
         <div style="flex:1">
-          <label>Issue Title</label>
-          <input type="text" id="planner-issue-title" placeholder="Brief title for the GitHub issue">
+          <label>Issue Title <span style="color:var(--text-dim);font-weight:normal;text-transform:none;letter-spacing:0">(optional — auto-generated if blank)</span></label>
+          <input type="text" id="planner-issue-title" placeholder="Leave blank to auto-generate from plan">
         </div>
         <button class="btn btn-primary" onclick="createIssueFromPlan()">Create GitHub Issue</button>
       </div>
@@ -1628,6 +1650,7 @@ let plannerSessionId = null;
 let plannerPollTimer = null;
 let plannerHasPlan = false;
 let plannerSessions = [];
+let plannerLastEventId = 0;
 
 function openIssuePlanner() {
   document.getElementById('modal-planner').classList.add('open');
@@ -1644,7 +1667,10 @@ function startNewPlannerSession() {
   if (plannerPollTimer) { clearTimeout(plannerPollTimer); plannerPollTimer = null; }
   plannerSessionId = null;
   plannerHasPlan = false;
+  plannerLastEventId = 0;
   document.getElementById('planner-chat').innerHTML = '';
+  document.getElementById('planner-events').innerHTML = '';
+  document.getElementById('planner-events').style.display = 'none';
   document.getElementById('planner-input').value = '';
   document.getElementById('planner-generating').style.display = 'none';
   document.getElementById('planner-send-btn').textContent = 'Generate Plan';
@@ -1690,6 +1716,9 @@ async function resumePlannerSession(sessionId) {
   if (plannerPollTimer) { clearTimeout(plannerPollTimer); plannerPollTimer = null; }
   plannerSessionId = sessionId;
   plannerHasPlan = false;
+  plannerLastEventId = 0;
+  document.getElementById('planner-events').innerHTML = '';
+  document.getElementById('planner-events').style.display = 'none';
 
   const data = await fetchJSON(API + `/api/planning/${sessionId}`);
   if (!data || data.error) {
@@ -1753,6 +1782,7 @@ async function sendPlannerMessage() {
 
   const savedMsg = msg;
   input.value = '';
+  clearPlannerEvents();
   setPlannerGenerating(true);
 
   try {
@@ -1800,19 +1830,58 @@ function setPlannerGenerating(generating) {
   cancelBtn.style.display = generating ? '' : 'none';
 }
 
+function plannerEventIcon(eventType) {
+  if (eventType === 'tool_use') return '🔍';
+  return '⚙️';
+}
+
+function renderPlannerEvents(events) {
+  if (!events || !events.length) return;
+  const container = document.getElementById('planner-events');
+  container.style.display = 'block';
+  events.forEach(ev => {
+    const div = document.createElement('div');
+    div.className = 'planner-event';
+    const icon = plannerEventIcon(ev.event_type);
+    div.innerHTML = `<span class="event-icon">${icon}</span><span class="event-text">${esc(ev.summary)}</span>`;
+    container.appendChild(div);
+    // Auto-scroll to latest event
+    div.scrollIntoView({block: 'nearest'});
+  });
+}
+
+function clearPlannerEvents() {
+  const container = document.getElementById('planner-events');
+  container.innerHTML = '';
+  container.style.display = 'none';
+  plannerLastEventId = 0;
+}
+
 function pollPlannerSession() {
   if (!plannerSessionId) return;
   if (plannerPollTimer) clearTimeout(plannerPollTimer);
 
   plannerPollTimer = setTimeout(async () => {
-    const data = await fetchJSON(API + `/api/planning/${plannerSessionId}`);
+    // Fetch session state and new events in parallel
+    const [data, evData] = await Promise.all([
+      fetchJSON(API + `/api/planning/${plannerSessionId}`),
+      fetchJSON(API + `/api/planning/${plannerSessionId}/events?since=${plannerLastEventId}`),
+    ]);
     if (!data) { pollPlannerSession(); return; }
+
+    // Append new streaming events
+    if (evData && evData.events && evData.events.length) {
+      renderPlannerEvents(evData.events);
+      plannerLastEventId = evData.events[evData.events.length - 1].id;
+    }
 
     renderPlannerMessages(data.messages || []);
 
     if (data.generating || data.session?.status === 'generating') {
       pollPlannerSession();
     } else {
+      // Hide streaming events once plan is ready
+      clearPlannerEvents();
       setPlannerGenerating(false);
       // Show send button label based on context
       const sendBtn = document.getElementById('planner-send-btn');
@@ -1854,13 +1923,13 @@ async function cancelPlanning() {
   if (!plannerSessionId) return;
   if (plannerPollTimer) { clearTimeout(plannerPollTimer); plannerPollTimer = null; }
   await fetch(API + `/api/planning/${plannerSessionId}/cancel`, {method: 'POST'});
+  clearPlannerEvents();
   setPlannerGenerating(false);
   document.getElementById('planner-send-btn').textContent = plannerHasPlan ? 'Refine Plan' : 'Generate Plan';
 }
 
 async function createIssueFromPlan() {
   const title = document.getElementById('planner-issue-title').value.trim();
-  if (!title) { alert('Please enter an issue title.'); return; }
   if (!plannerSessionId) return;
 
   try {
