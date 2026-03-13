@@ -73,6 +73,7 @@ def start_planning(session_id: str, workspace_id: str, user_message: str) -> str
         if not workspace:
             with _active_lock:
                 _starting.discard(session_id)
+                _cancelled.discard(session_id)
             db.update_planning_session(session_id, status="error")
             logger.error("Planning session %s: workspace %s not found", session_id, workspace_id)
             return "workspace_not_found"
@@ -98,6 +99,7 @@ def start_planning(session_id: str, workspace_id: str, user_message: str) -> str
     except Exception:
         with _active_lock:
             _starting.discard(session_id)
+            _cancelled.discard(session_id)
         try:
             db.update_planning_session(session_id, status="error")
         except Exception:
