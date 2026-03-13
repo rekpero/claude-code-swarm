@@ -638,19 +638,29 @@
   }
   .planner-issue-link a { color: var(--green); text-decoration: underline; }
 
-  /* Streaming progress events */
-  .planner-events {
-    margin-bottom: 8px;
+  /* Streaming progress events — rendered inline inside the chat */
+  .planner-msg-thinking {
+    background: rgba(108, 92, 231, 0.07);
+    border: 1px solid rgba(108, 92, 231, 0.2);
+    border-radius: 8px;
+    padding: 10px 14px;
+    font-size: 12px;
+    max-width: 100%;
   }
+  .planner-msg-thinking .thinking-header {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    color: var(--accent);
+    font-style: italic;
+    margin-bottom: 6px;
+  }
+  .planner-msg-thinking .thinking-events { }
   .planner-event {
     display: flex;
     align-items: center;
     gap: 7px;
-    padding: 4px 8px;
-    margin-bottom: 3px;
-    background: rgba(108, 92, 231, 0.06);
-    border-left: 2px solid var(--accent);
-    border-radius: 0 4px 4px 0;
+    padding: 3px 0;
     font-size: 11px;
     color: var(--text-dim);
     animation: fadeIn 0.2s ease;
@@ -747,7 +757,6 @@
         <button class="btn" onclick="closePlanner()">Close</button>
       </div>
       <div class="planner-chat" id="planner-chat"></div>
-      <div id="planner-events" class="planner-events" style="display:none"></div>
       <div id="planner-generating" style="display:none" class="planner-generating">
         <span class="planner-spinner"></span>
         Claude is analyzing the codebase and generating a plan&hellip;
@@ -1669,8 +1678,6 @@ function startNewPlannerSession() {
   plannerHasPlan = false;
   plannerLastEventId = 0;
   document.getElementById('planner-chat').innerHTML = '';
-  document.getElementById('planner-events').innerHTML = '';
-  document.getElementById('planner-events').style.display = 'none';
   document.getElementById('planner-input').value = '';
   document.getElementById('planner-generating').style.display = 'none';
   document.getElementById('planner-send-btn').textContent = 'Generate Plan';
@@ -1717,8 +1724,6 @@ async function resumePlannerSession(sessionId) {
   plannerSessionId = sessionId;
   plannerHasPlan = false;
   plannerLastEventId = 0;
-  document.getElementById('planner-events').innerHTML = '';
-  document.getElementById('planner-events').style.display = 'none';
 
   const data = await fetchJSON(API + `/api/planning/${sessionId}`);
   if (!data || data.error) {
@@ -1733,7 +1738,10 @@ async function resumePlannerSession(sessionId) {
   const resultEl = document.getElementById('planner-issue-result');
   if (data.session?.status === 'completed' && data.session.issue_url) {
     resultEl.style.display = 'block';
-    const link = `<a href="${esc(data.session.issue_url)}" target="_blank">${esc(data.session.issue_url)}</a>`;
+    const safeUrl = data.session.issue_url.startsWith('https://') ? data.session.issue_url : null;
+    const link = safeUrl
+      ? `<a href="${esc(safeUrl)}" target="_blank">${esc(safeUrl)}</a>`
+      : esc(data.session.issue_url);
     resultEl.innerHTML = `<div class="planner-issue-link">✓ Issue created: ${link}</div>`;
   } else {
     resultEl.style.display = 'none';
@@ -1837,23 +1845,30 @@ function plannerEventIcon(eventType) {
 
 function renderPlannerEvents(events) {
   if (!events || !events.length) return;
-  const container = document.getElementById('planner-events');
-  container.style.display = 'block';
+  const chat = document.getElementById('planner-chat');
+  // Lazily create the inline thinking section inside the chat
+  let thinking = document.getElementById('planner-thinking-section');
+  if (!thinking) {
+    thinking = document.createElement('div');
+    thinking.id = 'planner-thinking-section';
+    thinking.className = 'planner-msg-thinking';
+    thinking.innerHTML = '<div class="thinking-header"><span class="planner-spinner"></span>Analyzing codebase&hellip;</div><div id="planner-thinking-events"></div>';
+    chat.appendChild(thinking);
+  }
+  const list = document.getElementById('planner-thinking-events');
   events.forEach(ev => {
     const div = document.createElement('div');
     div.className = 'planner-event';
     const icon = plannerEventIcon(ev.event_type);
     div.innerHTML = `<span class="event-icon">${icon}</span><span class="event-text">${esc(ev.summary)}</span>`;
-    container.appendChild(div);
-    // Auto-scroll to latest event
-    div.scrollIntoView({block: 'nearest'});
+    list.appendChild(div);
   });
+  chat.scrollTop = chat.scrollHeight;
 }
 
 function clearPlannerEvents() {
-  const container = document.getElementById('planner-events');
-  container.innerHTML = '';
-  container.style.display = 'none';
+  const thinking = document.getElementById('planner-thinking-section');
+  if (thinking) thinking.remove();
   plannerLastEventId = 0;
 }
 
@@ -1896,6 +1911,8 @@ function pollPlannerSession() {
 
 function renderPlannerMessages(messages) {
   const chat = document.getElementById('planner-chat');
+  // Preserve the live thinking section before replacing innerHTML
+  const thinkingSection = document.getElementById('planner-thinking-section');
   chat.innerHTML = messages.map(m => {
     if (m.role === 'user') {
       return `<div class="planner-msg-user">${esc(m.content)}</div>`;
@@ -1904,6 +1921,10 @@ function renderPlannerMessages(messages) {
       return `<div class="planner-msg-assistant">${renderMarkdown(m.content)}</div>`;
     }
   }).join('');
+  // Re-attach thinking section at the end (innerHTML reset removed it)
+  if (thinkingSection) {
+    chat.appendChild(thinkingSection);
+  }
 
   // Auto-scroll to bottom
   chat.scrollTop = chat.scrollHeight;
@@ -1943,9 +1964,10 @@ async function createIssueFromPlan() {
 
     const resultEl = document.getElementById('planner-issue-result');
     resultEl.style.display = 'block';
-    const link = data.issue_url
-      ? `<a href="${esc(data.issue_url)}" target="_blank">${esc(data.issue_url)}</a>`
-      : (data.issue_number != null ? `Issue #${esc(String(data.issue_number))}` : 'Issue created');
+    const safeIssueUrl = data.issue_url && data.issue_url.startsWith('https://') ? data.issue_url : null;
+    const link = safeIssueUrl
+      ? `<a href="${esc(safeIssueUrl)}" target="_blank">${esc(safeIssueUrl)}</a>`
+      : (data.issue_url ? esc(data.issue_url) : (data.issue_number != null ? `Issue #${esc(String(data.issue_number))}` : 'Issue created'));
     resultEl.innerHTML = `<div class="planner-issue-link">✓ Issue created: ${link}</div>`;
 
     // Refresh issue queue and sidebar

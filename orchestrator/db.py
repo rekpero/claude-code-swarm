@@ -271,6 +271,7 @@ def delete_workspace(workspace_id: str):
     conn.execute("DELETE FROM agents WHERE workspace_id = ?", (workspace_id,))
     conn.execute("DELETE FROM issues WHERE workspace_id = ?", (workspace_id,))
     conn.execute("DELETE FROM planning_messages WHERE session_id IN (SELECT id FROM planning_sessions WHERE workspace_id = ?)", (workspace_id,))
+    conn.execute("DELETE FROM planning_events WHERE session_id IN (SELECT id FROM planning_sessions WHERE workspace_id = ?)", (workspace_id,))
     conn.execute("DELETE FROM planning_sessions WHERE workspace_id = ?", (workspace_id,))
     conn.execute("DELETE FROM workspaces WHERE id = ?", (workspace_id,))
     conn.commit()

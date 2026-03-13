@@ -281,7 +281,7 @@ def _run_planning_agent(session_id: str, workspace: dict, prompt: str):
 
 
 def _generate_title_from_plan(plan_body: str) -> str:
-    """Auto-generate a concise issue title from the plan body."""
+    """Auto-generate a concise issue title from the plan body (regex fallback)."""
     # Try to extract from ## Summary section (first non-empty line after heading)
     summary_match = re.search(r"^## Summary\s*\n+(.+?)(?:\n\n|\n#)", plan_body, re.MULTILINE | re.DOTALL)
     if summary_match:
@@ -303,6 +303,36 @@ def _generate_title_from_plan(plan_body: str) -> str:
             return re.sub(r"\*+|`+", "", line)[:100]
 
     return "Implementation Plan"
+
+
+def _generate_title_with_ai(plan_body: str) -> str:
+    """Use Claude to generate a concise GitHub issue title from the plan body.
+
+    Falls back to regex extraction if the AI call fails.
+    """
+    prompt = (
+        "Generate a concise GitHub issue title (under 80 characters) for the following "
+        "implementation plan. Output ONLY the plain title text — no quotes, no markdown, "
+        "no explanation.\n\n"
+        + plan_body[:3000]
+    )
+    try:
+        env = {**os.environ, "CLAUDE_CODE_OAUTH_TOKEN": CLAUDE_CODE_OAUTH_TOKEN}
+        result = subprocess.run(
+            ["claude", "-p", prompt, "--output-format", "text"],
+            capture_output=True,
+            text=True,
+            timeout=30,
+            env=env,
+        )
+        if result.returncode == 0:
+            title = result.stdout.strip().strip('"\'`')
+            if title and len(title) <= 120:
+                logger.info("AI generated title: %s", title)
+                return title[:100]
+    except Exception as e:
+        logger.warning("AI title generation failed, falling back to regex: %s", e)
+    return _generate_title_from_plan(plan_body)
 
 
 def create_issue_from_plan(session_id: str, title: str = "") -> dict:
@@ -336,9 +366,9 @@ def create_issue_from_plan(session_id: str, title: str = "") -> dict:
     if heading_match:
         plan_body = plan_body[heading_match.start():]
 
-    # Auto-generate title if not provided
+    # Auto-generate title if not provided — use AI for a natural, descriptive title
     if not title:
-        title = _generate_title_from_plan(plan_body)
+        title = _generate_title_with_ai(plan_body)
         logger.info("Auto-generated issue title for session %s: %s", session_id, title)
 
     github_repo = workspace["github_repo"]
@@ -393,11 +423,12 @@ def cancel_planning(session_id: str):
     with _active_lock:
         proc = _active.pop(session_id, None)
         _starting.discard(session_id)  # also cancel sessions still starting
-        if proc is not None:
-            # Mark the session as externally cancelled so that
-            # _run_planning_agent skips its post-finally DB status update and
-            # doesn't overwrite the status='active' we set below.
-            _cancelled.add(session_id)
+        # Always add to _cancelled so _run_planning_agent skips its own DB
+        # status update even when the process has already exited and been
+        # removed from _active (i.e. proc is None here).  Without this,
+        # the two concurrent writes race and the session can end up showing
+        # as completed when it should be cancelled.
+        _cancelled.add(session_id)
 
     if proc and proc.poll() is None:
         try:
