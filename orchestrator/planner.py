@@ -25,6 +25,13 @@ _starting: set[str] = set()
 _cancelled: set[str] = set()
 _active_lock = threading.Lock()
 
+# Per-session issue-creation guard.  Prevents duplicate GitHub issues when the
+# frontend (or any other caller) sends concurrent POST requests to create-issue
+# (e.g. a user double-clicking the "Create GitHub Issue" button).
+# _issue_creating is protected by _issue_creating_lock.
+_issue_creating: set[str] = set()
+_issue_creating_lock = threading.Lock()
+
 
 def is_generating(session_id: str) -> bool:
     """Return True if a planning subprocess is currently running for this session."""
@@ -501,87 +508,104 @@ def create_issue_from_plan(session_id: str, title: str = "") -> dict:
         if session_id in _starting or (proc is not None and proc.poll() is None):
             raise RuntimeError("Plan generation is still in progress")
 
-    session = db.get_planning_session(session_id)
-    if not session:
-        raise ValueError(f"Session {session_id} not found")
-
-    workspace = db.get_workspace(session["workspace_id"])
-    if not workspace:
-        raise ValueError(f"Workspace {session['workspace_id']} not found")
-
-    messages = db.get_planning_messages(session_id)
-    # Find the last assistant message as the plan body
-    plan_body = None
-    for msg in reversed(messages):
-        if msg["role"] == "assistant":
-            plan_body = msg["content"]
-            break
-
-    if not plan_body:
-        raise ValueError("No plan found in session — generate a plan first")
-
-    # Strip conversational preamble — find the first markdown heading and use
-    # everything from there onward as the actual issue body.
-    heading_match = re.search(r"^(#{1,3}\s)", plan_body, re.MULTILINE)
-    if heading_match:
-        plan_body = plan_body[heading_match.start():]
-
-    # Auto-generate title if not provided — use AI for a natural, descriptive title
-    if not title:
-        title = _generate_title_with_ai(plan_body)
-        logger.info("Auto-generated issue title for session %s: %s", session_id, title)
-
-    github_repo = workspace["github_repo"]
-
-    env = {**os.environ, "GH_TOKEN": GH_TOKEN}
-
-    cmd = [
-        "gh", "issue", "create",
-        "--repo", github_repo,
-        "--title", title,
-        "--body", plan_body,
-        "--label", ISSUE_LABEL,
-    ]
-
-    logger.info("Creating GitHub issue for session %s in repo %s", session_id, github_repo)
-
-    result = subprocess.run(
-        cmd,
-        capture_output=True,
-        text=True,
-        timeout=30,
-        env=env,
-    )
-
-    if result.returncode != 0:
-        raise RuntimeError(f"gh issue create failed: {result.stderr.strip()}")
-
-    output = result.stdout.strip()
-    logger.info("Issue created: %s", output)
-
-    # Parse issue number and URL from output (gh outputs the URL)
-    # e.g. "https://github.com/owner/repo/issues/42"
-    issue_url = output
-    issue_number = None
-    match = re.search(r"/issues/(\d+)", output)
-    if match:
-        issue_number = int(match.group(1))
+    # Acquire per-session issue-creation lock to prevent duplicate issues from
+    # concurrent requests (e.g. user double-clicking "Create GitHub Issue").
+    with _issue_creating_lock:
+        if session_id in _issue_creating:
+            raise RuntimeError("Issue creation already in progress for this session")
+        _issue_creating.add(session_id)
 
     try:
-        db.update_planning_session(
-            session_id,
-            status="completed",
-            issue_number=issue_number,
-            issue_url=issue_url,
-            title=title,
-        )
-    except Exception as db_err:
-        logger.warning(
-            "Failed to update planning session %s after issue creation: %s",
-            session_id, db_err,
+        session = db.get_planning_session(session_id)
+        if not session:
+            raise ValueError(f"Session {session_id} not found")
+
+        # Verify the issue hasn't already been created for this session to
+        # prevent duplicate issues from two requests that both passed the
+        # _active_lock check before either completed issue creation.
+        if session.get("status") == "completed":
+            raise RuntimeError("Issue already created for this session")
+
+        workspace = db.get_workspace(session["workspace_id"])
+        if not workspace:
+            raise ValueError(f"Workspace {session['workspace_id']} not found")
+
+        messages = db.get_planning_messages(session_id)
+        # Find the last assistant message as the plan body
+        plan_body = None
+        for msg in reversed(messages):
+            if msg["role"] == "assistant":
+                plan_body = msg["content"]
+                break
+
+        if not plan_body:
+            raise ValueError("No plan found in session — generate a plan first")
+
+        # Strip conversational preamble — find the first markdown heading and use
+        # everything from there onward as the actual issue body.
+        heading_match = re.search(r"^(#{1,3}\s)", plan_body, re.MULTILINE)
+        if heading_match:
+            plan_body = plan_body[heading_match.start():]
+
+        # Auto-generate title if not provided — use AI for a natural, descriptive title
+        if not title:
+            title = _generate_title_with_ai(plan_body)
+            logger.info("Auto-generated issue title for session %s: %s", session_id, title)
+
+        github_repo = workspace["github_repo"]
+
+        env = {**os.environ, "GH_TOKEN": GH_TOKEN}
+
+        cmd = [
+            "gh", "issue", "create",
+            "--repo", github_repo,
+            "--title", title,
+            "--body", plan_body,
+            "--label", ISSUE_LABEL,
+        ]
+
+        logger.info("Creating GitHub issue for session %s in repo %s", session_id, github_repo)
+
+        result = subprocess.run(
+            cmd,
+            capture_output=True,
+            text=True,
+            timeout=30,
+            env=env,
         )
 
-    return {"issue_number": issue_number, "issue_url": issue_url}
+        if result.returncode != 0:
+            raise RuntimeError(f"gh issue create failed: {result.stderr.strip()}")
+
+        output = result.stdout.strip()
+        logger.info("Issue created: %s", output)
+
+        # Parse issue number and URL from output (gh outputs the URL)
+        # e.g. "https://github.com/owner/repo/issues/42"
+        issue_url = output
+        issue_number = None
+        match = re.search(r"/issues/(\d+)", output)
+        if match:
+            issue_number = int(match.group(1))
+
+        try:
+            db.update_planning_session(
+                session_id,
+                status="completed",
+                issue_number=issue_number,
+                issue_url=issue_url,
+                title=title,
+            )
+        except Exception as db_err:
+            logger.warning(
+                "Failed to update planning session %s after issue creation: %s",
+                session_id, db_err,
+            )
+
+        return {"issue_number": issue_number, "issue_url": issue_url}
+    finally:
+        with _issue_creating_lock:
+            _issue_creating.discard(session_id)
 
 
 def cancel_planning(session_id: str):
