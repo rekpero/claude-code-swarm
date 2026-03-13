@@ -165,6 +165,8 @@ def _run_planning_agent(session_id: str, workspace: dict, prompt: str):
             except subprocess.TimeoutExpired:
                 logger.warning("Process for session %s did not exit after SIGKILL", session_id)
         db.update_planning_session(session_id, status="active")
+        with _active_lock:
+            _cancelled.discard(session_id)
         return
 
     plan_text: str | None = None
@@ -207,7 +209,16 @@ def _run_planning_agent(session_id: str, workspace: dict, prompt: str):
                         continue
                     block_type = block.get("type")
                     if block_type == "text":
-                        text_parts.append(block.get("text", ""))
+                        text = block.get("text", "")
+                        text_parts.append(text)
+                        # Emit a text event so users see thinking in real-time
+                        snippet = text.strip()
+                        if snippet:
+                            snippet = snippet[:200] + "…" if len(snippet) > 200 else snippet
+                            try:
+                                db.insert_planning_event(session_id, "text", snippet)
+                            except Exception:
+                                pass
                     elif block_type == "tool_use":
                         tool_name = block.get("name", "tool")
                         tool_input = block.get("input", {})

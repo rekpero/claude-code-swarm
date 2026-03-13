@@ -667,6 +667,7 @@
   }
   .planner-event .event-icon { font-size: 12px; flex-shrink: 0; }
   .planner-event .event-text { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .planner-event.event-type-text { color: var(--text); opacity: 0.75; font-style: italic; }
   @keyframes fadeIn { from { opacity: 0; transform: translateX(-4px); } to { opacity: 1; transform: translateX(0); } }
 </style>
 </head>
@@ -1840,6 +1841,7 @@ function setPlannerGenerating(generating) {
 
 function plannerEventIcon(eventType) {
   if (eventType === 'tool_use') return '🔍';
+  if (eventType === 'text') return '💭';
   return '⚙️';
 }
 
@@ -1858,7 +1860,7 @@ function renderPlannerEvents(events) {
   const list = document.getElementById('planner-thinking-events');
   events.forEach(ev => {
     const div = document.createElement('div');
-    div.className = 'planner-event';
+    div.className = `planner-event event-type-${ev.event_type}`;
     const icon = plannerEventIcon(ev.event_type);
     div.innerHTML = `<span class="event-icon">${icon}</span><span class="event-text">${esc(ev.summary)}</span>`;
     list.appendChild(div);
