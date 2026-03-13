@@ -433,13 +433,16 @@ def cancel_planning(session_id: str):
     """Terminate the active planning subprocess for this session, if any."""
     with _active_lock:
         proc = _active.pop(session_id, None)
+        in_starting = session_id in _starting
         _starting.discard(session_id)  # also cancel sessions still starting
-        # Always add to _cancelled so _run_planning_agent skips its own DB
-        # status update even when the process has already exited and been
-        # removed from _active (i.e. proc is None here).  Without this,
-        # the two concurrent writes race and the session can end up showing
-        # as completed when it should be cancelled.
-        _cancelled.add(session_id)
+        # Only add to _cancelled when there is an actively-tracked subprocess
+        # to signal.  If the session is not in _starting and not in _active,
+        # the planning thread has already finished and consumed its own
+        # _cancelled sentinel.  Unconditionally adding here in that case would
+        # leave a stale entry that silently discards the next refinement plan
+        # started on the same session_id (secondary stale-sentinel scenario).
+        if proc is not None or in_starting:
+            _cancelled.add(session_id)
 
     if proc and proc.poll() is None:
         try:

@@ -656,6 +656,11 @@
     margin-bottom: 6px;
   }
   .planner-msg-thinking .thinking-events { }
+  .planner-msg-thinking.thinking-finalized .thinking-events { display: none; }
+  .planner-msg-thinking.thinking-finalized.thinking-expanded .thinking-events { display: block; }
+  .planner-msg-thinking.thinking-finalized .thinking-header { cursor: pointer; font-style: normal; }
+  .thinking-toggle { display: inline-block; margin-right: 4px; font-style: normal; font-size: 10px; transition: transform 0.15s; }
+  .planner-msg-thinking.thinking-finalized.thinking-expanded .thinking-toggle { transform: rotate(90deg); }
   .planner-event {
     display: flex;
     align-items: center;
@@ -1722,6 +1727,7 @@ function renderPlannerSidebar() {
 
 async function resumePlannerSession(sessionId) {
   if (plannerPollTimer) { clearTimeout(plannerPollTimer); plannerPollTimer = null; }
+  clearPlannerEvents();  // remove any lingering thinking section from a previous session
   plannerSessionId = sessionId;
   plannerHasPlan = false;
   plannerLastEventId = 0;
@@ -1874,6 +1880,19 @@ function clearPlannerEvents() {
   plannerLastEventId = 0;
 }
 
+function finalizePlannerEvents() {
+  const thinking = document.getElementById('planner-thinking-section');
+  if (!thinking) return;
+  const header = thinking.querySelector('.thinking-header');
+  const eventsDiv = document.getElementById('planner-thinking-events');
+  const count = eventsDiv ? eventsDiv.children.length : 0;
+  if (header) {
+    header.innerHTML = `<span class="thinking-toggle">▶</span> View analysis steps (${count})`;
+    header.onclick = () => thinking.classList.toggle('thinking-expanded');
+  }
+  thinking.classList.add('thinking-finalized');
+}
+
 function pollPlannerSession() {
   if (!plannerSessionId) return;
   if (plannerPollTimer) clearTimeout(plannerPollTimer);
@@ -1897,8 +1916,8 @@ function pollPlannerSession() {
     if (data.generating || data.session?.status === 'generating') {
       pollPlannerSession();
     } else {
-      // Hide streaming events once plan is ready
-      clearPlannerEvents();
+      // Finalize streaming events: collapse into expandable "Steps" summary
+      finalizePlannerEvents();
       setPlannerGenerating(false);
       // Show send button label based on context
       const sendBtn = document.getElementById('planner-send-btn');
@@ -1908,7 +1927,7 @@ function pollPlannerSession() {
         // Error already shown in messages if any
       }
     }
-  }, 2000);
+  }, 500);
 }
 
 function renderPlannerMessages(messages) {
