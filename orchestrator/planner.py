@@ -3,9 +3,11 @@
 import json
 import logging
 import os
+import queue
 import re
 import subprocess
 import threading
+import time
 
 from orchestrator import db
 from orchestrator.config import CLAUDE_CODE_OAUTH_TOKEN, GH_TOKEN, ISSUE_LABEL
@@ -258,9 +260,56 @@ def _run_planning_agent_impl(session_id: str, workspace: dict, prompt: str):
     )
     stderr_thread.start()
 
+    # Maximum wall-clock time allowed for the stdout-reading phase.  If the
+    # subprocess produces no output and does not close stdout within this
+    # window (e.g. stuck on a hung Anthropic API call), the process is killed
+    # so the planner thread is never blocked forever.
+    _STDOUT_TIMEOUT = 600  # 10 minutes
+
+    # Move stdout reading to a daemon thread so the main loop can impose a
+    # wall-clock deadline via a Queue with per-get timeouts.  The plain
+    # ``for line in process.stdout`` iterator blocks indefinitely when the
+    # subprocess stalls without producing output or closing its stdout pipe.
+    stdout_queue: queue.Queue[str | None] = queue.Queue()
+
+    def _read_stdout() -> None:
+        try:
+            for raw_line in process.stdout:
+                stdout_queue.put(raw_line)
+        finally:
+            stdout_queue.put(None)  # EOF sentinel — always sent
+
+    stdout_reader_thread = threading.Thread(
+        target=_read_stdout,
+        daemon=True,
+        name=f"stdout-{session_id[:8]}",
+    )
+    stdout_reader_thread.start()
+
+    deadline = time.monotonic() + _STDOUT_TIMEOUT
+
     try:
-        for line in process.stdout:
-            line = line.strip()
+        while True:
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                logger.warning(
+                    "Stdout timeout (%ds) for session %s; killing process",
+                    _STDOUT_TIMEOUT,
+                    session_id,
+                )
+                process.kill()
+                break
+            try:
+                raw_line = stdout_queue.get(timeout=min(30.0, remaining))
+            except queue.Empty:
+                # No output in this window — check whether the process has
+                # already exited (pipe closed but sentinel not yet queued).
+                if process.poll() is not None:
+                    break
+                continue
+            if raw_line is None:
+                break  # EOF sentinel — subprocess closed stdout
+            line = raw_line.strip()
             if not line:
                 continue
             try:
@@ -382,6 +431,12 @@ def _run_planning_agent_impl(session_id: str, workspace: dict, prompt: str):
                         except Exception:
                             pass
 
+        stdout_reader_thread.join(timeout=10.0)
+        if stdout_reader_thread.is_alive():
+            logger.warning(
+                "stdout reader thread for session %s did not finish within 10s",
+                session_id,
+            )
         try:
             process.wait(timeout=60)
         except subprocess.TimeoutExpired:
@@ -412,6 +467,12 @@ def _run_planning_agent_impl(session_id: str, workspace: dict, prompt: str):
                 process.wait(timeout=10)
             except subprocess.TimeoutExpired:
                 logger.warning("Process for session %s did not exit after SIGKILL", session_id)
+        stdout_reader_thread.join(timeout=5.0)
+        if stdout_reader_thread.is_alive():
+            logger.warning(
+                "stdout reader thread for session %s did not finish after SIGKILL",
+                session_id,
+            )
         stderr_thread.join(timeout=5.0)
         if stderr_thread.is_alive():
             logger.warning(
