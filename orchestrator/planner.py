@@ -149,9 +149,15 @@ def _run_planning_agent_impl(session_id: str, workspace: dict, prompt: str):
     except Exception as e:
         logger.error("Failed to spawn planning agent for session %s: %s", session_id, e)
         with _active_lock:
+            was_cancelled = session_id in _cancelled
             _starting.discard(session_id)
-            _cancelled.discard(session_id)
-        db.update_planning_session(session_id, status="error")
+            if was_cancelled:
+                _cancelled.discard(session_id)
+        if was_cancelled:
+            logger.info("Planning session %s was cancelled before spawn completed", session_id)
+            db.update_planning_session(session_id, status="active")
+        else:
+            db.update_planning_session(session_id, status="error")
         return
 
     # Replace the _starting sentinel with the actual process atomically so that
@@ -511,13 +517,19 @@ def create_issue_from_plan(session_id: str, title: str = "") -> dict:
     if match:
         issue_number = int(match.group(1))
 
-    db.update_planning_session(
-        session_id,
-        status="completed",
-        issue_number=issue_number,
-        issue_url=issue_url,
-        title=title,
-    )
+    try:
+        db.update_planning_session(
+            session_id,
+            status="completed",
+            issue_number=issue_number,
+            issue_url=issue_url,
+            title=title,
+        )
+    except Exception as db_err:
+        logger.warning(
+            "Failed to update planning session %s after issue creation: %s",
+            session_id, db_err,
+        )
 
     return {"issue_number": issue_number, "issue_url": issue_url}
 
