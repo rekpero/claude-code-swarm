@@ -150,6 +150,7 @@ def _run_planning_agent_impl(session_id: str, workspace: dict, prompt: str):
         logger.error("Failed to spawn planning agent for session %s: %s", session_id, e)
         with _active_lock:
             _starting.discard(session_id)
+            _cancelled.discard(session_id)
         db.update_planning_session(session_id, status="error")
         return
 
