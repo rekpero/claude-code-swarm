@@ -181,6 +181,12 @@ def _run_planning_agent_impl(session_id: str, workspace: dict, prompt: str):
             _cancelled.discard(session_id)
         return
 
+    # Emit an initial info event so the UI shows analysis has started immediately
+    try:
+        db.insert_planning_event(session_id, "info", "Starting codebase analysis\u2026")
+    except Exception:
+        pass
+
     plan_text: str | None = None
     # Accumulates text across ALL assistant messages for live draft display.
     accumulated_draft: list[str] = []
@@ -245,8 +251,8 @@ def _run_planning_agent_impl(session_id: str, workspace: dict, prompt: str):
                 if text_parts and tool_use_summaries:
                     reasoning = " ".join(t.strip() for t in text_parts if t.strip())
                     if reasoning:
-                        if len(reasoning) > 200:
-                            reasoning = reasoning[:197] + "..."
+                        if len(reasoning) > 400:
+                            reasoning = reasoning[:397] + "..."
                         try:
                             db.insert_planning_event(session_id, "thinking", reasoning)
                         except Exception:

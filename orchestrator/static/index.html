@@ -695,6 +695,7 @@
   .planner-event.event-type-tool_result { color: var(--green); }
   .planner-event.event-type-thinking { color: var(--accent); font-style: italic; }
   .planner-event.event-type-thinking .event-text { white-space: normal; overflow: visible; text-overflow: clip; }
+  .planner-event.event-type-info { color: var(--blue); font-style: italic; }
   @keyframes fadeIn { from { opacity: 0; transform: translateX(-4px); } to { opacity: 1; transform: translateX(0); } }
 </style>
 </head>
@@ -787,7 +788,7 @@
       <div class="planner-chat" id="planner-chat"></div>
       <div id="planner-generating" style="display:none" class="planner-generating">
         <span class="planner-spinner"></span>
-        Claude is analyzing the codebase and generating a plan&hellip;
+        <span id="planner-generating-text">Claude is analyzing the codebase&hellip;</span>
       </div>
       <div class="planner-input-row">
         <textarea id="planner-input" placeholder="Describe the feature or fix you want to implement…" onkeydown="plannerInputKeydown(event)"></textarea>
@@ -1885,6 +1886,10 @@ function setPlannerGenerating(generating) {
   const input = document.getElementById('planner-input');
 
   genEl.style.display = generating ? 'flex' : 'none';
+  if (generating) {
+    const genText = document.getElementById('planner-generating-text');
+    if (genText) genText.textContent = 'Claude is analyzing the codebase\u2026';
+  }
   sendBtn.disabled = generating;
   input.disabled = generating;
   cancelBtn.style.display = generating ? '' : 'none';
@@ -1894,6 +1899,7 @@ function plannerEventIcon(eventType) {
   if (eventType === 'tool_use') return '🔍';
   if (eventType === 'tool_result') return '✓';
   if (eventType === 'thinking') return '💭';
+  if (eventType === 'info') return '◈';
   return '⚙️';
 }
 
@@ -1902,11 +1908,15 @@ function renderPlannerEvents(events) {
   const chat = document.getElementById('planner-chat');
 
   let lastDraft = null;
+  let lastStepSummary = null;
   events.forEach(ev => {
     if (ev.event_type === 'draft') {
       lastDraft = ev.summary;
       return; // draft events are shown separately, not in the thinking section
     }
+
+    // Track the most recent visible step to update the status indicator
+    lastStepSummary = ev.summary;
 
     // Tool-use and other events go into the thinking section
     let thinking = document.getElementById('planner-thinking-section');
@@ -1914,7 +1924,7 @@ function renderPlannerEvents(events) {
       thinking = document.createElement('div');
       thinking.id = 'planner-thinking-section';
       thinking.className = 'planner-msg-thinking';
-      thinking.innerHTML = '<div class="thinking-header"><span class="planner-spinner"></span>Analyzing codebase&hellip;</div><div id="planner-thinking-events"></div>';
+      thinking.innerHTML = '<div class="thinking-header" id="planner-thinking-header"><span class="planner-spinner"></span><span id="planner-thinking-label">Analyzing codebase\u2026</span></div><div id="planner-thinking-events"></div>';
       // Insert before the live draft element if it already exists
       const existingDraft = document.getElementById('planner-live-draft');
       if (existingDraft) {
@@ -1930,6 +1940,18 @@ function renderPlannerEvents(events) {
     div.innerHTML = `<span class="event-icon">${icon}</span><span class="event-text">${esc(ev.summary)}</span>`;
     list.appendChild(div);
   });
+
+  // Dynamically update the thinking header and status bar with the latest step
+  if (lastStepSummary !== null) {
+    const label = document.getElementById('planner-thinking-label');
+    if (label) label.textContent = lastStepSummary.length > 70
+      ? lastStepSummary.slice(0, 67) + '\u2026'
+      : lastStepSummary;
+    const genText = document.getElementById('planner-generating-text');
+    if (genText) genText.textContent = lastStepSummary.length > 80
+      ? lastStepSummary.slice(0, 77) + '\u2026'
+      : lastStepSummary;
+  }
 
   // Show the latest draft as a growing live plan preview
   if (lastDraft !== null) {
@@ -2005,7 +2027,7 @@ function pollPlannerSession() {
         // Error already shown in messages if any
       }
     }
-  }, 500);
+  }, 300);
 }
 
 function renderPlannerMessages(messages) {
