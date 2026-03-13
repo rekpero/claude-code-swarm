@@ -1765,7 +1765,7 @@ async function sendPlannerMessage() {
         body: JSON.stringify({workspace_id: currentWorkspaceId, message: msg}),
       });
       data = await r.json();
-      if (data.error) { setPlannerGenerating(false); alert('Error: ' + data.error); return; }
+      if (data.error) { input.value = savedMsg; setPlannerGenerating(false); alert('Error: ' + data.error); return; }
       plannerSessionId = data.session.id;
       loadPlannerSessions();
     } else {
@@ -1776,7 +1776,7 @@ async function sendPlannerMessage() {
         body: JSON.stringify({message: msg}),
       });
       data = await r.json();
-      if (data.error) { setPlannerGenerating(false); alert('Error: ' + data.error); return; }
+      if (data.error) { input.value = savedMsg; setPlannerGenerating(false); alert('Error: ' + data.error); return; }
     }
 
     renderPlannerMessages(data.messages || []);
