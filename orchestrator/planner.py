@@ -196,6 +196,9 @@ def _run_planning_agent_impl(session_id: str, workspace: dict, prompt: str):
     plan_text: str | None = None
     # Accumulates text across ALL assistant messages for live draft display.
     accumulated_draft: list[str] = []
+    # Maps tool_use_id -> {name, input} so tool_result events can reference
+    # the originating tool call and show meaningful context (e.g. file path).
+    pending_tool_inputs: dict[str, dict] = {}
 
     # Drain stderr in a background thread to prevent pipe buffer deadlock.
     # The subprocess emits significant output on stderr (due to --verbose), and
@@ -241,6 +244,7 @@ def _run_planning_agent_impl(session_id: str, workspace: dict, prompt: str):
                     elif block_type == "tool_use":
                         tool_name = block.get("name", "tool")
                         tool_input = block.get("input", {})
+                        tool_use_id = block.get("id", "")
                         if tool_name == "Read":
                             summary = f"Reading {tool_input.get('file_path', '?')}"
                         elif tool_name == "Glob":
@@ -252,6 +256,13 @@ def _run_planning_agent_impl(session_id: str, workspace: dict, prompt: str):
                         else:
                             summary = f"Using {tool_name}"
                         tool_use_summaries.append(summary)
+                        # Track tool_use_id so the corresponding tool_result can
+                        # show the file/pattern context rather than just a line count.
+                        if tool_use_id:
+                            pending_tool_inputs[tool_use_id] = {
+                                "name": tool_name,
+                                "input": tool_input,
+                            }
                 # Emit intermediate reasoning text before tool-use events so the
                 # chat UI shows Claude's thinking inline (like Claude.ai / ChatGPT).
                 if text_parts and tool_use_summaries:
@@ -281,25 +292,45 @@ def _run_planning_agent_impl(session_id: str, workspace: dict, prompt: str):
                         except Exception:
                             pass
             elif msg_type == "user":
-                # Capture tool results so the UI can show what Claude found
+                # Capture tool results so the UI can show what Claude found.
+                # Correlate with pending_tool_inputs via tool_use_id to include
+                # the file/pattern context in the summary (e.g. "Read planner.py:
+                # 567 lines" rather than just "Got 567 lines").
                 content_blocks = data.get("message", {}).get("content", [])
                 for block in content_blocks:
                     if not isinstance(block, dict):
                         continue
                     if block.get("type") == "tool_result":
+                        tool_use_id = block.get("tool_use_id", "")
+                        origin = pending_tool_inputs.pop(tool_use_id, None)
                         content = block.get("content", [])
                         if isinstance(content, str):
                             line_count = content.count("\n") + 1 if content else 0
-                            result_summary = f"Got {line_count} line{'s' if line_count != 1 else ''}"
                         elif isinstance(content, list):
-                            total_lines = 0
+                            line_count = 0
                             for item in content:
                                 if isinstance(item, dict) and item.get("type") == "text":
                                     text = item.get("text", "")
-                                    total_lines += text.count("\n") + 1 if text else 0
-                            result_summary = f"Got {total_lines} line{'s' if total_lines != 1 else ''}"
+                                    line_count += text.count("\n") + 1 if text else 0
                         else:
-                            result_summary = "Got result"
+                            line_count = 0
+                        lines_str = f"{line_count} line{'s' if line_count != 1 else ''}"
+                        if origin:
+                            tool_name = origin["name"]
+                            tool_input = origin["input"]
+                            if tool_name == "Read":
+                                file_path = tool_input.get("file_path", "?")
+                                result_summary = f"Read {file_path}: {lines_str}"
+                            elif tool_name == "Glob":
+                                pattern = tool_input.get("pattern", "?")
+                                result_summary = f"Found {line_count} match{'es' if line_count != 1 else ''} for {pattern}"
+                            elif tool_name == "Grep":
+                                pattern = tool_input.get("pattern", "?")
+                                result_summary = f"Grepped '{pattern}': {line_count} match{'es' if line_count != 1 else ''}"
+                            else:
+                                result_summary = f"Got {lines_str}"
+                        else:
+                            result_summary = f"Got {lines_str}" if line_count > 0 else "Got result"
                         try:
                             db.insert_planning_event(session_id, "tool_result", result_summary)
                         except Exception:
