@@ -1741,14 +1741,26 @@ function renderPlannerSidebar() {
     const timeStr = timeAgo(s.updated_at);
     const statusClass = 'status-' + (s.status || 'active');
     const statusLabel = s.status === 'completed' ? '✓' : (s.status || 'active');
-    return `<div class="planner-session-item ${isActive ? 'active' : ''}" onclick="resumePlannerSession('${s.id}')">
+    // Use data-session-id attributes instead of interpolating IDs into onclick
+    // string literals to prevent latent XSS if session IDs ever contain quotes
+    // or other special characters.
+    return `<div class="planner-session-item ${isActive ? 'active' : ''}" data-session-id="${esc(s.id)}">
       <div class="session-preview">${esc(truncated)}</div>
       <div class="session-meta">
         <span><span class="planner-session-status ${statusClass}">${esc(statusLabel)}</span> ${timeStr}</span>
-        <button class="session-delete" onclick="event.stopPropagation();deletePlannerSession('${s.id}')" title="Delete">×</button>
+        <button class="session-delete" data-session-id="${esc(s.id)}" title="Delete">×</button>
       </div>
     </div>`;
   }).join('');
+  // Attach event listeners after rendering to avoid inline onclick XSS
+  list.querySelectorAll('.planner-session-item').forEach(el => {
+    el.addEventListener('click', () => resumePlannerSession(el.dataset.sessionId));
+    const btn = el.querySelector('.session-delete');
+    if (btn) btn.addEventListener('click', e => {
+      e.stopPropagation();
+      deletePlannerSession(btn.dataset.sessionId);
+    });
+  });
 }
 
 async function resumePlannerSession(sessionId) {

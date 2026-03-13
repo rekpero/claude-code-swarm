@@ -103,6 +103,18 @@ def _run_planning_agent(session_id: str, workspace: dict, prompt: str):
 
     Uses Read, Glob, Grep only — fully read-only, no worktree needed.
     """
+    # Outermost guard: ensure _starting sentinel is always released even if an
+    # exception occurs before the inner try/finally block that normally handles
+    # this cleanup (e.g. a KeyError on the workspace dict or a DB failure).
+    try:
+        _run_planning_agent_impl(session_id, workspace, prompt)
+    finally:
+        with _active_lock:
+            _starting.discard(session_id)
+
+
+def _run_planning_agent_impl(session_id: str, workspace: dict, prompt: str):
+    """Inner implementation — called exclusively from _run_planning_agent."""
     local_path = workspace["local_path"]
     workspace_id = workspace["id"]
 
@@ -241,7 +253,19 @@ def _run_planning_agent(session_id: str, workspace: dict, prompt: str):
                         except Exception:
                             pass
 
-        process.wait()
+        try:
+            process.wait(timeout=60)
+        except subprocess.TimeoutExpired:
+            logger.warning(
+                "Process for session %s did not exit after 60s; killing", session_id
+            )
+            process.kill()
+            try:
+                process.wait(timeout=10)
+            except subprocess.TimeoutExpired:
+                logger.warning(
+                    "Process for session %s did not exit after SIGKILL", session_id
+                )
         stderr_thread.join()
     except Exception as e:
         logger.error("Planning agent stream error for session %s: %s", session_id, e)
@@ -276,27 +300,42 @@ def _run_planning_agent(session_id: str, workspace: dict, prompt: str):
         _cancelled.discard(session_id)
 
     if was_cancelled:
-        logger.info(
-            "Planning session %s was cancelled externally; skipping post-run status update",
-            session_id,
-        )
+        # Perform the cancellation status update here (inside the thread) rather
+        # than in cancel_planning() to eliminate the TOCTOU race: cancel_planning
+        # only waits for the subprocess to exit, but this thread may still be
+        # running (draining stderr, executing finally).  Writing status here
+        # ensures the final DB state is set after all thread cleanup is done.
+        logger.info("Planning session %s was cancelled externally", session_id)
+        try:
+            db.update_planning_session(session_id, status="active")
+        except Exception:
+            pass
         return
 
     return_code = process.returncode
-    if return_code == 0 and plan_text:
-        db.add_planning_message(session_id, "assistant", plan_text)
-        db.update_planning_session(session_id, status="active")
-        logger.info("Planning agent completed for session %s", session_id)
-    else:
-        stderr_output = "".join(stderr_chunks)
-        error_detail = stderr_output[:300] if stderr_output else f"Exit code {return_code}"
-        logger.error("Planning agent failed for session %s: %s", session_id, error_detail)
-        # Store whatever partial plan we got, or an error message
-        if plan_text:
+    # Wrap all final DB writes in a try/except so they degrade gracefully when
+    # the session row has already been deleted (e.g. delete_planning_session was
+    # called while the background thread was still running).
+    try:
+        if return_code == 0 and plan_text:
             db.add_planning_message(session_id, "assistant", plan_text)
             db.update_planning_session(session_id, status="active")
+            logger.info("Planning agent completed for session %s", session_id)
         else:
-            db.update_planning_session(session_id, status="error")
+            stderr_output = "".join(stderr_chunks)
+            error_detail = stderr_output[:300] if stderr_output else f"Exit code {return_code}"
+            logger.error("Planning agent failed for session %s: %s", session_id, error_detail)
+            # Store whatever partial plan we got, or an error message
+            if plan_text:
+                db.add_planning_message(session_id, "assistant", plan_text)
+                db.update_planning_session(session_id, status="active")
+            else:
+                db.update_planning_session(session_id, status="error")
+    except Exception:
+        logger.warning(
+            "DB write failed for session %s (session may have been deleted)",
+            session_id,
+        )
 
 
 def _generate_title_from_plan(plan_body: str) -> str:
@@ -463,7 +502,8 @@ def cancel_planning(session_id: str):
             except subprocess.TimeoutExpired:
                 logger.warning("Process for session %s did not exit after SIGKILL", session_id)
         logger.info("Cancelled planning agent for session %s", session_id)
-
-    session = db.get_planning_session(session_id)
-    if session and session["status"] == "generating":
-        db.update_planning_session(session_id, status="active")
+    # NOTE: do NOT write status here — the background thread (_run_planning_agent_impl)
+    # detects cancellation via the _cancelled set and performs the status='active'
+    # write itself, after all cleanup is done.  Writing here would race with the
+    # thread's own DB writes (TOCTOU: the status check below would be stale by
+    # the time the write occurs, and the thread may overwrite it afterwards).
