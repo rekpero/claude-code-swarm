@@ -169,6 +169,8 @@ def _run_planning_agent(session_id: str, workspace: dict, prompt: str):
         return
 
     plan_text: str | None = None
+    # Accumulates text across ALL assistant messages for live draft display.
+    accumulated_draft: list[str] = []
 
     # Drain stderr in a background thread to prevent pipe buffer deadlock.
     # The subprocess emits significant output on stderr (due to --verbose), and
@@ -210,14 +212,6 @@ def _run_planning_agent(session_id: str, workspace: dict, prompt: str):
                     if block_type == "text":
                         text = block.get("text", "")
                         text_parts.append(text)
-                        # Emit a text event so users see thinking in real-time
-                        snippet = text.strip()
-                        if snippet:
-                            snippet = snippet[:300] + "…" if len(snippet) > 300 else snippet
-                            try:
-                                db.insert_planning_event(session_id, "text", snippet)
-                            except Exception:
-                                pass
                     elif block_type == "tool_use":
                         tool_name = block.get("name", "tool")
                         tool_input = block.get("input", {})
@@ -237,6 +231,15 @@ def _run_planning_agent(session_id: str, workspace: dict, prompt: str):
                             pass
                 if text_parts:
                     plan_text = "\n".join(text_parts)
+                    # Accumulate across all assistant turns and emit a live draft event
+                    # so the UI can show the plan growing in real-time.
+                    accumulated_draft.append(plan_text)
+                    draft_text = "\n\n".join(accumulated_draft).strip()
+                    if draft_text:
+                        try:
+                            db.insert_planning_event(session_id, "draft", draft_text)
+                        except Exception:
+                            pass
 
         process.wait()
         stderr_thread.join()
