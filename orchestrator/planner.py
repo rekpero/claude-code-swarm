@@ -175,7 +175,7 @@ def _run_planning_agent_impl(session_id: str, workspace: dict, prompt: str):
     workspace_id = workspace["id"]
 
     cmd = [
-        "claude", "-p", prompt,
+        "claude",
         "--allowedTools", "Read,Glob,Grep",
         "--output-format", "stream-json",
         "--verbose",
@@ -197,6 +197,7 @@ def _run_planning_agent_impl(session_id: str, workspace: dict, prompt: str):
         process = subprocess.Popen(
             cmd,
             cwd=local_path,
+            stdin=subprocess.PIPE,
             stdout=subprocess.PIPE,
             stderr=subprocess.PIPE,
             text=True,
@@ -241,6 +242,22 @@ def _run_planning_agent_impl(session_id: str, workspace: dict, prompt: str):
         db.update_planning_session(session_id, status="active")
         with _active_lock:
             _cancelled.discard(session_id)
+        return
+
+    # Write the prompt to stdin and close it so the claude CLI reads it from
+    # the pipe rather than the OS process argument list (which is world-readable
+    # via /proc/<pid>/cmdline and `ps aux`).
+    try:
+        process.stdin.write(prompt)
+        process.stdin.close()
+    except Exception as e:
+        logger.error("Failed to write prompt to stdin for session %s: %s", session_id, e)
+        process.kill()
+        try:
+            process.wait(timeout=10)
+        except subprocess.TimeoutExpired:
+            pass
+        db.update_planning_session(session_id, status="error")
         return
 
     # Emit an initial info event so the UI shows analysis has started immediately
@@ -594,7 +611,8 @@ def _generate_title_with_ai(plan_body: str) -> str:
     try:
         env = {**os.environ, "CLAUDE_CODE_OAUTH_TOKEN": CLAUDE_CODE_OAUTH_TOKEN}
         result = subprocess.run(
-            ["claude", "-p", prompt, "--output-format", "text"],
+            ["claude", "--output-format", "text"],
+            input=prompt,
             capture_output=True,
             text=True,
             timeout=30,
@@ -627,7 +645,7 @@ def create_issue_from_plan(session_id: str, title: str = "") -> dict:
     # a partially-updated or still-in-progress plan.
     with _active_lock:
         proc = _active.get(session_id)
-        if session_id in _starting or session_id in _cancelling or (proc is not None and proc.poll() is None):
+        if session_id in _starting or session_id in _cancelling or session_id in _cancelled or (proc is not None and proc.poll() is None):
             raise RuntimeError("Plan generation is still in progress")
 
     # Acquire per-session issue-creation lock to prevent duplicate issues from
