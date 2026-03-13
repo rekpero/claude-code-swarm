@@ -2109,6 +2109,7 @@ async function cancelPlanning() {
     // Network error — restore the spinner so the UI reflects actual state
     setPlannerGenerating(true);
     console.error('Cancel request error:', e);
+    pollPlannerSession();
   }
 }
 
