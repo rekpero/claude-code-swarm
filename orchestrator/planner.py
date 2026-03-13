@@ -160,7 +160,10 @@ def _run_planning_agent(session_id: str, workspace: dict, prompt: str):
             process.wait(timeout=5)
         except subprocess.TimeoutExpired:
             process.kill()
-            process.wait()
+            try:
+                process.wait(timeout=10)
+            except subprocess.TimeoutExpired:
+                logger.warning("Process for session %s did not exit after SIGKILL", session_id)
         db.update_planning_session(session_id, status="active")
         return
 
@@ -215,7 +218,10 @@ def _run_planning_agent(session_id: str, workspace: dict, prompt: str):
             process.wait(timeout=5)
         except subprocess.TimeoutExpired:
             process.kill()
-            process.wait()
+            try:
+                process.wait(timeout=10)
+            except subprocess.TimeoutExpired:
+                logger.warning("Process for session %s did not exit after SIGKILL", session_id)
         stderr_thread.join()
     finally:
         with _active_lock:
@@ -349,7 +355,10 @@ def cancel_planning(session_id: str):
             proc.wait(timeout=5)
         except subprocess.TimeoutExpired:
             proc.kill()
-            proc.wait()
+            try:
+                proc.wait(timeout=10)
+            except subprocess.TimeoutExpired:
+                logger.warning("Process for session %s did not exit after SIGKILL", session_id)
         logger.info("Cancelled planning agent for session %s", session_id)
 
     session = db.get_planning_session(session_id)

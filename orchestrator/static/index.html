@@ -1751,6 +1751,7 @@ async function sendPlannerMessage() {
   if (!msg) return;
   if (!currentWorkspaceId) { alert('Please select a workspace first.'); return; }
 
+  const savedMsg = msg;
   input.value = '';
   setPlannerGenerating(true);
 
@@ -1781,6 +1782,7 @@ async function sendPlannerMessage() {
     renderPlannerMessages(data.messages || []);
     pollPlannerSession();
   } catch(e) {
+    input.value = savedMsg;
     setPlannerGenerating(false);
     alert('Failed to send message: ' + e.message);
   }
