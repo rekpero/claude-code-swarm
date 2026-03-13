@@ -1983,7 +1983,13 @@ function clearPlannerEvents() {
   if (thinking) thinking.remove();
   const draft = document.getElementById('planner-live-draft');
   if (draft) draft.remove();
-  plannerLastEventId = 0;
+  // Do NOT reset plannerLastEventId here. startNewPlannerSession() and
+  // resumePlannerSession() already reset it explicitly when a truly fresh
+  // session cursor is needed.  Resetting here caused refinement messages
+  // (sendPlannerMessage with an existing plannerSessionId) to re-fetch all
+  // events from the beginning of the session via ?since=0, making stale
+  // tool-use/tool-result events from previous planning runs re-render into
+  // a new thinking section and appear to belong to the current run.
 }
 
 function finalizePlannerEvents() {
