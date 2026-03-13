@@ -115,6 +115,22 @@ def _run_planning_agent(session_id: str, workspace: dict, prompt: str):
     # this cleanup (e.g. a KeyError on the workspace dict or a DB failure).
     try:
         _run_planning_agent_impl(session_id, workspace, prompt)
+    except Exception:
+        # If _run_planning_agent_impl raises before it enters its own
+        # try/except (e.g. db.get_workspace_env() fails or workspace dict has
+        # a missing key), the session status was set to 'generating' by
+        # start_planning() and would never be updated, leaving the UI spinner
+        # stuck forever.  Set status='error' here so the session is
+        # recoverable.  Also clean up any leaked _cancelled entry so that a
+        # concurrent cancel_planning() call that added this session to
+        # _cancelled does not leave a stale entry.
+        logger.exception("Unhandled exception in planning agent for session %s", session_id)
+        try:
+            db.update_planning_session(session_id, status="error")
+        except Exception:
+            pass
+        with _active_lock:
+            _cancelled.discard(session_id)
     finally:
         with _active_lock:
             _starting.discard(session_id)
