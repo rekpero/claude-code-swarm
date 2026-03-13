@@ -217,6 +217,7 @@ def _run_planning_agent_impl(session_id: str, workspace: dict, prompt: str):
                 # Capture the last assistant text block as fallback
                 content_blocks = data.get("message", {}).get("content", [])
                 text_parts = []
+                tool_use_summaries = []
                 for block in content_blocks:
                     if not isinstance(block, dict):
                         continue
@@ -237,10 +238,24 @@ def _run_planning_agent_impl(session_id: str, workspace: dict, prompt: str):
                             summary = f"Grepping for '{pattern}'" + (f" in {path}" if path else "")
                         else:
                             summary = f"Using {tool_name}"
+                        tool_use_summaries.append(summary)
+                # Emit intermediate reasoning text before tool-use events so the
+                # chat UI shows Claude's thinking inline (like Claude.ai / ChatGPT).
+                if text_parts and tool_use_summaries:
+                    reasoning = " ".join(t.strip() for t in text_parts if t.strip())
+                    if reasoning:
+                        if len(reasoning) > 200:
+                            reasoning = reasoning[:197] + "..."
                         try:
-                            db.insert_planning_event(session_id, "tool_use", summary)
+                            db.insert_planning_event(session_id, "thinking", reasoning)
                         except Exception:
                             pass
+                # Emit each tool_use call as a separate step event
+                for summary in tool_use_summaries:
+                    try:
+                        db.insert_planning_event(session_id, "tool_use", summary)
+                    except Exception:
+                        pass
                 if text_parts:
                     plan_text = "\n".join(text_parts)
                     # Accumulate across all assistant turns and emit a live draft event
@@ -250,6 +265,30 @@ def _run_planning_agent_impl(session_id: str, workspace: dict, prompt: str):
                     if draft_text:
                         try:
                             db.insert_planning_event(session_id, "draft", draft_text)
+                        except Exception:
+                            pass
+            elif msg_type == "user":
+                # Capture tool results so the UI can show what Claude found
+                content_blocks = data.get("message", {}).get("content", [])
+                for block in content_blocks:
+                    if not isinstance(block, dict):
+                        continue
+                    if block.get("type") == "tool_result":
+                        content = block.get("content", [])
+                        if isinstance(content, str):
+                            line_count = content.count("\n") + 1 if content else 0
+                            result_summary = f"Got {line_count} line{'s' if line_count != 1 else ''}"
+                        elif isinstance(content, list):
+                            total_lines = 0
+                            for item in content:
+                                if isinstance(item, dict) and item.get("type") == "text":
+                                    text = item.get("text", "")
+                                    total_lines += text.count("\n") + 1 if text else 0
+                            result_summary = f"Got {total_lines} line{'s' if total_lines != 1 else ''}"
+                        else:
+                            result_summary = "Got result"
+                        try:
+                            db.insert_planning_event(session_id, "tool_result", result_summary)
                         except Exception:
                             pass
 

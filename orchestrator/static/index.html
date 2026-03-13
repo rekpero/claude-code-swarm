@@ -692,6 +692,9 @@
   .planner-event .event-text { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
   .planner-event.event-type-text { color: var(--text); opacity: 0.85; font-style: italic; }
   .planner-event.event-type-text .event-text { white-space: normal; overflow: visible; text-overflow: clip; }
+  .planner-event.event-type-tool_result { color: var(--green); }
+  .planner-event.event-type-thinking { color: var(--accent); font-style: italic; }
+  .planner-event.event-type-thinking .event-text { white-space: normal; overflow: visible; text-overflow: clip; }
   @keyframes fadeIn { from { opacity: 0; transform: translateX(-4px); } to { opacity: 1; transform: translateX(0); } }
 </style>
 </head>
@@ -1889,6 +1892,8 @@ function setPlannerGenerating(generating) {
 
 function plannerEventIcon(eventType) {
   if (eventType === 'tool_use') return '🔍';
+  if (eventType === 'tool_result') return '✓';
+  if (eventType === 'thinking') return '💭';
   return '⚙️';
 }
 
