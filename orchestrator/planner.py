@@ -279,6 +279,12 @@ def create_issue_from_plan(session_id: str, title: str) -> dict:
     if not plan_body:
         raise ValueError("No plan found in session — generate a plan first")
 
+    # Strip conversational preamble — find the first markdown heading and use
+    # everything from there onward as the actual issue body.
+    heading_match = re.search(r"^(#{1,3}\s)", plan_body, re.MULTILINE)
+    if heading_match:
+        plan_body = plan_body[heading_match.start():]
+
     github_repo = workspace["github_repo"]
 
     env = {**os.environ, "GH_TOKEN": GH_TOKEN}

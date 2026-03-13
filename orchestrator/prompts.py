@@ -94,7 +94,7 @@ Important edge cases or pitfalls to watch out for.
 Important:
 - Be specific and actionable. The plan should be detailed enough for another developer (or AI agent) to follow without ambiguity.
 - Reference actual file paths and existing code patterns from the codebase.
-- The output will be used as a GitHub issue body, so format it clearly in markdown.
+- The output will be used directly as a GitHub issue body. Output ONLY the markdown plan starting with ## Summary. Do NOT include any conversational text, preamble, sign-off, or commentary before or after the plan. No "Here is the plan:" or "I've analyzed the codebase" — just the raw plan content.
 - Only use Read, Glob, and Grep tools to explore — do not modify any files."""
 
 
