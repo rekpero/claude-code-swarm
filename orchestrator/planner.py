@@ -60,9 +60,6 @@ def start_planning(session_id: str, workspace_id: str, user_message: str) -> str
         _starting.add(session_id)
 
     try:
-        # Persist user message
-        db.add_planning_message(session_id, "user", user_message)
-
         workspace = db.get_workspace(workspace_id)
         if not workspace:
             with _active_lock:
@@ -71,10 +68,12 @@ def start_planning(session_id: str, workspace_id: str, user_message: str) -> str
             logger.error("Planning session %s: workspace %s not found", session_id, workspace_id)
             return "workspace_not_found"
 
-        # Build conversation history (all messages before the one we just added)
-        all_messages = db.get_planning_messages(session_id)
-        # The last message is the one we just added; history = everything before it
-        history = [{"role": m["role"], "content": m["content"]} for m in all_messages[:-1]]
+        # Build conversation history before adding the new user message
+        history_messages = db.get_planning_messages(session_id)
+        history = [{"role": m["role"], "content": m["content"]} for m in history_messages]
+
+        # Persist user message (after workspace validation so no orphaned message on failure)
+        db.add_planning_message(session_id, "user", user_message)
 
         prompt = build_planning_prompt(user_message, conversation_history=history if history else None)
 
