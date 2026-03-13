@@ -641,7 +641,7 @@ def create_issue_from_plan(session_id: str, title: str = "") -> dict:
                 session_id, db_err,
             )
 
-        return {"issue_number": issue_number, "issue_url": issue_url}
+        return {"issue_number": issue_number, "issue_url": issue_url, "title": title}
     finally:
         with _issue_creating_lock:
             _issue_creating.discard(session_id)
