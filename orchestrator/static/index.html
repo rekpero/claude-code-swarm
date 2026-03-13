@@ -672,7 +672,8 @@
   }
   .planner-event .event-icon { font-size: 12px; flex-shrink: 0; }
   .planner-event .event-text { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-  .planner-event.event-type-text { color: var(--text); opacity: 0.75; font-style: italic; }
+  .planner-event.event-type-text { color: var(--text); opacity: 0.85; font-style: italic; }
+  .planner-event.event-type-text .event-text { white-space: normal; overflow: visible; text-overflow: clip; }
   @keyframes fadeIn { from { opacity: 0; transform: translateX(-4px); } to { opacity: 1; transform: translateX(0); } }
 </style>
 </head>
@@ -2060,7 +2061,11 @@ function renderMarkdown(text) {
   // Paragraphs — wrap lines not already in block elements or placeholders
   html = html.replace(/^(?!<[houlp]|<pre|<table|<li|<\/|\x00)(.*\S.*)$/gm, '<p>$1</p>');
 
-  // Line breaks within paragraphs
+  // Strip newlines that immediately follow closing block-level tags to prevent
+  // spurious <br> elements between sections (e.g. </h2>\n<ul> → </h2><ul>).
+  html = html.replace(/(<\/(?:h[1-6]|ul|ol|li|table|p|pre|blockquote)>)\n+/g, '$1');
+
+  // Line breaks within remaining inline content (inside paragraphs, etc.)
   html = html.replace(/\n/g, '<br>');
 
   // Restore protected code spans

@@ -213,7 +213,7 @@ def _run_planning_agent(session_id: str, workspace: dict, prompt: str):
                         # Emit a text event so users see thinking in real-time
                         snippet = text.strip()
                         if snippet:
-                            snippet = snippet[:200] + "…" if len(snippet) > 200 else snippet
+                            snippet = snippet[:300] + "…" if len(snippet) > 300 else snippet
                             try:
                                 db.insert_planning_event(session_id, "text", snippet)
                             except Exception:
@@ -251,7 +251,13 @@ def _run_planning_agent(session_id: str, workspace: dict, prompt: str):
                 process.wait(timeout=10)
             except subprocess.TimeoutExpired:
                 logger.warning("Process for session %s did not exit after SIGKILL", session_id)
-        stderr_thread.join()
+        stderr_thread.join(timeout=5.0)
+        if stderr_thread.is_alive():
+            logger.warning(
+                "stderr thread for session %s did not finish after SIGKILL; "
+                "process may still be alive — session may need server restart to recover",
+                session_id,
+            )
     finally:
         with _active_lock:
             _starting.discard(session_id)
