@@ -1815,11 +1815,21 @@ async function resumePlannerSession(sessionId) {
 
 async function deletePlannerSession(sessionId) {
   if (!confirm('Delete this planning session?')) return;
-  await fetch(API + `/api/planning/${sessionId}`, {method: 'DELETE'});
-  if (plannerSessionId === sessionId) {
-    startNewPlannerSession();
+  try {
+    const r = await fetch(API + `/api/planning/${sessionId}`, {method: 'DELETE'});
+    if (!r.ok) {
+      console.error('Delete session request failed:', r.status, r.statusText);
+      alert('Failed to delete session. Please try again.');
+      return;
+    }
+    if (plannerSessionId === sessionId) {
+      startNewPlannerSession();
+    }
+    await loadPlannerSessions();
+  } catch (e) {
+    console.error('Delete session request error:', e);
+    alert('Failed to delete session: ' + e.message);
   }
-  await loadPlannerSessions();
 }
 
 function closePlanner() {
@@ -2076,10 +2086,22 @@ function togglePlannerTitle() {
 async function cancelPlanning() {
   if (!plannerSessionId) return;
   if (plannerPollTimer) { clearTimeout(plannerPollTimer); plannerPollTimer = null; }
-  await fetch(API + `/api/planning/${plannerSessionId}/cancel`, {method: 'POST'});
-  clearPlannerEvents();
-  setPlannerGenerating(false);
-  document.getElementById('planner-send-btn').textContent = plannerHasPlan ? 'Refine Plan' : 'Generate Plan';
+  try {
+    const r = await fetch(API + `/api/planning/${plannerSessionId}/cancel`, {method: 'POST'});
+    if (!r.ok) {
+      // Restore the spinner — cancel failed, generation may still be running
+      setPlannerGenerating(true);
+      console.error('Cancel request failed:', r.status, r.statusText);
+      return;
+    }
+    clearPlannerEvents();
+    setPlannerGenerating(false);
+    document.getElementById('planner-send-btn').textContent = plannerHasPlan ? 'Refine Plan' : 'Generate Plan';
+  } catch (e) {
+    // Network error — restore the spinner so the UI reflects actual state
+    setPlannerGenerating(true);
+    console.error('Cancel request error:', e);
+  }
 }
 
 async function createIssueFromPlan() {

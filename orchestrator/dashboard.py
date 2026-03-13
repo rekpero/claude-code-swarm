@@ -333,13 +333,13 @@ async def create_issue_from_plan(session_id: str, req: CreateIssueRequest):
     if not session:
         return JSONResponse(content={"error": "Session not found"}, status_code=404)
 
-    if planner.is_generating(session_id):
-        return JSONResponse(content={"error": "Plan generation is still in progress"}, status_code=409)
-
     try:
         result = planner.create_issue_from_plan(session_id, req.title)
         return result
-    except (ValueError, RuntimeError) as e:
+    except RuntimeError as e:
+        status_code = 409 if "in progress" in str(e) else 400
+        return JSONResponse(content={"error": str(e)}, status_code=status_code)
+    except ValueError as e:
         return JSONResponse(content={"error": str(e)}, status_code=400)
 
 

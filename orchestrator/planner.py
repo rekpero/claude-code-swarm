@@ -349,7 +349,12 @@ def _run_planning_agent_impl(session_id: str, workspace: dict, prompt: str):
                 logger.warning(
                     "Process for session %s did not exit after SIGKILL", session_id
                 )
-        stderr_thread.join()
+        stderr_thread.join(timeout=10.0)
+        if stderr_thread.is_alive():
+            logger.warning(
+                "stderr thread for session %s did not finish within 10s after process exit",
+                session_id,
+            )
     except Exception as e:
         logger.error("Planning agent stream error for session %s: %s", session_id, e)
         try:
@@ -481,7 +486,21 @@ def create_issue_from_plan(session_id: str, title: str = "") -> dict:
 
     If *title* is empty, a title is auto-generated from the plan content.
     Returns a dict with issue_number and issue_url on success, or raises on error.
+
+    Acquires _active_lock to atomically verify that no generation is in
+    progress before proceeding, eliminating the TOCTOU race between the
+    is_generating() check in the HTTP layer and the actual issue creation.
     """
+    # Atomically verify that no planning run is active or starting before
+    # proceeding.  Without this lock the HTTP endpoint's is_generating()
+    # check can pass, then a concurrent refine_plan request can claim the
+    # session via start_planning(), and we would then create an issue from
+    # a partially-updated or still-in-progress plan.
+    with _active_lock:
+        proc = _active.get(session_id)
+        if session_id in _starting or (proc is not None and proc.poll() is None):
+            raise RuntimeError("Plan generation is still in progress")
+
     session = db.get_planning_session(session_id)
     if not session:
         raise ValueError(f"Session {session_id} not found")
