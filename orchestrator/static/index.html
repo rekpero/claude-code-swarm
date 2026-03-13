@@ -2128,6 +2128,19 @@ async function createIssueFromPlan() {
       + (title ? 'Creating issue\u2026' : 'Generating title\u2026');
   }
 
+  // Poll for progress events while the request is in-flight so the chat UI
+  // shows real-time status (title generation, issue creation steps).
+  const localSessionId = plannerSessionId;
+  let eventPollInterval = setInterval(async () => {
+    try {
+      const evData = await fetchJSON(API + `/api/planning/${localSessionId}/events?since=${plannerLastEventId}`);
+      if (evData && evData.events && evData.events.length) {
+        plannerLastEventId = evData.events.reduce((max, e) => Math.max(max, e.id || 0), plannerLastEventId);
+        renderPlannerEvents(evData.events);
+      }
+    } catch (_) { /* ignore poll errors */ }
+  }, 800);
+
   try {
     const r = await fetch(API + `/api/planning/${plannerSessionId}/create-issue`, {
       method: 'POST',
@@ -2158,6 +2171,8 @@ async function createIssueFromPlan() {
   } catch(e) {
     if (btn) { btn.disabled = false; btn.textContent = originalLabel; }
     alert('Failed to create issue: ' + e.message);
+  } finally {
+    clearInterval(eventPollInterval);
   }
 }
 

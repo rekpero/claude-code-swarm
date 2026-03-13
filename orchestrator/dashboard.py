@@ -247,7 +247,7 @@ async def list_planning_sessions(workspace_id: str):
 
 
 @app.delete("/api/planning/{session_id}")
-async def delete_planning_session(session_id: str):
+def delete_planning_session(session_id: str):
     """Delete a planning session and its messages."""
     session = db.get_planning_session(session_id)
     if not session:
@@ -327,7 +327,7 @@ async def refine_plan(session_id: str, req: RefinePlanRequest):
 
 
 @app.post("/api/planning/{session_id}/create-issue")
-async def create_issue_from_plan(session_id: str, req: CreateIssueRequest):
+def create_issue_from_plan(session_id: str, req: CreateIssueRequest):
     """Create a GitHub issue from the generated plan."""
     session = db.get_planning_session(session_id)
     if not session:
@@ -344,7 +344,7 @@ async def create_issue_from_plan(session_id: str, req: CreateIssueRequest):
 
 
 @app.post("/api/planning/{session_id}/cancel")
-async def cancel_planning(session_id: str):
+def cancel_planning(session_id: str):
     """Cancel active generation for a planning session."""
     session = db.get_planning_session(session_id)
     if not session:

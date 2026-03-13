@@ -588,10 +588,23 @@ def create_issue_from_plan(session_id: str, title: str = "") -> dict:
 
         # Auto-generate title if not provided — use AI for a natural, descriptive title
         if not title:
+            try:
+                db.insert_planning_event(session_id, "info", "Generating issue title with AI\u2026")
+            except Exception:
+                pass
             title = _generate_title_with_ai(plan_body)
             logger.info("Auto-generated issue title for session %s: %s", session_id, title)
+            try:
+                db.insert_planning_event(session_id, "info", f"Title: {title[:80]}")
+            except Exception:
+                pass
 
         github_repo = workspace["github_repo"]
+
+        try:
+            db.insert_planning_event(session_id, "info", f"Creating GitHub issue in {github_repo}\u2026")
+        except Exception:
+            pass
 
         env = {**os.environ, "GH_TOKEN": GH_TOKEN}
 
