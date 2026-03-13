@@ -131,6 +131,29 @@ def _run_planning_agent(session_id: str, workspace: dict, prompt: str):
             pass
         with _active_lock:
             _cancelled.discard(session_id)
+            # Pop any leaked _active entry so is_generating() returns False and
+            # the session slot can be reused.  The only path that reaches this
+            # handler with _active[session_id] set is an exception raised
+            # between the `_active[session_id] = process` assignment inside
+            # _run_planning_agent_impl and the inner try: block — in practice
+            # this means stderr_thread.start() failed (OS thread-limit).
+            proc = _active.pop(session_id, None)
+        # Best-effort subprocess cleanup: prevent the orphaned process from
+        # deadlocking on a full stdout pipe buffer and leaking a zombie.
+        if proc is not None:
+            try:
+                proc.terminate()
+                proc.wait(timeout=5)
+            except subprocess.TimeoutExpired:
+                proc.kill()
+                try:
+                    proc.wait(timeout=10)
+                except subprocess.TimeoutExpired:
+                    logger.warning(
+                        "Process for session %s did not exit after SIGKILL", session_id
+                    )
+            except Exception:
+                pass
     finally:
         with _active_lock:
             _starting.discard(session_id)
