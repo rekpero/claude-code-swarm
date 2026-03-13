@@ -6,6 +6,22 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 
+## [1.3.0] - 2026-03-13
+
+### Added
+- **Issue Planner** — AI-powered plan generation from the dashboard: select a workspace, describe a feature or bug, and Claude explores the codebase and produces a structured markdown implementation plan
+- **`orchestrator/planner.py`** — new planning module that spawns a read-only `claude -p` agent (tools: `Read`, `Glob`, `Grep` only) in the workspace directory, streams events in real-time, and manages the full subprocess lifecycle (cancellation, timeout enforcement, status tracking)
+- **Planning DB tables**: `planning_sessions` (session lifecycle and metadata) and `planning_messages` (multi-turn conversation history) added to `db.py` with full CRUD and cascade delete on workspace removal
+- **`build_planning_prompt()`** in `prompts.py` — instructs Claude as a senior architect to explore the codebase and produce a structured plan (Summary, Files to Modify, Files to Create, Implementation Steps, Testing, Edge Cases); supports multi-turn refinement via conversation history
+- **5 new REST endpoints** in `dashboard.py`: `POST /api/planning`, `GET /api/planning/{id}`, `POST /api/planning/{id}/messages`, `POST /api/planning/{id}/create-issue`, `POST /api/planning/{id}/cancel`
+- **Real-time planning event stream**: `thinking`, `tool_use`, `tool_result`, `draft`, and `info` event types surface Claude's reasoning and codebase exploration live in the chat UI
+- **AI-powered issue title generation** (`_generate_title_with_ai()`) — uses Claude to produce a concise GitHub issue title from the plan body, with regex fallback
+- **Dashboard: planner UI** — "Plan Issue" button (visible when a workspace is selected), full-screen chat modal with scrollable history, inline markdown renderer (no external dependencies), 2-second polling during generation, cancel button, and "Create GitHub Issue" action that auto-labels with `ISSUE_LABEL` and returns the resulting URL
+- **Dashboard: session sidebar** — persisted planner session history with resume support; previous sessions are listed and can be reopened for continued refinement
+- **Conversational preamble stripping** — text before the first markdown heading is removed from the plan body before creating a GitHub issue, so the issue body starts cleanly at the structured plan
+
+---
+
 ## [1.2.0] - 2026-03-12
 
 ### Removed
