@@ -2008,11 +2008,17 @@ function pollPlannerSession() {
   if (plannerPollTimer) clearTimeout(plannerPollTimer);
 
   plannerPollTimer = setTimeout(async () => {
+    // Capture the session ID before any async operation so we can detect a
+    // concurrent session switch (e.g. resumePlannerSession()) after the await.
+    const localSessionId = plannerSessionId;
     // Fetch session state and new events in parallel
     const [data, evData] = await Promise.all([
-      fetchJSON(API + `/api/planning/${plannerSessionId}`),
-      fetchJSON(API + `/api/planning/${plannerSessionId}/events?since=${plannerLastEventId}`),
+      fetchJSON(API + `/api/planning/${localSessionId}`),
+      fetchJSON(API + `/api/planning/${localSessionId}/events?since=${plannerLastEventId}`),
     ]);
+    // If the user switched sessions while the fetch was in flight, discard
+    // this response — it belongs to the old session.
+    if (plannerSessionId !== localSessionId) return;
     if (!data) { pollPlannerSession(); return; }
 
     // Append new streaming events
@@ -2089,9 +2095,11 @@ async function cancelPlanning() {
   try {
     const r = await fetch(API + `/api/planning/${plannerSessionId}/cancel`, {method: 'POST'});
     if (!r.ok) {
-      // Restore the spinner — cancel failed, generation may still be running
+      // Restore the spinner — cancel failed, generation may still be running.
+      // Resume polling so the UI eventually reflects the server's actual state.
       setPlannerGenerating(true);
       console.error('Cancel request failed:', r.status, r.statusText);
+      pollPlannerSession();
       return;
     }
     clearPlannerEvents();
@@ -2141,6 +2149,8 @@ async function createIssueFromPlan() {
     const titleLine = data.title ? `<div style="margin-top:4px;font-size:12px;color:var(--text-dim)">Title: ${esc(data.title)}</div>` : '';
     resultEl.innerHTML = `<div class="planner-issue-link">✓ Issue created: ${link}${titleLine}</div>`;
 
+    // Re-enable the button so the user can create another issue if they refine the plan
+    if (btn) { btn.disabled = false; btn.textContent = originalLabel; }
     // Refresh issue queue and sidebar
     updateIssues();
     loadPlannerSessions();
