@@ -3,7 +3,6 @@ import { Plus, Trash2, Upload, Save } from 'lucide-react'
 import { Button } from '../ui/Button'
 import { Spinner } from '../ui/Spinner'
 import { getEnvFiles, getEnv, saveEnv, deleteEnvFile, loadEnvFromDisk } from '../../api/client'
-import { useQueryClient } from '@tanstack/react-query'
 
 function parseEnvText(text) {
   const vars = {}
@@ -20,9 +19,9 @@ function parseEnvText(text) {
 }
 
 export function EnvEditor({ workspaceId }) {
-  const queryClient = useQueryClient()
   const [envFiles, setEnvFiles] = useState([])
   const [activeFile, setActiveFile] = useState('.env')
+  const [fetchCounter, setFetchCounter] = useState(0)
   const [rows, setRows] = useState([])
   const [loading, setLoading] = useState(false)
   const [saving, setSaving] = useState(false)
@@ -46,7 +45,7 @@ export function EnvEditor({ workspaceId }) {
       setRows(entries)
     }).catch(() => setRows([]))
     .finally(() => setLoading(false))
-  }, [workspaceId, activeFile])
+  }, [workspaceId, activeFile, fetchCounter])
 
   const setRow = (i, field, val) => {
     setRows((prev) => prev.map((r, idx) => idx === i ? { ...r, [field]: val } : r))
@@ -66,7 +65,7 @@ export function EnvEditor({ workspaceId }) {
     }
     try {
       await saveEnv(workspaceId, activeFile, vars)
-      queryClient.invalidateQueries({ queryKey: ['env', workspaceId] })
+      setFetchCounter((c) => c + 1)
     } catch (err) {
       setSaveError(err?.message || 'Failed to save')
     } finally {

@@ -45,7 +45,7 @@ export function PRTracker() {
         <div className="flex flex-col gap-2">
           {prs.map((pr) => (
             <div
-              key={pr.pr_number}
+              key={`${pr.github_repo}-${pr.pr_number}`}
               className="rounded-lg border border-[var(--border)] bg-[var(--surface)] px-4 py-3"
             >
               <div className="flex items-center gap-3">
