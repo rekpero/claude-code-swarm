@@ -12,7 +12,7 @@ import DOMPurify from 'dompurify'
 
 function renderMarkdown(text) {
   if (!text) return ''
-  return DOMPurify.sanitize(marked.parse(text))
+  return DOMPurify.sanitize(marked.parse(text, { async: false }))
 }
 
 function eventIcon(eventType) {

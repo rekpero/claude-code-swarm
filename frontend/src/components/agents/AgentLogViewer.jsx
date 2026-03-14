@@ -118,11 +118,11 @@ export function AgentLogViewer({ agentId, isRunning }) {
         const existingIds = new Set(prev.map(e => e.id))
         const newEvents = data.events.filter(e => !existingIds.has(e.id))
         if (newEvents.length > 0) {
+          cursorRef.current = data.events[data.events.length - 1].id
           return [...prev, ...newEvents]
         }
         return prev
       })
-      cursorRef.current = data.events[data.events.length - 1].id
     }
   }, [data, cursorRef, agentId])
 
