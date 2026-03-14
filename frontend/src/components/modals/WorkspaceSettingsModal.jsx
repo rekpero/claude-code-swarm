@@ -10,6 +10,7 @@ const TABS = ['General', 'Env Files', 'Structure']
 export function WorkspaceSettingsModal({ open, onClose }) {
   const [activeTab, setActiveTab] = useState('General')
   const [confirmDelete, setConfirmDelete] = useState(false)
+  const [updateError, setUpdateError] = useState(null)
   const { selectedWorkspaceId, setSelectedWorkspaceId } = useWorkspaceContext()
   const { data } = useWorkspaces()
   const { mutate: update, isPending: isUpdating } = useUpdateWorkspace()
@@ -31,7 +32,14 @@ export function WorkspaceSettingsModal({ open, onClose }) {
   const handleUpdate = (e) => {
     e.preventDefault()
     if (!selectedWorkspaceId) return
-    update({ id: selectedWorkspaceId, data: form }, { onSuccess: onClose })
+    setUpdateError(null)
+    update(
+      { id: selectedWorkspaceId, data: form },
+      {
+        onSuccess: onClose,
+        onError: (err) => setUpdateError(err?.message || 'Failed to update workspace.'),
+      }
+    )
   }
 
   const handleDelete = () => {
@@ -100,6 +108,9 @@ export function WorkspaceSettingsModal({ open, onClose }) {
               className="w-full px-2.5 py-2 text-[12px] bg-[var(--bg)] border border-[var(--border)] rounded-md text-[var(--text)] font-mono focus:border-[var(--accent)] outline-none"
             />
           </div>
+          {updateError && (
+            <p className="text-[11px] text-[var(--red)]">{updateError}</p>
+          )}
           <div className="flex justify-between items-center mt-2">
             <div>
               {confirmDelete ? (

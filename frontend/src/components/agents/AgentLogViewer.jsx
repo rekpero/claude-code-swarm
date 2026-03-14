@@ -43,14 +43,16 @@ export function AgentLogViewer({ agentId, isRunning }) {
   const [since, setSince] = useState(0)
   const [allEvents, setAllEvents] = useState([])
 
-  const { data, isLoading } = useAgentLogs(agentId, { enabled: true, since })
+  const { data, isLoading } = useAgentLogs(agentId, { enabled: isRunning, since })
 
   useEffect(() => {
-    if (data?.events) {
-      setAllEvents(data.events)
-      if (data.events.length > 0) {
-        setSince(data.events[data.events.length - 1].id)
-      }
+    if (data?.events?.length > 0) {
+      setAllEvents(prev => {
+        const existingIds = new Set(prev.map(e => e.id))
+        const newEvents = data.events.filter(e => !existingIds.has(e.id))
+        return newEvents.length > 0 ? [...prev, ...newEvents] : prev
+      })
+      setSince(data.events[data.events.length - 1].id)
     }
   }, [data])
 
