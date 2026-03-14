@@ -110,6 +110,9 @@ export function EnvEditor({ workspaceId }) {
         return Array.from(existingMap.values())
       })
     }
+    reader.onerror = () => {
+      setSaveError('Failed to read file')
+    }
     reader.readAsText(file)
     e.target.value = ''
   }
