@@ -290,7 +290,7 @@ export function WorkspaceSettingsModal({ open, onClose }) {
         {TABS.map((tab) => (
           <button
             key={tab}
-            onClick={() => setActiveTab(tab)}
+            onClick={() => { setActiveTab(tab); setConfirmDelete(false) }}
             className={`relative px-4 py-2 text-[11px] font-medium transition-colors ${
               activeTab === tab
                 ? 'text-[var(--text)]'
