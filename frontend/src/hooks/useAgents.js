@@ -1,4 +1,4 @@
-import { useRef } from 'react'
+import { useEffect, useRef } from 'react'
 import { useQuery } from '@tanstack/react-query'
 import { getAgents, getAgentLogs } from '../api/client'
 
@@ -15,14 +15,15 @@ export function useAgentLogs(agentId, { since = 0, refetchInterval = 3000 } = {}
   const cursorRef = useRef(since)
   const prevAgentIdRef = useRef(agentId)
 
-  // Reset cursor synchronously during render when agentId changes so that
-  // TanStack Query's fetch for the new query key always starts from offset 0
-  // rather than the previous agent's last cursor (which would happen if we
-  // relied on a useEffect to do the reset after render).
-  if (prevAgentIdRef.current !== agentId) {
+  // Reset cursor in an effect to avoid mutating refs during render, which
+  // violates React's render-purity contract and breaks under StrictMode's
+  // double-render (the second pass would see prevAgentIdRef already updated
+  // and skip the reset). TanStack Query's queryFn is called after effects run,
+  // so the cursor is guaranteed to be 0 before the first fetch for the new agent.
+  useEffect(() => {
     prevAgentIdRef.current = agentId
     cursorRef.current = 0
-  }
+  }, [agentId])
 
   const query = useQuery({
     queryKey: ['agent-logs', agentId],
