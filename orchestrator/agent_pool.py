@@ -944,7 +944,7 @@ class AgentPool:
                                 event = parse_stream_line(remaining)
                                 if event:
                                     db.insert_event(agent_id, event.event_type, json.dumps(event.raw))
-                            db.update_agent(agent_id, log_offset=f.tell())
+                                    db.update_agent(agent_id, log_offset=f.tell())
                             break
                         time.sleep(1)
         except Exception as e:
@@ -996,7 +996,8 @@ class AgentPool:
                 if turns:
                     db.update_agent(agent_id, turns_used=turns)
                 db.finish_agent(agent_id, status="timeout", error_message="Agent exceeded timeout (reattached)")
-                db.update_issue(issue_number, workspace_id=workspace_id, status="pending")
+                if issue_number is not None:
+                    db.update_issue(issue_number, workspace_id=workspace_id, status="pending")
                 repo_path = workspace.get("local_path") if workspace else None
                 if worktree_path and repo_path:
                     cleanup_worktree(worktree_path, repo_path=repo_path)
