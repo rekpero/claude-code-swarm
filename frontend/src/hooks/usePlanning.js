@@ -25,6 +25,7 @@ export function usePlanning(workspaceId) {
   const lastEventIdRef = useRef(0)
   const pollTimerRef = useRef(null)
   const sessionIdRef = useRef(null)
+  const pollErrorCountRef = useRef(0)
 
   useEffect(() => {
     sessionIdRef.current = sessionId
@@ -112,13 +113,21 @@ export function usePlanning(workspaceId) {
           }
         }
 
+        pollErrorCountRef.current = 0
         if (data.generating || data.session?.status === 'generating') {
           poll()
         } else {
           setGenerating(false)
         }
       } catch {
-        poll()
+        pollErrorCountRef.current += 1
+        const MAX_POLL_ERRORS = 5
+        if (pollErrorCountRef.current <= MAX_POLL_ERRORS) {
+          // Exponential backoff: 600ms, 1.2s, 2.4s, 4.8s, 9.6s
+          const backoff = Math.min(300 * Math.pow(2, pollErrorCountRef.current), 30000)
+          pollTimerRef.current = setTimeout(() => poll(), backoff)
+        }
+        // else: stop retrying after MAX_POLL_ERRORS consecutive failures
       }
     }, 300)
   }, [stopPolling])
@@ -241,10 +250,17 @@ export function usePlanning(workspaceId) {
 
     setCreatingIssue(messageIndex)
 
-    // Poll for events during issue creation
+    // Poll for events during issue creation.
+    // Guard against session switches: if the user switches to another session
+    // while the issue is being created, stop fetching events for the old session.
     const eventPollInterval = setInterval(async () => {
+      if (sessionIdRef.current !== sid) {
+        clearInterval(eventPollInterval)
+        return
+      }
       try {
         const evData = await getPlanningEvents(sid, lastEventIdRef.current)
+        if (sessionIdRef.current !== sid) return
         if (evData?.events?.length) {
           lastEventIdRef.current = evData.events[evData.events.length - 1].id
           setStreamEvents(prev => [...prev, ...evData.events])

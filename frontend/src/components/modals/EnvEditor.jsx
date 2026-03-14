@@ -1,4 +1,4 @@
-import { useState, useEffect } from 'react'
+import { useState, useEffect, useRef } from 'react'
 import { Plus, Trash2, Upload, Save, RefreshCw } from 'lucide-react'
 import { Button } from '../ui/Button'
 import { Spinner } from '../ui/Spinner'
@@ -35,6 +35,10 @@ export function EnvEditor({ workspaceId }) {
   const [showPaste, setShowPaste] = useState(false)
   const [syncing, setSyncing] = useState(false)
   const [dirty, setDirty] = useState(false)
+  // Keep a ref in sync so the load effect can read the current dirty value
+  // without including it in the dependency array (dirty is a guard, not a trigger).
+  const dirtyRef = useRef(false)
+  dirtyRef.current = dirty
 
   useEffect(() => {
     setActiveFile('.env')
@@ -59,8 +63,10 @@ export function EnvEditor({ workspaceId }) {
 
   useEffect(() => {
     if (!workspaceId || !activeFile) return
-    // Don't overwrite unsaved edits on cache-bust refetches
-    if (dirty && fetchCounter > 0) return
+    // Don't overwrite unsaved edits on cache-bust refetches.
+    // Use dirtyRef (not dirty state) so this guard doesn't re-trigger the
+    // effect on every keystroke — dirty is a guard condition, not a trigger.
+    if (dirtyRef.current && fetchCounter > 0) return
     let cancelled = false
     setLoading(true)
     setFileReadError(null)
@@ -95,7 +101,7 @@ export function EnvEditor({ workspaceId }) {
         if (!cancelled) setLoading(false)
       })
     return () => { cancelled = true }
-  }, [workspaceId, activeFile, fetchCounter, dirty])
+  }, [workspaceId, activeFile, fetchCounter])
 
   const setRow = (i, field, val) => {
     setDirty(true)

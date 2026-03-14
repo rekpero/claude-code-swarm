@@ -118,12 +118,13 @@ export function AgentLogViewer({ agentId, isRunning }) {
       setAllEvents(prev => {
         const existingIds = new Set(prev.map(e => e.id))
         const newEvents = data.events.filter(e => !existingIds.has(e.id))
-        if (newEvents.length > 0) {
-          cursorRef.current = newCursor
-          return [...prev, ...newEvents]
-        }
-        return prev
+        if (newEvents.length === 0) return prev
+        return [...prev, ...newEvents]
       })
+      // Update cursor outside the state updater: React may invoke updater
+      // functions more than once in StrictMode/concurrent mode, which would
+      // advance the cursor even when the state update is ultimately discarded.
+      cursorRef.current = newCursor
     }
   }, [data, cursorRef, agentId])
 
