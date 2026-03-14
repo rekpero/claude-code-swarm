@@ -1,6 +1,7 @@
 """FastAPI dashboard server for the swarm orchestrator."""
 
 import json
+import uuid
 from pathlib import Path
 
 from fastapi import FastAPI, Query
@@ -9,6 +10,7 @@ from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 
 from orchestrator import db
+from orchestrator import planner
 from orchestrator import workspace_manager as wm
 
 app = FastAPI(title="Claude Code Swarm Dashboard")
@@ -217,6 +219,139 @@ async def list_prs(workspace_id: str | None = Query(None)):
                 pass
 
     return {"prs": list(pr_map.values())}
+
+
+class StartPlanningRequest(BaseModel):
+    workspace_id: str
+    message: str
+
+
+class RefinePlanRequest(BaseModel):
+    message: str
+
+
+class CreateIssueRequest(BaseModel):
+    title: str = ""
+
+
+# === Planning Endpoints ===
+
+@app.get("/api/workspaces/{workspace_id}/planning-sessions")
+async def list_planning_sessions(workspace_id: str):
+    """List all planning sessions for a workspace."""
+    workspace = db.get_workspace(workspace_id)
+    if not workspace:
+        return JSONResponse(content={"error": "Workspace not found"}, status_code=404)
+    sessions = db.list_planning_sessions(workspace_id)
+    return {"sessions": sessions}
+
+
+@app.delete("/api/planning/{session_id}")
+def delete_planning_session(session_id: str):
+    """Delete a planning session and its messages."""
+    session = db.get_planning_session(session_id)
+    if not session:
+        return JSONResponse(content={"error": "Session not found"}, status_code=404)
+    planner.cancel_planning(session_id)
+    db.delete_planning_session(session_id)
+    return {"ok": True}
+
+
+@app.post("/api/planning")
+async def start_planning(req: StartPlanningRequest):
+    """Create a planning session and start generating a plan."""
+    workspace = db.get_workspace(req.workspace_id)
+    if not workspace:
+        return JSONResponse(content={"error": "Workspace not found"}, status_code=404)
+
+    session_id = str(uuid.uuid4())
+    db.create_planning_session(session_id, req.workspace_id)
+
+    try:
+        result = planner.start_planning(session_id, req.workspace_id, req.message)
+    except Exception:
+        db.delete_planning_session(session_id)
+        raise
+    if result == "workspace_not_found":
+        db.delete_planning_session(session_id)
+        return JSONResponse(content={"error": "Workspace not found"}, status_code=404)
+    if result == "already_generating":
+        db.delete_planning_session(session_id)
+        return JSONResponse(content={"error": "Generation already in progress"}, status_code=409)
+
+    session = db.get_planning_session(session_id)
+    messages = db.get_planning_messages(session_id)
+    return {"session": session, "messages": messages}
+
+
+@app.get("/api/planning/{session_id}")
+async def get_planning_session(session_id: str):
+    """Get planning session status and all messages."""
+    session = db.get_planning_session(session_id)
+    if not session:
+        return JSONResponse(content={"error": "Session not found"}, status_code=404)
+
+    messages = db.get_planning_messages(session_id)
+    generating = planner.is_generating(session_id)
+    return {"session": session, "messages": messages, "generating": generating}
+
+
+@app.get("/api/planning/{session_id}/events")
+async def get_planning_events(session_id: str, since: int = Query(0)):
+    """Get streaming progress events for a planning session."""
+    session = db.get_planning_session(session_id)
+    if not session:
+        return JSONResponse(content={"error": "Session not found"}, status_code=404)
+    events = db.get_planning_events(session_id, since_id=since)
+    return {"events": events}
+
+
+@app.post("/api/planning/{session_id}/messages")
+async def refine_plan(session_id: str, req: RefinePlanRequest):
+    """Send a refinement message to continue the planning conversation."""
+    session = db.get_planning_session(session_id)
+    if not session:
+        return JSONResponse(content={"error": "Session not found"}, status_code=404)
+
+    # start_planning atomically checks and claims the session slot, eliminating
+    # the TOCTOU race between is_generating() and start_planning().
+    result = planner.start_planning(session_id, session["workspace_id"], req.message)
+    if result == "already_generating":
+        return JSONResponse(content={"error": "Generation already in progress"}, status_code=409)
+    if result == "workspace_not_found":
+        return JSONResponse(content={"error": "Workspace not found"}, status_code=404)
+
+    session = db.get_planning_session(session_id)
+    messages = db.get_planning_messages(session_id)
+    return {"session": session, "messages": messages}
+
+
+@app.post("/api/planning/{session_id}/create-issue")
+def create_issue_from_plan(session_id: str, req: CreateIssueRequest):
+    """Create a GitHub issue from the generated plan."""
+    session = db.get_planning_session(session_id)
+    if not session:
+        return JSONResponse(content={"error": "Session not found"}, status_code=404)
+
+    try:
+        result = planner.create_issue_from_plan(session_id, req.title)
+        return result
+    except RuntimeError as e:
+        status_code = 409 if "in progress" in str(e) else 400
+        return JSONResponse(content={"error": str(e)}, status_code=status_code)
+    except ValueError as e:
+        return JSONResponse(content={"error": str(e)}, status_code=400)
+
+
+@app.post("/api/planning/{session_id}/cancel")
+def cancel_planning(session_id: str):
+    """Cancel active generation for a planning session."""
+    session = db.get_planning_session(session_id)
+    if not session:
+        return JSONResponse(content={"error": "Session not found"}, status_code=404)
+
+    planner.cancel_planning(session_id)
+    return {"ok": True}
 
 
 class UpdateIssueStatusRequest(BaseModel):

@@ -96,6 +96,36 @@ CREATE TABLE IF NOT EXISTS pr_reviews (
     FOREIGN KEY (agent_id) REFERENCES agents(agent_id),
     FOREIGN KEY (workspace_id) REFERENCES workspaces(id)
 );
+
+CREATE TABLE IF NOT EXISTS planning_sessions (
+    id TEXT PRIMARY KEY,
+    workspace_id TEXT NOT NULL,
+    title TEXT DEFAULT '',
+    status TEXT NOT NULL DEFAULT 'active',
+    issue_number INTEGER,
+    issue_url TEXT,
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    FOREIGN KEY (workspace_id) REFERENCES workspaces(id)
+);
+
+CREATE TABLE IF NOT EXISTS planning_messages (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    session_id TEXT NOT NULL,
+    role TEXT NOT NULL,
+    content TEXT NOT NULL,
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    FOREIGN KEY (session_id) REFERENCES planning_sessions(id)
+);
+
+CREATE TABLE IF NOT EXISTS planning_events (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    session_id TEXT NOT NULL,
+    event_type TEXT NOT NULL,
+    summary TEXT NOT NULL,
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    FOREIGN KEY (session_id) REFERENCES planning_sessions(id)
+);
 """
 
 
@@ -240,6 +270,9 @@ def delete_workspace(workspace_id: str):
     conn.execute("DELETE FROM pr_reviews WHERE workspace_id = ?", (workspace_id,))
     conn.execute("DELETE FROM agents WHERE workspace_id = ?", (workspace_id,))
     conn.execute("DELETE FROM issues WHERE workspace_id = ?", (workspace_id,))
+    conn.execute("DELETE FROM planning_messages WHERE session_id IN (SELECT id FROM planning_sessions WHERE workspace_id = ?)", (workspace_id,))
+    conn.execute("DELETE FROM planning_events WHERE session_id IN (SELECT id FROM planning_sessions WHERE workspace_id = ?)", (workspace_id,))
+    conn.execute("DELETE FROM planning_sessions WHERE workspace_id = ?", (workspace_id,))
     conn.execute("DELETE FROM workspaces WHERE id = ?", (workspace_id,))
     conn.commit()
 
@@ -596,6 +629,109 @@ def get_all_pr_reviews(workspace_id: str | None = None) -> list[dict]:
         rows = conn.execute(
             "SELECT * FROM pr_reviews ORDER BY pr_number, iteration"
         ).fetchall()
+    return [dict(r) for r in rows]
+
+
+# === Metrics ===
+
+
+# === Planning Sessions ===
+
+
+def create_planning_session(session_id: str, workspace_id: str):
+    conn = _get_connection()
+    conn.execute(
+        """INSERT INTO planning_sessions (id, workspace_id, status, created_at, updated_at)
+           VALUES (?, ?, 'active', ?, ?)""",
+        (session_id, workspace_id, _now(), _now()),
+    )
+    conn.commit()
+
+
+def get_planning_session(session_id: str) -> dict | None:
+    conn = _get_connection()
+    row = conn.execute(
+        "SELECT * FROM planning_sessions WHERE id = ?", (session_id,)
+    ).fetchone()
+    return dict(row) if row else None
+
+
+_PLANNING_SESSION_ALLOWED_COLS = {"status", "title", "issue_number", "issue_url", "updated_at"}
+
+
+def update_planning_session(session_id: str, **kwargs):
+    conn = _get_connection()
+    kwargs["updated_at"] = _now()
+    invalid = set(kwargs) - _PLANNING_SESSION_ALLOWED_COLS
+    if invalid:
+        raise ValueError(f"Invalid column(s) for update_planning_session: {invalid}")
+    sets = ", ".join(f"{k} = ?" for k in kwargs)
+    vals = list(kwargs.values()) + [session_id]
+    conn.execute(f"UPDATE planning_sessions SET {sets} WHERE id = ?", vals)
+    conn.commit()
+
+
+def add_planning_message(session_id: str, role: str, content: str):
+    conn = _get_connection()
+    conn.execute(
+        """INSERT INTO planning_messages (session_id, role, content, created_at)
+           VALUES (?, ?, ?, ?)""",
+        (session_id, role, content, _now()),
+    )
+    conn.commit()
+
+
+def get_planning_messages(session_id: str) -> list[dict]:
+    conn = _get_connection()
+    rows = conn.execute(
+        "SELECT * FROM planning_messages WHERE session_id = ? ORDER BY id",
+        (session_id,),
+    ).fetchall()
+    return [dict(r) for r in rows]
+
+
+def list_planning_sessions(workspace_id: str, limit: int = 50, offset: int = 0) -> list[dict]:
+    conn = _get_connection()
+    rows = conn.execute(
+        """SELECT ps.*, (SELECT content FROM planning_messages pm
+            WHERE pm.session_id = ps.id AND pm.role = 'user'
+            ORDER BY pm.id ASC LIMIT 1) AS first_message
+           FROM planning_sessions ps
+           WHERE ps.workspace_id = ?
+           ORDER BY ps.updated_at DESC
+           LIMIT ? OFFSET ?""",
+        (workspace_id, limit, offset),
+    ).fetchall()
+    return [dict(r) for r in rows]
+
+
+def delete_planning_session(session_id: str):
+    conn = _get_connection()
+    conn.execute("DELETE FROM planning_messages WHERE session_id = ?", (session_id,))
+    conn.execute("DELETE FROM planning_events WHERE session_id = ?", (session_id,))
+    conn.execute("DELETE FROM planning_sessions WHERE id = ?", (session_id,))
+    conn.commit()
+
+
+def insert_planning_event(session_id: str, event_type: str, summary: str):
+    conn = _get_connection()
+    conn.execute(
+        """INSERT INTO planning_events (session_id, event_type, summary, created_at)
+           VALUES (?, ?, ?, ?)""",
+        (session_id, event_type, summary, _now()),
+    )
+    conn.commit()
+
+
+def get_planning_events(session_id: str, since_id: int = 0, limit: int = 200) -> list[dict]:
+    conn = _get_connection()
+    rows = conn.execute(
+        """SELECT * FROM planning_events
+           WHERE session_id = ? AND id > ?
+           ORDER BY id
+           LIMIT ?""",
+        (session_id, since_id, limit),
+    ).fetchall()
     return [dict(r) for r in rows]
 
 

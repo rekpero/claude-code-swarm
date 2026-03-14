@@ -1,0 +1,801 @@
+"""Planning agent — analyzes codebase and produces implementation plans."""
+
+import collections
+import json
+import logging
+import os
+import queue
+import re
+import subprocess
+import threading
+import time
+
+from orchestrator import db
+from orchestrator.config import CLAUDE_CODE_OAUTH_TOKEN, GH_TOKEN, ISSUE_LABEL
+from orchestrator.prompts import build_planning_prompt
+
+logger = logging.getLogger(__name__)
+
+# Tracks active planning subprocesses: session_id -> subprocess.Popen
+_active: dict[str, subprocess.Popen] = {}
+# Sessions that have been claimed for a new start but whose subprocess has not
+# yet been registered in _active.  Both sets are protected by _active_lock.
+_starting: set[str] = set()
+# Sessions that were externally cancelled via cancel_planning() while their
+# subprocess was already running.  _run_planning_agent checks this set after
+# the finally block and skips the post-run DB status update so that the
+# cancel_planning() write of status='active' is never overwritten.
+_cancelled: set[str] = set()
+# Sessions whose subprocess is currently being terminated by cancel_planning().
+# The entry is present from the moment _active is popped until proc.terminate()
+# + proc.wait() completes.  create_issue_from_plan() blocks on this set so it
+# cannot proceed concurrently with an in-flight cancellation.
+_cancelling: set[str] = set()
+_active_lock = threading.Lock()
+
+# Per-session issue-creation guard.  Prevents duplicate GitHub issues when the
+# frontend (or any other caller) sends concurrent POST requests to create-issue
+# (e.g. a user double-clicking the "Create GitHub Issue" button).
+# _issue_creating is protected by _issue_creating_lock.
+_issue_creating: set[str] = set()
+_issue_creating_lock = threading.Lock()
+
+
+def is_generating(session_id: str) -> bool:
+    """Return True if a planning subprocess is currently running for this session."""
+    with _active_lock:
+        if session_id in _starting:
+            return True
+        proc = _active.get(session_id)
+        if proc is None:
+            return False
+        return proc.poll() is None
+
+
+def start_planning(session_id: str, workspace_id: str, user_message: str) -> str:
+    """Add user message, build prompt, and launch background planning thread.
+
+    If the session already has messages (refinement), the full conversation
+    history is included in the prompt.
+
+    Returns a status string indicating the outcome:
+      - ``"ok"``                  — planning was successfully started.
+      - ``"already_generating"``  — a generation is already in progress.
+      - ``"workspace_not_found"`` — the workspace no longer exists.
+
+    The check and the claim are performed atomically under _active_lock to
+    eliminate the TOCTOU race between callers that call is_generating() and
+    start_planning() separately.
+    """
+    # Atomically check and claim the session slot before doing any work.
+    with _active_lock:
+        proc = _active.get(session_id)
+        if session_id in _starting or (proc is not None and proc.poll() is None):
+            return "already_generating"
+        _starting.add(session_id)
+
+    try:
+        workspace = db.get_workspace(workspace_id)
+        if not workspace:
+            with _active_lock:
+                _starting.discard(session_id)
+                _cancelled.discard(session_id)
+            db.update_planning_session(session_id, status="error")
+            logger.error("Planning session %s: workspace %s not found", session_id, workspace_id)
+            return "workspace_not_found"
+
+        # Build conversation history before adding the new user message
+        history_messages = db.get_planning_messages(session_id)
+        history = [{"role": m["role"], "content": m["content"]} for m in history_messages]
+
+        # Persist user message (after workspace validation so no orphaned message on failure)
+        db.add_planning_message(session_id, "user", user_message)
+
+        prompt = build_planning_prompt(user_message, conversation_history=history if history else None)
+
+        db.update_planning_session(session_id, status="generating")
+
+        thread = threading.Thread(
+            target=_run_planning_agent,
+            args=(session_id, workspace, prompt),
+            daemon=True,
+            name=f"planner-{session_id[:8]}",
+        )
+        thread.start()
+    except Exception:
+        with _active_lock:
+            _starting.discard(session_id)
+            _cancelled.discard(session_id)
+        try:
+            db.update_planning_session(session_id, status="error")
+        except Exception:
+            pass
+        logger.exception("Failed to start planning for session %s", session_id)
+        raise
+    return "ok"
+
+
+def _run_planning_agent(session_id: str, workspace: dict, prompt: str):
+    """Spawn claude -p in the workspace directory to produce a plan.
+
+    Uses Read, Glob, Grep only — fully read-only, no worktree needed.
+    """
+    # Outermost guard: ensure _starting sentinel is always released even if an
+    # exception occurs before the inner try/finally block that normally handles
+    # this cleanup (e.g. a KeyError on the workspace dict or a DB failure).
+    try:
+        _run_planning_agent_impl(session_id, workspace, prompt)
+    except Exception:
+        # If _run_planning_agent_impl raises before it enters its own
+        # try/except (e.g. db.get_workspace_env() fails or workspace dict has
+        # a missing key), the session status was set to 'generating' by
+        # start_planning() and would never be updated, leaving the UI spinner
+        # stuck forever.  Set status='error' here so the session is
+        # recoverable.  Also clean up any leaked _cancelled entry so that a
+        # concurrent cancel_planning() call that added this session to
+        # _cancelled does not leave a stale entry.
+        logger.exception("Unhandled exception in planning agent for session %s", session_id)
+        try:
+            db.update_planning_session(session_id, status="error")
+        except Exception:
+            pass
+        with _active_lock:
+            _cancelled.discard(session_id)
+            # Pop any leaked _active entry so is_generating() returns False and
+            # the session slot can be reused.  The only path that reaches this
+            # handler with _active[session_id] set is an exception raised
+            # between the `_active[session_id] = process` assignment inside
+            # _run_planning_agent_impl and the inner try: block — in practice
+            # this means stderr_thread.start() failed (OS thread-limit).
+            proc = _active.pop(session_id, None)
+        # Best-effort subprocess cleanup: prevent the orphaned process from
+        # deadlocking on a full stdout pipe buffer and leaking a zombie.
+        if proc is not None:
+            try:
+                proc.terminate()
+                proc.wait(timeout=5)
+            except subprocess.TimeoutExpired:
+                proc.kill()
+                try:
+                    proc.wait(timeout=10)
+                except subprocess.TimeoutExpired:
+                    logger.warning(
+                        "Process for session %s did not exit after SIGKILL", session_id
+                    )
+            except Exception:
+                pass
+    finally:
+        with _active_lock:
+            _starting.discard(session_id)
+
+
+def _run_planning_agent_impl(session_id: str, workspace: dict, prompt: str):
+    """Inner implementation — called exclusively from _run_planning_agent."""
+    local_path = workspace["local_path"]
+    workspace_id = workspace["id"]
+
+    cmd = [
+        "claude",
+        "--allowedTools", "Read,Glob,Grep",
+        "--output-format", "stream-json",
+        "--verbose",
+    ]
+
+    env = {
+        **os.environ,
+        "CLAUDE_CODE_OAUTH_TOKEN": CLAUDE_CODE_OAUTH_TOKEN,
+        "GH_TOKEN": GH_TOKEN,
+    }
+
+    # Inject workspace-specific env vars
+    ws_env = db.get_workspace_env(workspace_id)
+    env.update(ws_env)
+
+    logger.info("Starting planning agent for session %s in %s", session_id, local_path)
+
+    try:
+        process = subprocess.Popen(
+            cmd,
+            cwd=local_path,
+            stdin=subprocess.PIPE,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True,
+            env=env,
+        )
+    except Exception as e:
+        logger.error("Failed to spawn planning agent for session %s: %s", session_id, e)
+        with _active_lock:
+            was_cancelled = session_id in _cancelled
+            _starting.discard(session_id)
+            if was_cancelled:
+                _cancelled.discard(session_id)
+        if was_cancelled:
+            logger.info("Planning session %s was cancelled before spawn completed", session_id)
+            db.update_planning_session(session_id, status="active")
+        else:
+            db.update_planning_session(session_id, status="error")
+        return
+
+    # Replace the _starting sentinel with the actual process atomically so that
+    # is_generating() always sees a consistent state.
+    # If cancel_planning() was called while we were spawning, session_id will
+    # no longer be in _starting — detect that and abort rather than registering
+    # a process the caller believes was already cancelled.
+    with _active_lock:
+        cancelled = session_id not in _starting
+        _starting.discard(session_id)
+        if not cancelled:
+            _active[session_id] = process
+
+    if cancelled:
+        logger.info("Planning session %s was cancelled during spawn; terminating process", session_id)
+        try:
+            process.terminate()
+            process.wait(timeout=5)
+        except subprocess.TimeoutExpired:
+            process.kill()
+            try:
+                process.wait(timeout=10)
+            except subprocess.TimeoutExpired:
+                logger.warning("Process for session %s did not exit after SIGKILL", session_id)
+        db.update_planning_session(session_id, status="active")
+        with _active_lock:
+            _cancelled.discard(session_id)
+        return
+
+    # Write the prompt to stdin and close it so the claude CLI reads it from
+    # the pipe rather than the OS process argument list (which is world-readable
+    # via /proc/<pid>/cmdline and `ps aux`).
+    try:
+        process.stdin.write(prompt)
+        process.stdin.close()
+    except Exception as e:
+        logger.error("Failed to write prompt to stdin for session %s: %s", session_id, e)
+        process.kill()
+        try:
+            process.wait(timeout=10)
+        except subprocess.TimeoutExpired:
+            pass
+        db.update_planning_session(session_id, status="error")
+        return
+
+    # Emit an initial info event so the UI shows analysis has started immediately
+    try:
+        db.insert_planning_event(session_id, "info", "Starting codebase analysis\u2026")
+    except Exception:
+        pass
+
+    plan_text: str | None = None
+    # Accumulates text across ALL assistant messages for live draft display.
+    accumulated_draft: list[str] = []
+    # Maps tool_use_id -> {name, input} so tool_result events can reference
+    # the originating tool call and show meaningful context (e.g. file path).
+    pending_tool_inputs: dict[str, dict] = {}
+
+    # Drain stderr in a background thread to prevent pipe buffer deadlock.
+    # The subprocess emits significant output on stderr (due to --verbose), and
+    # leaving stderr unread while blocking on stdout causes a classic deadlock
+    # when the 64 KB OS pipe buffer fills up.
+    # Only the last _STDERR_TAIL_LINES lines are retained; the first 300 chars
+    # of that tail are used for error diagnostics.  This avoids loading
+    # potentially many megabytes of --verbose output into memory.
+    _STDERR_TAIL_LINES = 20
+    stderr_chunks: list[str] = []
+
+    def _drain_stderr() -> None:
+        tail: collections.deque[str] = collections.deque(maxlen=_STDERR_TAIL_LINES)
+        for line in process.stderr:
+            tail.append(line)
+        stderr_chunks.extend(tail)
+
+    stderr_thread = threading.Thread(
+        target=_drain_stderr,
+        daemon=True,
+        name=f"stderr-{session_id[:8]}",
+    )
+    stderr_thread.start()
+
+    # Maximum wall-clock time allowed for the stdout-reading phase.  If the
+    # subprocess produces no output and does not close stdout within this
+    # window (e.g. stuck on a hung Anthropic API call), the process is killed
+    # so the planner thread is never blocked forever.
+    _STDOUT_TIMEOUT = 600  # 10 minutes
+
+    # Move stdout reading to a daemon thread so the main loop can impose a
+    # wall-clock deadline via a Queue with per-get timeouts.  The plain
+    # ``for line in process.stdout`` iterator blocks indefinitely when the
+    # subprocess stalls without producing output or closing its stdout pipe.
+    stdout_queue: queue.Queue[str | None] = queue.Queue()
+
+    def _read_stdout() -> None:
+        try:
+            for raw_line in process.stdout:
+                stdout_queue.put(raw_line)
+        finally:
+            stdout_queue.put(None)  # EOF sentinel — always sent
+
+    stdout_reader_thread = threading.Thread(
+        target=_read_stdout,
+        daemon=True,
+        name=f"stdout-{session_id[:8]}",
+    )
+    stdout_reader_thread.start()
+
+    deadline = time.monotonic() + _STDOUT_TIMEOUT
+
+    try:
+        while True:
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                logger.warning(
+                    "Stdout timeout (%ds) for session %s; killing process",
+                    _STDOUT_TIMEOUT,
+                    session_id,
+                )
+                process.kill()
+                break
+            try:
+                raw_line = stdout_queue.get(timeout=min(30.0, remaining))
+            except queue.Empty:
+                # No output in this window — check whether the process has
+                # already exited (pipe closed but sentinel not yet queued).
+                if process.poll() is not None:
+                    break
+                continue
+            if raw_line is None:
+                break  # EOF sentinel — subprocess closed stdout
+            line = raw_line.strip()
+            if not line:
+                continue
+            try:
+                data = json.loads(line)
+            except json.JSONDecodeError:
+                continue
+
+            msg_type = data.get("type", "")
+            if msg_type == "result":
+                result_data = data.get("result", "")
+                if isinstance(result_data, str):
+                    plan_text = result_data
+                elif isinstance(result_data, dict):
+                    plan_text = json.dumps(result_data)
+            elif msg_type == "assistant":
+                # Capture the last assistant text block as fallback
+                content_blocks = data.get("message", {}).get("content", [])
+                text_parts = []
+                tool_use_summaries = []
+                for block in content_blocks:
+                    if not isinstance(block, dict):
+                        continue
+                    block_type = block.get("type")
+                    if block_type == "text":
+                        text = block.get("text", "")
+                        text_parts.append(text)
+                    elif block_type == "tool_use":
+                        tool_name = block.get("name", "tool")
+                        tool_input = block.get("input", {})
+                        tool_use_id = block.get("id", "")
+                        if tool_name == "Read":
+                            summary = f"Reading {tool_input.get('file_path', '?')}"
+                        elif tool_name == "Glob":
+                            summary = f"Searching for {tool_input.get('pattern', '?')}"
+                        elif tool_name == "Grep":
+                            pattern = tool_input.get('pattern', '?')
+                            path = tool_input.get('path', '')
+                            summary = f"Grepping for '{pattern}'" + (f" in {path}" if path else "")
+                        else:
+                            summary = f"Using {tool_name}"
+                        tool_use_summaries.append(summary)
+                        # Track tool_use_id so the corresponding tool_result can
+                        # show the file/pattern context rather than just a line count.
+                        if tool_use_id:
+                            pending_tool_inputs[tool_use_id] = {
+                                "name": tool_name,
+                                "input": tool_input,
+                            }
+                # Emit all text from Claude as thinking events so the chat UI
+                # shows Claude's reasoning inline (like Claude.ai / ChatGPT).
+                # Previously this only fired when tool use was also present, which
+                # hid reasoning-only messages (e.g. when Claude writes analysis
+                # text between tool calls, or narrates what it is about to do).
+                if text_parts:
+                    reasoning = " ".join(t.strip() for t in text_parts if t.strip())
+                    if reasoning:
+                        if len(reasoning) > 600:
+                            reasoning = reasoning[:597] + "..."
+                        try:
+                            db.insert_planning_event(session_id, "thinking", reasoning)
+                        except Exception:
+                            pass
+                # Emit each tool_use call as a separate step event
+                for summary in tool_use_summaries:
+                    try:
+                        db.insert_planning_event(session_id, "tool_use", summary)
+                    except Exception:
+                        pass
+                if text_parts:
+                    plan_text = "\n".join(text_parts)
+                    # Accumulate across all assistant turns and emit a live draft event
+                    # so the UI can show the plan growing in real-time.
+                    accumulated_draft.append(plan_text)
+                    draft_text = "\n\n".join(accumulated_draft).strip()
+                    if draft_text:
+                        try:
+                            db.insert_planning_event(session_id, "draft", draft_text)
+                        except Exception:
+                            pass
+            elif msg_type == "user":
+                # Capture tool results so the UI can show what Claude found.
+                # Correlate with pending_tool_inputs via tool_use_id to include
+                # the file/pattern context in the summary (e.g. "Read planner.py:
+                # 567 lines" rather than just "Got 567 lines").
+                content_blocks = data.get("message", {}).get("content", [])
+                for block in content_blocks:
+                    if not isinstance(block, dict):
+                        continue
+                    if block.get("type") == "tool_result":
+                        tool_use_id = block.get("tool_use_id", "")
+                        origin = pending_tool_inputs.pop(tool_use_id, None)
+                        content = block.get("content", [])
+                        if isinstance(content, str):
+                            line_count = content.count("\n") + 1 if content else 0
+                        elif isinstance(content, list):
+                            line_count = 0
+                            for item in content:
+                                if isinstance(item, dict) and item.get("type") == "text":
+                                    text = item.get("text", "")
+                                    line_count += text.count("\n") + 1 if text else 0
+                        else:
+                            line_count = 0
+                        lines_str = f"{line_count} line{'s' if line_count != 1 else ''}"
+                        if origin:
+                            tool_name = origin["name"]
+                            tool_input = origin["input"]
+                            if tool_name == "Read":
+                                file_path = tool_input.get("file_path", "?")
+                                result_summary = f"Read {file_path}: {lines_str}"
+                            elif tool_name == "Glob":
+                                pattern = tool_input.get("pattern", "?")
+                                result_summary = f"Found {line_count} match{'es' if line_count != 1 else ''} for {pattern}"
+                            elif tool_name == "Grep":
+                                pattern = tool_input.get("pattern", "?")
+                                result_summary = f"Grepped '{pattern}': {line_count} match{'es' if line_count != 1 else ''}"
+                            else:
+                                result_summary = f"Got {lines_str}"
+                        else:
+                            result_summary = f"Got {lines_str}" if line_count > 0 else "Got result"
+                        try:
+                            db.insert_planning_event(session_id, "tool_result", result_summary)
+                        except Exception:
+                            pass
+
+        stdout_reader_thread.join(timeout=10.0)
+        if stdout_reader_thread.is_alive():
+            logger.warning(
+                "stdout reader thread for session %s did not finish within 10s",
+                session_id,
+            )
+        try:
+            process.wait(timeout=60)
+        except subprocess.TimeoutExpired:
+            logger.warning(
+                "Process for session %s did not exit after 60s; killing", session_id
+            )
+            process.kill()
+            try:
+                process.wait(timeout=10)
+            except subprocess.TimeoutExpired:
+                logger.warning(
+                    "Process for session %s did not exit after SIGKILL", session_id
+                )
+        stderr_thread.join(timeout=10.0)
+        if stderr_thread.is_alive():
+            logger.warning(
+                "stderr thread for session %s did not finish within 10s after process exit",
+                session_id,
+            )
+    except Exception as e:
+        logger.error("Planning agent stream error for session %s: %s", session_id, e)
+        try:
+            process.terminate()
+            process.wait(timeout=5)
+        except subprocess.TimeoutExpired:
+            process.kill()
+            try:
+                process.wait(timeout=10)
+            except subprocess.TimeoutExpired:
+                logger.warning("Process for session %s did not exit after SIGKILL", session_id)
+        stdout_reader_thread.join(timeout=5.0)
+        if stdout_reader_thread.is_alive():
+            logger.warning(
+                "stdout reader thread for session %s did not finish after SIGKILL",
+                session_id,
+            )
+        stderr_thread.join(timeout=5.0)
+        if stderr_thread.is_alive():
+            logger.warning(
+                "stderr thread for session %s did not finish after SIGKILL; "
+                "process may still be alive — session may need server restart to recover",
+                session_id,
+            )
+    finally:
+        with _active_lock:
+            _starting.discard(session_id)
+            _active.pop(session_id, None)
+
+    # If cancel_planning() terminated this subprocess externally, skip the
+    # post-run status update entirely.  cancel_planning() is responsible for
+    # writing status='active' and has already done so (or will do so); writing
+    # 'error' or a stale 'active' here would race with and potentially
+    # overwrite that update.
+    with _active_lock:
+        was_cancelled = session_id in _cancelled
+        _cancelled.discard(session_id)
+
+    if was_cancelled:
+        # Perform the cancellation status update here (inside the thread) rather
+        # than in cancel_planning() to eliminate the TOCTOU race: cancel_planning
+        # only waits for the subprocess to exit, but this thread may still be
+        # running (draining stderr, executing finally).  Writing status here
+        # ensures the final DB state is set after all thread cleanup is done.
+        logger.info("Planning session %s was cancelled externally", session_id)
+        try:
+            db.update_planning_session(session_id, status="active")
+        except Exception:
+            pass
+        return
+
+    return_code = process.returncode
+    # Wrap all final DB writes in a try/except so they degrade gracefully when
+    # the session row has already been deleted (e.g. delete_planning_session was
+    # called while the background thread was still running).
+    try:
+        if return_code == 0 and plan_text:
+            db.add_planning_message(session_id, "assistant", plan_text)
+            db.update_planning_session(session_id, status="active")
+            logger.info("Planning agent completed for session %s", session_id)
+        else:
+            stderr_output = "".join(stderr_chunks)
+            error_detail = stderr_output[:300] if stderr_output else f"Exit code {return_code}"
+            logger.error("Planning agent failed for session %s: %s", session_id, error_detail)
+            # Store whatever partial plan we got, or an error message
+            if plan_text:
+                db.add_planning_message(session_id, "assistant", plan_text)
+                db.update_planning_session(session_id, status="active")
+            else:
+                db.update_planning_session(session_id, status="error")
+    except Exception:
+        logger.warning(
+            "DB write failed for session %s (session may have been deleted)",
+            session_id,
+        )
+
+
+def _generate_title_from_plan(plan_body: str) -> str:
+    """Auto-generate a concise issue title from the plan body (regex fallback)."""
+    # Try to extract from ## Summary section (first non-empty line after heading)
+    summary_match = re.search(r"^## Summary\s*\n+(.+?)(?:\n\n|\n#)", plan_body, re.MULTILINE | re.DOTALL)
+    if summary_match:
+        first_line = summary_match.group(1).strip().split("\n")[0].strip()
+        first_line = re.sub(r"^\s*[-*]\s*", "", first_line)  # strip list marker
+        first_line = re.sub(r"\*+|`+", "", first_line)  # strip markdown emphasis
+        if first_line and len(first_line) <= 120:
+            return first_line[:100]
+
+    # Try first markdown heading
+    heading_match = re.search(r"^#{1,3}\s+(.+)$", plan_body, re.MULTILINE)
+    if heading_match:
+        return heading_match.group(1).strip()[:100]
+
+    # Fallback: first non-empty, non-heading line
+    for line in plan_body.split("\n"):
+        line = line.strip()
+        if line and not line.startswith("#"):
+            return re.sub(r"\*+|`+", "", line)[:100]
+
+    return "Implementation Plan"
+
+
+def _generate_title_with_ai(plan_body: str) -> str:
+    """Use Claude to generate a concise GitHub issue title from the plan body.
+
+    Falls back to regex extraction if the AI call fails.
+    """
+    prompt = (
+        "Generate a concise GitHub issue title (under 80 characters) for the following "
+        "implementation plan. Output ONLY the plain title text — no quotes, no markdown, "
+        "no explanation.\n\n"
+        + plan_body[:3000]
+    )
+    try:
+        env = {**os.environ, "CLAUDE_CODE_OAUTH_TOKEN": CLAUDE_CODE_OAUTH_TOKEN}
+        result = subprocess.run(
+            ["claude", "--output-format", "text"],
+            input=prompt,
+            capture_output=True,
+            text=True,
+            timeout=30,
+            env=env,
+        )
+        if result.returncode == 0:
+            title = result.stdout.strip().strip('"\'`')
+            if title and len(title) <= 120:
+                logger.info("AI generated title: %s", title)
+                return title[:100]
+    except Exception as e:
+        logger.warning("AI title generation failed, falling back to regex: %s", e)
+    return _generate_title_from_plan(plan_body)
+
+
+def create_issue_from_plan(session_id: str, title: str = "") -> dict:
+    """Create a GitHub issue from the last assistant message in the session.
+
+    If *title* is empty, a title is auto-generated from the plan content.
+    Returns a dict with issue_number and issue_url on success, or raises on error.
+
+    Acquires _active_lock to atomically verify that no generation is in
+    progress before proceeding, eliminating the TOCTOU race between the
+    is_generating() check in the HTTP layer and the actual issue creation.
+    """
+    # Atomically verify that no planning run is active or starting before
+    # proceeding.  Without this lock the HTTP endpoint's is_generating()
+    # check can pass, then a concurrent refine_plan request can claim the
+    # session via start_planning(), and we would then create an issue from
+    # a partially-updated or still-in-progress plan.
+    with _active_lock:
+        proc = _active.get(session_id)
+        if session_id in _starting or session_id in _cancelling or session_id in _cancelled or (proc is not None and proc.poll() is None):
+            raise RuntimeError("Plan generation is still in progress")
+
+    # Acquire per-session issue-creation lock to prevent duplicate issues from
+    # concurrent requests (e.g. user double-clicking "Create GitHub Issue").
+    with _issue_creating_lock:
+        if session_id in _issue_creating:
+            raise RuntimeError("Issue creation already in progress for this session")
+        _issue_creating.add(session_id)
+
+    try:
+        session = db.get_planning_session(session_id)
+        if not session:
+            raise ValueError(f"Session {session_id} not found")
+
+        # Verify the issue hasn't already been created for this session to
+        # prevent duplicate issues from two requests that both passed the
+        # _active_lock check before either completed issue creation.
+        if session.get("status") == "completed":
+            raise RuntimeError("Issue already created for this session")
+
+        workspace = db.get_workspace(session["workspace_id"])
+        if not workspace:
+            raise ValueError(f"Workspace {session['workspace_id']} not found")
+
+        messages = db.get_planning_messages(session_id)
+        # Find the last assistant message as the plan body
+        plan_body = None
+        for msg in reversed(messages):
+            if msg["role"] == "assistant":
+                plan_body = msg["content"]
+                break
+
+        if not plan_body:
+            raise ValueError("No plan found in session — generate a plan first")
+
+        # Strip conversational preamble — find the first markdown heading and use
+        # everything from there onward as the actual issue body.
+        heading_match = re.search(r"^(#{1,3}\s)", plan_body, re.MULTILINE)
+        if heading_match:
+            plan_body = plan_body[heading_match.start():]
+
+        # Auto-generate title if not provided — use AI for a natural, descriptive title
+        if not title:
+            try:
+                db.insert_planning_event(session_id, "info", "Generating issue title with AI\u2026")
+            except Exception:
+                pass
+            title = _generate_title_with_ai(plan_body)
+            logger.info("Auto-generated issue title for session %s: %s", session_id, title)
+            try:
+                db.insert_planning_event(session_id, "info", f"Title: {title[:80]}")
+            except Exception:
+                pass
+
+        github_repo = workspace["github_repo"]
+
+        try:
+            db.insert_planning_event(session_id, "info", f"Creating GitHub issue in {github_repo}\u2026")
+        except Exception:
+            pass
+
+        env = {**os.environ, "GH_TOKEN": GH_TOKEN}
+
+        cmd = [
+            "gh", "issue", "create",
+            "--repo", github_repo,
+            "--title", title,
+            "--body", plan_body,
+            "--label", ISSUE_LABEL,
+        ]
+
+        logger.info("Creating GitHub issue for session %s in repo %s", session_id, github_repo)
+
+        result = subprocess.run(
+            cmd,
+            capture_output=True,
+            text=True,
+            timeout=30,
+            env=env,
+        )
+
+        if result.returncode != 0:
+            raise RuntimeError(f"gh issue create failed: {result.stderr.strip()}")
+
+        output = result.stdout.strip()
+        logger.info("Issue created: %s", output)
+
+        # Parse issue number and URL from output (gh outputs the URL)
+        # e.g. "https://github.com/owner/repo/issues/42"
+        issue_url = output
+        issue_number = None
+        match = re.search(r"/issues/(\d+)", output)
+        if match:
+            issue_number = int(match.group(1))
+
+        try:
+            db.update_planning_session(
+                session_id,
+                status="completed",
+                issue_number=issue_number,
+                issue_url=issue_url,
+                title=title,
+            )
+        except Exception as db_err:
+            logger.warning(
+                "Failed to update planning session %s after issue creation: %s",
+                session_id, db_err,
+            )
+
+        return {"issue_number": issue_number, "issue_url": issue_url, "title": title}
+    finally:
+        with _issue_creating_lock:
+            _issue_creating.discard(session_id)
+
+
+def cancel_planning(session_id: str):
+    """Terminate the active planning subprocess for this session, if any."""
+    with _active_lock:
+        proc = _active.pop(session_id, None)
+        in_starting = session_id in _starting
+        _starting.discard(session_id)  # also cancel sessions still starting
+        # Only add to _cancelled when the planning process is still actively
+        # running or has not yet spawned.  If the process has already exited
+        # (proc.poll() is not None) the background thread has finished its
+        # work and will write the final DB status itself — marking it
+        # cancelled here would cause the thread's _cancelled check to fire
+        # and silently discard the successfully-generated plan.
+        if in_starting or (proc is not None and proc.poll() is None):
+            _cancelled.add(session_id)
+            # Signal that termination is in progress so create_issue_from_plan
+            # cannot proceed concurrently with this cancellation window.
+            _cancelling.add(session_id)
+
+    try:
+        if proc and proc.poll() is None:
+            try:
+                proc.terminate()
+                proc.wait(timeout=5)
+            except subprocess.TimeoutExpired:
+                proc.kill()
+                try:
+                    proc.wait(timeout=10)
+                except subprocess.TimeoutExpired:
+                    logger.warning("Process for session %s did not exit after SIGKILL", session_id)
+            logger.info("Cancelled planning agent for session %s", session_id)
+    finally:
+        with _active_lock:
+            _cancelling.discard(session_id)
+    # NOTE: do NOT write status here — the background thread (_run_planning_agent_impl)
+    # detects cancellation via the _cancelled set and performs the status='active'
+    # write itself, after all cleanup is done.  Writing here would race with the
+    # thread's own DB writes (TOCTOU: the status check below would be stale by
+    # the time the write occurs, and the thread may overwrite it afterwards).
