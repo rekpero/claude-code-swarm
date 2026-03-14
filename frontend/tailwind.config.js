@@ -5,10 +5,14 @@ export default {
     extend: {
       colors: {
         bg: 'var(--bg)',
+        'bg-raised': 'var(--bg-raised)',
         surface: 'var(--surface)',
+        'surface-hover': 'var(--surface-hover)',
         border: 'var(--border)',
+        'border-subtle': 'var(--border-subtle)',
         text: 'var(--text)',
         'text-dim': 'var(--text-dim)',
+        'text-muted': 'var(--text-muted)',
         accent: 'var(--accent)',
         green: 'var(--green)',
         yellow: 'var(--yellow)',
@@ -16,7 +20,8 @@ export default {
         blue: 'var(--blue)',
       },
       fontFamily: {
-        mono: ["'SF Mono'", "'Fira Code'", "'Cascadia Code'", 'monospace'],
+        sans: ['Outfit', '-apple-system', 'BlinkMacSystemFont', 'sans-serif'],
+        mono: ["'JetBrains Mono'", "'SF Mono'", "'Fira Code'", 'monospace'],
       },
     },
   },

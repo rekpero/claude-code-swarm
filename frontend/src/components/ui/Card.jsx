@@ -1,7 +1,7 @@
-export function Card({ children, className = '', ...props }) {
+export function Card({ children, className = '', glow = false, ...props }) {
   return (
     <div
-      className={`rounded-lg border bg-[var(--surface)] border-[var(--border)] ${className}`}
+      className={`rounded-lg border bg-[var(--surface)] border-[var(--border)] ${glow ? 'glow-border' : ''} ${className}`}
       {...props}
     >
       {children}
@@ -11,7 +11,7 @@ export function Card({ children, className = '', ...props }) {
 
 export function CardHeader({ children, className = '' }) {
   return (
-    <div className={`px-4 py-3 border-b border-[var(--border)] ${className}`}>
+    <div className={`px-4 py-3 border-b border-[var(--border-subtle)] ${className}`}>
       {children}
     </div>
   )

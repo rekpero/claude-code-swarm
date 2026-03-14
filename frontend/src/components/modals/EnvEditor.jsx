@@ -1,5 +1,5 @@
 import { useState, useEffect } from 'react'
-import { Plus, Trash2, Upload, Save } from 'lucide-react'
+import { Plus, Trash2, Upload, Save, RefreshCw } from 'lucide-react'
 import { Button } from '../ui/Button'
 import { Spinner } from '../ui/Spinner'
 import { getEnvFiles, getEnv, saveEnv, deleteEnvFile, loadEnvFromDisk } from '../../api/client'
@@ -30,6 +30,7 @@ export function EnvEditor({ workspaceId }) {
   const [fileReadError, setFileReadError] = useState(null)
   const [pasteText, setPasteText] = useState('')
   const [showPaste, setShowPaste] = useState(false)
+  const [syncing, setSyncing] = useState(false)
 
   useEffect(() => {
     setActiveFile('.env')
@@ -38,7 +39,10 @@ export function EnvEditor({ workspaceId }) {
   useEffect(() => {
     if (!workspaceId) return
     getEnvFiles(workspaceId).then((data) => {
-      const files = [...new Set(['.env', ...(data.managed || []), ...(data.discovered || [])])]
+      const managed = data.managed || []
+      // discovered can be strings or objects with {path, exists}
+      const discovered = (data.discovered || []).map(d => typeof d === 'string' ? d : d.path)
+      const files = [...new Set(['.env', ...managed, ...discovered])]
       setEnvFiles(files)
     }).catch(() => setEnvFiles(['.env']))
   }, [workspaceId])
@@ -47,16 +51,36 @@ export function EnvEditor({ workspaceId }) {
     if (!workspaceId || !activeFile) return
     let cancelled = false
     setLoading(true)
-    getEnv(workspaceId, activeFile).then((data) => {
-      if (!cancelled) {
-        const entries = Object.entries(data.vars || {}).map(([k, v]) => ({ id: crypto.randomUUID(), key: k, value: v }))
-        setRows(entries)
-      }
-    }).catch(() => {
-      if (!cancelled) setRows([])
-    }).finally(() => {
-      if (!cancelled) setLoading(false)
-    })
+
+    const toRows = (vars) =>
+      Object.entries(vars || {}).map(([k, v]) => ({ id: crypto.randomUUID(), key: k, value: v }))
+
+    // First try getEnv (which auto-syncs from disk if file changed).
+    // If that returns empty, explicitly load from disk as a fallback.
+    getEnv(workspaceId, activeFile)
+      .then(async (data) => {
+        if (cancelled) return
+        const vars = data.vars || {}
+        if (Object.keys(vars).length > 0) {
+          setRows(toRows(vars))
+        } else {
+          // Try loading directly from disk
+          try {
+            const diskData = await loadEnvFromDisk(workspaceId, activeFile)
+            if (!cancelled) {
+              setRows(toRows(diskData.vars || {}))
+            }
+          } catch {
+            if (!cancelled) setRows([])
+          }
+        }
+      })
+      .catch(() => {
+        if (!cancelled) setRows([])
+      })
+      .finally(() => {
+        if (!cancelled) setLoading(false)
+      })
     return () => { cancelled = true }
   }, [workspaceId, activeFile, fetchCounter])
 
@@ -65,7 +89,6 @@ export function EnvEditor({ workspaceId }) {
   }
 
   const addRow = () => setRows((prev) => [...prev, { id: crypto.randomUUID(), key: '', value: '' }])
-
   const removeRow = (i) => setRows((prev) => prev.filter((_, idx) => idx !== i))
 
   const handleSave = async () => {
@@ -131,22 +154,37 @@ export function EnvEditor({ workspaceId }) {
     e.target.value = ''
   }
 
+  const handleSyncFromDisk = async () => {
+    if (!workspaceId || !activeFile) return
+    setSyncing(true)
+    try {
+      const data = await loadEnvFromDisk(workspaceId, activeFile)
+      const entries = Object.entries(data.vars || {}).map(([k, v]) => ({ id: crypto.randomUUID(), key: k, value: v }))
+      setRows(entries)
+    } catch {
+      setSaveError('Failed to sync from disk')
+    } finally {
+      setSyncing(false)
+    }
+  }
+
+  const inputClass = 'px-2.5 py-1.5 text-[10px] bg-[var(--bg)] border border-[var(--border)] rounded text-[var(--text)] font-mono focus:border-[var(--accent)] outline-none transition-colors'
+
   if (loading) {
-    return <div className="flex justify-center py-4"><Spinner /></div>
+    return <div className="flex justify-center py-6"><Spinner /></div>
   }
 
   return (
-    <div className="mt-2">
-      {/* File tabs */}
-      <div className="flex gap-1 flex-wrap mb-3">
+    <div className="mt-1">
+      <div className="flex gap-1 flex-wrap mb-4">
         {envFiles.map((f) => (
           <button
             key={f}
             onClick={() => setActiveFile(f)}
-            className={`px-2.5 py-1 text-[11px] rounded border transition-colors ${
+            className={`relative px-2.5 py-1 text-[10px] rounded-md border font-mono transition-all ${
               activeFile === f
-                ? 'border-[var(--accent)] text-[var(--accent)]'
-                : 'border-[var(--border)] text-[var(--text-dim)] hover:border-[var(--text-dim)]'
+                ? 'border-[var(--accent-border)] text-[var(--accent)] bg-[var(--accent-dim)]'
+                : 'border-[var(--border)] text-[var(--text-muted)] hover:border-[var(--text-muted)] hover:text-[var(--text-dim)]'
             }`}
           >
             {f}
@@ -154,69 +192,55 @@ export function EnvEditor({ workspaceId }) {
         ))}
       </div>
 
-      {/* Rows */}
-      <div className="flex flex-col gap-1.5 mb-3">
+      <div className="flex flex-col gap-1.5 mb-4">
         {rows.map((row, i) => (
           <div key={row.id} className="flex gap-2 items-center">
-            <input
-              value={row.key}
-              onChange={(e) => setRow(i, 'key', e.target.value)}
-              placeholder="KEY"
-              className="flex-1 px-2 py-1.5 text-[11px] bg-[var(--bg)] border border-[var(--border)] rounded text-[var(--text)] font-mono focus:border-[var(--accent)] outline-none"
-            />
-            <input
-              value={row.value}
-              onChange={(e) => setRow(i, 'value', e.target.value)}
-              placeholder="value"
-              className="flex-[2] px-2 py-1.5 text-[11px] bg-[var(--bg)] border border-[var(--border)] rounded text-[var(--text)] font-mono focus:border-[var(--accent)] outline-none"
-            />
-            <button
-              onClick={() => removeRow(i)}
-              className="p-1 text-[var(--text-dim)] hover:text-[var(--red)] transition-colors"
-            >
-              <Trash2 size={13} />
+            <input value={row.key} onChange={(e) => setRow(i, 'key', e.target.value)} placeholder="KEY" className={`flex-1 ${inputClass}`} />
+            <input value={row.value} onChange={(e) => setRow(i, 'value', e.target.value)} placeholder="value" className={`flex-[2] ${inputClass}`} />
+            <button onClick={() => removeRow(i)} className="p-1 text-[var(--text-muted)] hover:text-[var(--red)] transition-colors">
+              <Trash2 size={11} />
             </button>
           </div>
         ))}
       </div>
 
       {showPaste && (
-        <div className="mb-3">
+        <div className="mb-4">
           <textarea
             value={pasteText}
             onChange={(e) => setPasteText(e.target.value)}
             placeholder="Paste .env content here..."
-            className="w-full h-24 px-2 py-1.5 text-[11px] bg-[var(--bg)] border border-[var(--border)] rounded text-[var(--text)] font-mono focus:border-[var(--accent)] outline-none resize-none"
+            className={`w-full h-24 resize-none ${inputClass}`}
           />
-          <div className="flex gap-2 mt-1">
+          <div className="flex gap-2 mt-1.5">
             <Button size="sm" variant="primary" onClick={handlePaste}>Import</Button>
             <Button size="sm" variant="ghost" onClick={() => setShowPaste(false)}>Cancel</Button>
           </div>
         </div>
       )}
 
-      {fileReadError && (
-        <p className="text-[11px] text-[var(--red)] mb-2">{fileReadError}</p>
-      )}
-      {saveError && (
-        <p className="text-[11px] text-[var(--red)] mb-2">{saveError}</p>
-      )}
+      {fileReadError && <p className="text-[10px] text-[var(--red)] mb-2">{fileReadError}</p>}
+      {saveError && <p className="text-[10px] text-[var(--red)] mb-2">{saveError}</p>}
+
       <div className="flex items-center gap-2 flex-wrap">
         <Button size="sm" variant="ghost" onClick={addRow}>
-          <Plus size={11} /> Add row
+          <Plus size={10} /> Add row
         </Button>
         <Button size="sm" variant="ghost" onClick={() => setShowPaste((v) => !v)}>
           Paste .env
         </Button>
         <label className="cursor-pointer">
           <Button size="sm" variant="ghost" as="span">
-            <Upload size={11} /> Upload file
+            <Upload size={10} /> Upload
           </Button>
           <input type="file" className="hidden" accept=".env,text/*" onChange={handleFileUpload} />
         </label>
+        <Button size="sm" variant="ghost" loading={syncing} onClick={handleSyncFromDisk} title="Re-read from disk">
+          <RefreshCw size={10} /> Sync from disk
+        </Button>
         <div className="ml-auto">
           <Button size="sm" variant="primary" loading={saving} onClick={handleSave}>
-            <Save size={11} /> Save
+            <Save size={10} /> Save
           </Button>
         </div>
       </div>

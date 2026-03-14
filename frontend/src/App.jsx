@@ -7,6 +7,7 @@ import { IssueQueue } from './components/issues/IssueQueue'
 import { PRTracker } from './components/prs/PRTracker'
 import { AddWorkspaceModal } from './components/modals/AddWorkspaceModal'
 import { WorkspaceSettingsModal } from './components/modals/WorkspaceSettingsModal'
+import { PlannerModal } from './components/planner/PlannerModal'
 import { useMetrics } from './hooks/useMetrics'
 import { useAgents } from './hooks/useAgents'
 import { useIssues } from './hooks/useIssues'
@@ -16,8 +17,8 @@ import { useWorkspaceContext } from './context/WorkspaceContext'
 function ErrorBanner({ error }) {
   if (!error) return null
   return (
-    <div className="bg-[rgba(225,112,85,0.1)] border-b border-[rgba(225,112,85,0.3)] px-5 py-2 text-[12px] text-[var(--red)]">
-      Cannot connect to backend — {error.message}
+    <div className="bg-[var(--red-dim)] border-b border-[rgba(248,113,113,0.15)] px-6 py-2 text-[11px] text-[var(--red)] font-mono">
+      Cannot connect to backend \u2014 {error.message}
     </div>
   )
 }
@@ -26,6 +27,7 @@ export function App() {
   const [activeTab, setActiveTab] = useState('agents')
   const [addWorkspaceOpen, setAddWorkspaceOpen] = useState(false)
   const [settingsOpen, setSettingsOpen] = useState(false)
+  const [plannerOpen, setPlannerOpen] = useState(false)
   const { selectedWorkspaceId } = useWorkspaceContext()
 
   const { error: metricsError } = useMetrics(selectedWorkspaceId)
@@ -44,19 +46,27 @@ export function App() {
       <Header
         onAddWorkspace={() => setAddWorkspaceOpen(true)}
         onOpenSettings={() => setSettingsOpen(true)}
+        onOpenPlanner={() => setPlannerOpen(true)}
       />
       <ErrorBanner error={metricsError} />
       <MetricsBar />
       <TabNav activeTab={activeTab} onTabChange={setActiveTab} counts={counts} />
 
       <main className="flex-1 overflow-auto">
-        {activeTab === 'agents' && <ActiveAgents />}
-        {activeTab === 'issues' && <IssueQueue />}
-        {activeTab === 'prs' && <PRTracker />}
+        <div style={{ display: activeTab === 'agents' ? undefined : 'none' }}>
+          <ActiveAgents />
+        </div>
+        <div style={{ display: activeTab === 'issues' ? undefined : 'none' }}>
+          <IssueQueue />
+        </div>
+        <div style={{ display: activeTab === 'prs' ? undefined : 'none' }}>
+          <PRTracker />
+        </div>
       </main>
 
       <AddWorkspaceModal open={addWorkspaceOpen} onClose={() => setAddWorkspaceOpen(false)} />
       <WorkspaceSettingsModal open={settingsOpen} onClose={() => setSettingsOpen(false)} />
+      <PlannerModal open={plannerOpen} onClose={() => setPlannerOpen(false)} />
     </div>
   )
 }

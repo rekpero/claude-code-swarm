@@ -1,11 +1,128 @@
 import { useState, useEffect } from 'react'
+import { FolderTree, GitBranch, FileCode, Package } from 'lucide-react'
 import { Modal } from '../ui/Modal'
 import { Button } from '../ui/Button'
+import { Badge } from '../ui/Badge'
+import { Spinner } from '../ui/Spinner'
 import { EnvEditor } from './EnvEditor'
 import { useUpdateWorkspace, useDeleteWorkspace, useWorkspaces } from '../../hooks/useWorkspaces'
 import { useWorkspaceContext } from '../../context/WorkspaceContext'
+import { getWorkspaceStructure } from '../../api/client'
 
 const TABS = ['General', 'Env Files', 'Structure']
+
+function StructureTab({ workspace }) {
+  const [structure, setStructure] = useState(null)
+  const [loading, setLoading] = useState(true)
+
+  useEffect(() => {
+    if (!workspace?.id) return
+    setLoading(true)
+    getWorkspaceStructure(workspace.id)
+      .then(data => setStructure(data.structure || {}))
+      .catch(() => setStructure(null))
+      .finally(() => setLoading(false))
+  }, [workspace?.id])
+
+  if (loading) {
+    return <div className="flex justify-center py-8"><Spinner /></div>
+  }
+
+  const statusColors = {
+    active: 'green',
+    cloning: 'yellow',
+    error: 'red',
+  }
+
+  return (
+    <div className="space-y-4">
+      {/* Workspace info */}
+      <div className="bg-[var(--bg)] border border-[var(--border-subtle)] rounded-lg p-3.5 space-y-2.5">
+        <div className="flex items-center gap-2">
+          <FolderTree size={12} className="text-[var(--text-muted)]" />
+          <span className="text-[9px] uppercase tracking-widest text-[var(--text-muted)] font-semibold">Workspace</span>
+        </div>
+        <div className="grid grid-cols-[80px_1fr] gap-y-1.5 gap-x-3 text-[10px]">
+          <span className="text-[var(--text-muted)]">Path</span>
+          <span className="text-[var(--text-dim)] font-mono truncate">{workspace.local_path || '\u2014'}</span>
+          <span className="text-[var(--text-muted)]">Status</span>
+          <span><Badge variant={statusColors[workspace.status] || 'dim'}>{workspace.status || 'unknown'}</Badge></span>
+          <span className="text-[var(--text-muted)]">Branch</span>
+          <span className="text-[var(--text-dim)] font-mono flex items-center gap-1.5">
+            <GitBranch size={9} className="text-[var(--text-muted)]" />
+            {workspace.base_branch || 'main'}
+          </span>
+        </div>
+      </div>
+
+      {/* Repo structure */}
+      {structure && (
+        <div className="bg-[var(--bg)] border border-[var(--border-subtle)] rounded-lg p-3.5 space-y-2.5">
+          <div className="flex items-center justify-between">
+            <div className="flex items-center gap-2">
+              <Package size={12} className="text-[var(--text-muted)]" />
+              <span className="text-[9px] uppercase tracking-widest text-[var(--text-muted)] font-semibold">Repo Structure</span>
+            </div>
+            <Badge variant={structure.is_monorepo ? 'purple' : 'green'}>
+              {structure.is_monorepo ? 'Monorepo' : 'Standard'}
+            </Badge>
+          </div>
+
+          {/* Packages list */}
+          {structure.packages?.length > 0 && (
+            <div className="space-y-1">
+              <span className="text-[9px] text-[var(--text-muted)] uppercase tracking-wider">
+                Packages ({structure.packages.length})
+              </span>
+              <div className="bg-[var(--surface)] border border-[var(--border-subtle)] rounded-md overflow-hidden">
+                {structure.packages.map((pkg, i) => (
+                  <div
+                    key={pkg.path || i}
+                    className={`flex items-center gap-2 px-3 py-1.5 text-[10px] ${
+                      i > 0 ? 'border-t border-[var(--border-subtle)]' : ''
+                    }`}
+                  >
+                    <FolderTree size={9} className="text-[var(--accent)] flex-shrink-0" />
+                    <span className="text-[var(--text-dim)] font-mono truncate">{pkg.path}</span>
+                    {pkg.name && (
+                      <span className="text-[var(--text-muted)] ml-auto flex-shrink-0">{pkg.name}</span>
+                    )}
+                  </div>
+                ))}
+              </div>
+            </div>
+          )}
+
+          {/* Env files found */}
+          {structure.env_files?.length > 0 && (
+            <div className="space-y-1">
+              <span className="text-[9px] text-[var(--text-muted)] uppercase tracking-wider">
+                Env Files Found
+              </span>
+              <div className="flex flex-wrap gap-1.5">
+                {structure.env_files.map((f, i) => {
+                  const path = typeof f === 'string' ? f : f.path
+                  return (
+                    <span key={i} className="flex items-center gap-1 px-2 py-0.5 bg-[var(--yellow-dim)] text-[var(--yellow)] rounded text-[9px] font-mono">
+                      <FileCode size={8} />
+                      {path}
+                    </span>
+                  )
+                })}
+              </div>
+            </div>
+          )}
+        </div>
+      )}
+
+      {!structure && (
+        <div className="text-[10px] text-[var(--text-muted)] text-center py-4">
+          Could not load repo structure.
+        </div>
+      )}
+    </div>
+  )
+}
 
 export function WorkspaceSettingsModal({ open, onClose }) {
   const [activeTab, setActiveTab] = useState('General')
@@ -41,6 +158,8 @@ export function WorkspaceSettingsModal({ open, onClose }) {
     }
   }, [open])
 
+  const inputClass = 'w-full px-3 py-2 text-[11px] bg-[var(--bg)] border border-[var(--border)] rounded-md text-[var(--text)] font-mono focus:border-[var(--accent)] outline-none transition-colors'
+
   const handleUpdate = (e) => {
     e.preventDefault()
     if (!selectedWorkspaceId) return
@@ -68,7 +187,7 @@ export function WorkspaceSettingsModal({ open, onClose }) {
   if (!workspace) {
     return (
       <Modal open={open} onClose={onClose} title="Workspace Settings">
-        <p className="text-sm text-[var(--text-dim)]">No workspace selected. Select a workspace first.</p>
+        <p className="text-[11px] text-[var(--text-muted)]">No workspace selected. Select a workspace first.</p>
         <div className="flex justify-end mt-4">
           <Button variant="ghost" onClick={onClose}>Close</Button>
         </div>
@@ -77,58 +196,48 @@ export function WorkspaceSettingsModal({ open, onClose }) {
   }
 
   return (
-    <Modal open={open} onClose={onClose} title={`Settings — ${workspace.name || workspace.repo_url}`} maxWidth="560px">
-      {/* Tabs */}
-      <div className="flex gap-1 border-b border-[var(--border)] mb-4">
+    <Modal open={open} onClose={onClose} title={`Settings \u2014 ${workspace.name || workspace.repo_url}`} maxWidth="560px">
+      <div className="flex gap-0 border-b border-[var(--border)] mb-5">
         {TABS.map((tab) => (
           <button
             key={tab}
             onClick={() => setActiveTab(tab)}
-            className={`px-3 py-1.5 text-xs border-b-2 transition-colors ${
+            className={`relative px-4 py-2 text-[11px] font-medium transition-colors ${
               activeTab === tab
-                ? 'border-[var(--accent)] text-[var(--text)]'
-                : 'border-transparent text-[var(--text-dim)] hover:text-[var(--text)]'
+                ? 'text-[var(--text)]'
+                : 'text-[var(--text-muted)] hover:text-[var(--text-dim)]'
             }`}
           >
             {tab}
+            {activeTab === tab && (
+              <span className="absolute bottom-0 left-2 right-2 h-[2px] bg-[var(--accent)] rounded-t-full" />
+            )}
           </button>
         ))}
       </div>
 
       {activeTab === 'General' && (
-        <form onSubmit={handleUpdate} className="flex flex-col gap-3">
+        <form onSubmit={handleUpdate} className="flex flex-col gap-4">
           <div>
-            <label className="block text-[10px] uppercase tracking-wide text-[var(--text-dim)] mb-1">Display Name</label>
-            <input
-              value={form.name}
-              onChange={(e) => setForm((f) => ({ ...f, name: e.target.value }))}
-              className="w-full px-2.5 py-2 text-[12px] bg-[var(--bg)] border border-[var(--border)] rounded-md text-[var(--text)] font-mono focus:border-[var(--accent)] outline-none"
-            />
+            <label className="block text-[9px] uppercase tracking-widest text-[var(--text-muted)] mb-1.5 font-medium">Display Name</label>
+            <input value={form.name} onChange={(e) => setForm((f) => ({ ...f, name: e.target.value }))} className={inputClass} />
           </div>
           <div>
-            <label className="block text-[10px] uppercase tracking-wide text-[var(--text-dim)] mb-1">Repository URL</label>
-            <input
-              value={form.repo_url}
-              onChange={(e) => setForm((f) => ({ ...f, repo_url: e.target.value }))}
-              className="w-full px-2.5 py-2 text-[12px] bg-[var(--bg)] border border-[var(--border)] rounded-md text-[var(--text)] font-mono focus:border-[var(--accent)] outline-none"
-            />
+            <label className="block text-[9px] uppercase tracking-widest text-[var(--text-muted)] mb-1.5 font-medium">Repository URL</label>
+            <input value={form.repo_url} onChange={(e) => setForm((f) => ({ ...f, repo_url: e.target.value }))} className={inputClass} />
           </div>
           <div>
-            <label className="block text-[10px] uppercase tracking-wide text-[var(--text-dim)] mb-1">Base Branch</label>
-            <input
-              value={form.base_branch}
-              onChange={(e) => setForm((f) => ({ ...f, base_branch: e.target.value }))}
-              className="w-full px-2.5 py-2 text-[12px] bg-[var(--bg)] border border-[var(--border)] rounded-md text-[var(--text)] font-mono focus:border-[var(--accent)] outline-none"
-            />
+            <label className="block text-[9px] uppercase tracking-widest text-[var(--text-muted)] mb-1.5 font-medium">Base Branch</label>
+            <input value={form.base_branch} onChange={(e) => setForm((f) => ({ ...f, base_branch: e.target.value }))} className={inputClass} />
           </div>
           {updateError && (
-            <p className="text-[11px] text-[var(--red)]">{updateError}</p>
+            <p className="text-[10px] text-[var(--red)]">{updateError}</p>
           )}
-          <div className="flex justify-between items-center mt-2">
+          <div className="flex justify-between items-center mt-1">
             <div>
               {confirmDelete ? (
                 <div className="flex items-center gap-2">
-                  <span className="text-[11px] text-[var(--red)]">Are you sure?</span>
+                  <span className="text-[10px] text-[var(--red)]">Are you sure?</span>
                   <Button size="sm" variant="danger" loading={isDeleting} onClick={handleDelete}>
                     Yes, Delete
                   </Button>
@@ -155,10 +264,7 @@ export function WorkspaceSettingsModal({ open, onClose }) {
       )}
 
       {activeTab === 'Structure' && (
-        <div className="text-[12px] text-[var(--text-dim)]">
-          <p className="mb-2">Workspace: <span className="text-[var(--text)]">{workspace.local_path || '—'}</span></p>
-          <p>Status: <span className="text-[var(--text)]">{workspace.status || '—'}</span></p>
-        </div>
+        <StructureTab workspace={workspace} />
       )}
     </Modal>
   )

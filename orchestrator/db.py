@@ -432,13 +432,21 @@ def get_issues_by_status(status: str, workspace_id: str | None = None) -> list[d
 
 def get_all_issues(workspace_id: str | None = None) -> list[dict]:
     conn = _get_connection()
+    order = """ORDER BY CASE status
+        WHEN 'pending' THEN 0
+        WHEN 'in_progress' THEN 1
+        WHEN 'pr_created' THEN 2
+        WHEN 'needs_human' THEN 3
+        WHEN 'resolved' THEN 4
+        ELSE 3
+    END, issue_number"""
     if workspace_id:
         rows = conn.execute(
-            "SELECT * FROM issues WHERE workspace_id = ? ORDER BY issue_number", (workspace_id,)
+            f"SELECT * FROM issues WHERE workspace_id = ? {order}", (workspace_id,)
         ).fetchall()
     else:
         rows = conn.execute(
-            "SELECT * FROM issues ORDER BY issue_number"
+            f"SELECT * FROM issues {order}"
         ).fetchall()
     return [dict(r) for r in rows]
 
@@ -501,7 +509,7 @@ def get_all_agents(workspace_id: str | None = None, limit: int = 0, offset: int 
     if workspace_id:
         base += " WHERE workspace_id = ?"
         params.append(workspace_id)
-    base += " ORDER BY started_at DESC"
+    base += """ ORDER BY CASE WHEN status = 'running' THEN 0 ELSE 1 END, started_at DESC"""
     if limit > 0:
         base += " LIMIT ? OFFSET ?"
         params.extend([limit, offset])

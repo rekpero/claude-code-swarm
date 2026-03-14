@@ -4,7 +4,7 @@ import { useMetrics } from '../../hooks/useMetrics'
 import { useWorkspaceContext } from '../../context/WorkspaceContext'
 import { formatDistanceToNow } from 'date-fns'
 
-export function Header({ onAddWorkspace, onOpenSettings }) {
+export function Header({ onAddWorkspace, onOpenSettings, onOpenPlanner }) {
   const { selectedWorkspaceId } = useWorkspaceContext()
   const { dataUpdatedAt } = useMetrics(selectedWorkspaceId)
 
@@ -13,29 +13,42 @@ export function Header({ onAddWorkspace, onOpenSettings }) {
     : null
 
   return (
-    <header className="flex items-center justify-between px-5 py-3 border-b border-[var(--border)] bg-[var(--surface)]">
-      <div className="flex items-center gap-4">
+    <header className="flex items-center justify-between px-6 py-3.5 border-b border-[var(--border)] bg-[var(--surface)]">
+      <div className="flex items-center gap-5">
         <WorkspaceSwitcher onAddWorkspace={onAddWorkspace} />
-        <h1 className="text-base font-semibold tracking-tight">Claude Code Swarm</h1>
+        <div className="flex items-center gap-2.5">
+          <div className="w-1.5 h-1.5 rounded-full bg-[var(--accent)] shadow-[0_0_6px_var(--accent)]" />
+          <h1 className="text-[15px] font-semibold tracking-tight">Claude Code Swarm</h1>
+        </div>
       </div>
-      <div className="flex items-center gap-3">
+      <div className="flex items-center gap-2.5">
         {lastUpdated && (
-          <span className="text-[11px] text-[var(--text-dim)]">Updated {lastUpdated}</span>
+          <span className="text-[10px] text-[var(--text-muted)] font-mono mr-1">
+            {lastUpdated}
+          </span>
         )}
         <button
-          onClick={onAddWorkspace}
-          className="flex items-center gap-1.5 px-2.5 py-1.5 text-[11px] text-[var(--accent)] border border-[rgba(108,92,231,0.4)] rounded-md hover:bg-[rgba(108,92,231,0.1)] transition-colors"
+          onClick={onOpenPlanner}
+          className="flex items-center gap-1.5 px-3 py-1.5 text-[11px] font-semibold bg-[var(--accent)] text-white rounded-md hover:brightness-110 transition-all shadow-[0_0_16px_rgba(139,92,246,0.2)]"
         >
-          <Plus size={12} />
-          Add Workspace
+          + Plan Issue
         </button>
         <button
-          onClick={onOpenSettings}
-          className="p-1.5 rounded-md text-[var(--text-dim)] hover:text-[var(--text)] hover:bg-white/5 transition-colors"
-          title="Settings"
+          onClick={onAddWorkspace}
+          className="flex items-center gap-1.5 px-3 py-1.5 text-[11px] text-[var(--text-dim)] border border-[var(--border)] rounded-md hover:border-[var(--text-muted)] hover:text-[var(--text)] hover:bg-[var(--surface-hover)] transition-all"
         >
-          <Settings size={15} />
+          <Plus size={11} />
+          Add Workspace
         </button>
+        {selectedWorkspaceId && (
+          <button
+            onClick={onOpenSettings}
+            className="p-1.5 rounded-md text-[var(--text-muted)] hover:text-[var(--text-dim)] hover:bg-[var(--surface-hover)] transition-colors"
+            title="Settings"
+          >
+            <Settings size={14} />
+          </button>
+        )}
       </div>
     </header>
   )

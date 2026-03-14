@@ -628,8 +628,12 @@ def _generate_title_with_ai(plan_body: str) -> str:
     return _generate_title_from_plan(plan_body)
 
 
-def create_issue_from_plan(session_id: str, title: str = "") -> dict:
-    """Create a GitHub issue from the last assistant message in the session.
+def create_issue_from_plan(session_id: str, title: str = "", message_index: int | None = None) -> dict:
+    """Create a GitHub issue from an assistant message in the session.
+
+    If *message_index* is provided, uses the assistant message at that index
+    (0-based among all messages, must be an assistant message).  Otherwise
+    falls back to the last assistant message.
 
     If *title* is empty, a title is auto-generated from the plan content.
     Returns a dict with issue_number and issue_url on success, or raises on error.
@@ -660,10 +664,11 @@ def create_issue_from_plan(session_id: str, title: str = "") -> dict:
         if not session:
             raise ValueError(f"Session {session_id} not found")
 
-        # Verify the issue hasn't already been created for this session to
-        # prevent duplicate issues from two requests that both passed the
-        # _active_lock check before either completed issue creation.
-        if session.get("status") == "completed":
+        # When no specific message is targeted, prevent duplicate issues from
+        # concurrent requests.  When message_index is given, the user explicitly
+        # chose a specific plan to create from, so allow it even if the session
+        # was already marked completed (they may want an issue from an earlier plan).
+        if message_index is None and session.get("status") == "completed":
             raise RuntimeError("Issue already created for this session")
 
         workspace = db.get_workspace(session["workspace_id"])
@@ -671,12 +676,23 @@ def create_issue_from_plan(session_id: str, title: str = "") -> dict:
             raise ValueError(f"Workspace {session['workspace_id']} not found")
 
         messages = db.get_planning_messages(session_id)
-        # Find the last assistant message as the plan body
+        # Find the target assistant message as the plan body
         plan_body = None
-        for msg in reversed(messages):
-            if msg["role"] == "assistant":
-                plan_body = msg["content"]
-                break
+        if message_index is not None:
+            if 0 <= message_index < len(messages):
+                target = messages[message_index]
+                if target["role"] == "assistant":
+                    plan_body = target["content"]
+                else:
+                    raise ValueError(f"Message at index {message_index} is not an assistant message")
+            else:
+                raise ValueError(f"Message index {message_index} out of range")
+        else:
+            # Default: use the last assistant message
+            for msg in reversed(messages):
+                if msg["role"] == "assistant":
+                    plan_body = msg["content"]
+                    break
 
         if not plan_body:
             raise ValueError("No plan found in session — generate a plan first")

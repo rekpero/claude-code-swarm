@@ -199,6 +199,15 @@ async def list_issues(workspace_id: str | None = Query(None)):
 async def list_prs(workspace_id: str | None = Query(None)):
     """List all tracked PRs and their review loop count."""
     reviews = db.get_all_pr_reviews(workspace_id=workspace_id)
+
+    # Build a lookup of PR number -> issue status so we can mark merged PRs.
+    # An issue with status "resolved" whose pr_number matches means the PR was merged.
+    all_issues = db.get_all_issues(workspace_id=workspace_id)
+    pr_issue_status: dict[int, str] = {}
+    for issue in all_issues:
+        if issue.get("pr_number"):
+            pr_issue_status[issue["pr_number"]] = issue["status"]
+
     pr_map: dict[int, dict] = {}
     for review in reviews:
         pr_num = review["pr_number"]
@@ -209,6 +218,7 @@ async def list_prs(workspace_id: str | None = Query(None)):
                 "latest_status": review["status"],
                 "total_comments": 0,
                 "review_threads": [],
+                "workspace_id": review.get("workspace_id"),
             }
         pr_map[pr_num]["iterations"] = max(pr_map[pr_num]["iterations"], review["iteration"])
         pr_map[pr_num]["latest_status"] = review["status"]
@@ -221,7 +231,20 @@ async def list_prs(workspace_id: str | None = Query(None)):
             except (json.JSONDecodeError, TypeError):
                 pass
 
-    return {"prs": list(pr_map.values())}
+    # Enrich PR statuses from issue state:
+    # - issue "resolved" → PR was merged
+    # - issue "needs_human" → PR needs human intervention
+    for pr_num, pr_data in pr_map.items():
+        issue_status = pr_issue_status.get(pr_num)
+        if issue_status == "resolved":
+            pr_data["latest_status"] = "merged"
+        elif issue_status == "needs_human":
+            pr_data["latest_status"] = "needs_human"
+
+    # Sort: active statuses first, resolved/merged last
+    pr_status_order = {"pending_fix": 0, "pending": 1, "open": 2, "needs_human": 3, "closed": 4, "merged": 5}
+    sorted_prs = sorted(pr_map.values(), key=lambda p: pr_status_order.get(p["latest_status"], 3))
+    return {"prs": sorted_prs}
 
 
 class StartPlanningRequest(BaseModel):
@@ -235,6 +258,7 @@ class RefinePlanRequest(BaseModel):
 
 class CreateIssueRequest(BaseModel):
     title: str = ""
+    message_index: int | None = None
 
 
 # === Planning Endpoints ===
@@ -337,7 +361,7 @@ def create_issue_from_plan(session_id: str, req: CreateIssueRequest):
         return JSONResponse(content={"error": "Session not found"}, status_code=404)
 
     try:
-        result = planner.create_issue_from_plan(session_id, req.title)
+        result = planner.create_issue_from_plan(session_id, req.title, message_index=req.message_index)
         return result
     except RuntimeError as e:
         status_code = 409 if "in progress" in str(e) else 400

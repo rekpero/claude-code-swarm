@@ -6,7 +6,7 @@ const TABS = [
 
 export function TabNav({ activeTab, onTabChange, counts = {} }) {
   return (
-    <div className="flex gap-1 px-5 border-b border-[var(--border)] bg-[var(--surface)]">
+    <div className="flex gap-0 px-6 border-b border-[var(--border)] bg-[var(--bg)]">
       {TABS.map((tab) => {
         const count = counts[tab.id]
         const isActive = activeTab === tab.id
@@ -14,23 +14,26 @@ export function TabNav({ activeTab, onTabChange, counts = {} }) {
           <button
             key={tab.id}
             onClick={() => onTabChange(tab.id)}
-            className={`px-4 py-2.5 text-xs font-medium border-b-2 transition-colors ${
+            className={`relative px-5 py-2.5 text-[12px] font-medium transition-colors ${
               isActive
-                ? 'border-[var(--accent)] text-[var(--text)]'
-                : 'border-transparent text-[var(--text-dim)] hover:text-[var(--text)]'
+                ? 'text-[var(--text)]'
+                : 'text-[var(--text-muted)] hover:text-[var(--text-dim)]'
             }`}
           >
             {tab.label}
             {count != null && count > 0 && (
               <span
-                className={`ml-1.5 px-1.5 py-0.5 rounded text-[10px] ${
+                className={`ml-1.5 px-1.5 py-0.5 rounded text-[9px] font-semibold ${
                   isActive
-                    ? 'bg-[rgba(108,92,231,0.2)] text-[var(--accent)]'
-                    : 'bg-[var(--border)] text-[var(--text-dim)]'
+                    ? 'bg-[var(--accent-dim)] text-[var(--accent)]'
+                    : 'text-[var(--text-muted)]'
                 }`}
               >
                 {count}
               </span>
+            )}
+            {isActive && (
+              <span className="absolute bottom-0 left-2 right-2 h-[2px] bg-[var(--accent)] rounded-t-full shadow-[0_0_8px_var(--accent-glow)]" />
             )}
           </button>
         )

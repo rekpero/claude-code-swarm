@@ -5,6 +5,7 @@ import { EmptyState } from '../ui/EmptyState'
 import { Spinner } from '../ui/Spinner'
 import { usePRs } from '../../hooks/usePRs'
 import { useWorkspaceContext } from '../../context/WorkspaceContext'
+import { useWorkspaces } from '../../hooks/useWorkspaces'
 
 function PRStatusBadge({ status }) {
   const MAP = {
@@ -21,22 +22,27 @@ function PRStatusBadge({ status }) {
 export function PRTracker() {
   const { selectedWorkspaceId } = useWorkspaceContext()
   const { data, isLoading } = usePRs(selectedWorkspaceId)
+  const { data: wsData } = useWorkspaces()
+  const workspaces = wsData?.workspaces || []
+  const wsMap = Object.fromEntries(workspaces.map(w => [w.id, w.name || w.repo_url]))
+  const wsRepoMap = Object.fromEntries(workspaces.map(w => [w.id, w.github_repo]))
+  const showWorkspace = !selectedWorkspaceId
 
   const prs = data?.prs || []
 
   return (
-    <div className="px-5 py-4">
-      <div className="flex items-center justify-between mb-3">
-        <h2 className="text-sm font-semibold">
+    <div className="px-6 py-5">
+      <div className="flex items-center justify-between mb-4">
+        <h2 className="text-[13px] font-semibold tracking-tight">
           PR Tracker
           {prs.length > 0 && (
-            <span className="ml-2 text-[var(--text-dim)] font-normal text-xs">({prs.length})</span>
+            <span className="ml-2 text-[var(--text-muted)] font-normal text-[11px]">({prs.length})</span>
           )}
         </h2>
       </div>
 
       {isLoading ? (
-        <div className="flex justify-center py-8">
+        <div className="flex justify-center py-12">
           <Spinner />
         </div>
       ) : prs.length === 0 ? (
@@ -45,26 +51,31 @@ export function PRTracker() {
         <div className="flex flex-col gap-2">
           {prs.map((pr) => (
             <div
-              key={`${pr.github_repo}-${pr.pr_number}`}
-              className="rounded-lg border border-[var(--border)] bg-[var(--surface)] px-4 py-3"
+              key={`${pr.workspace_id}-${pr.pr_number}`}
+              className="rounded-lg border border-[var(--border)] bg-[var(--surface)] px-4 py-3 hover:border-[var(--text-muted)] transition-all"
             >
               <div className="flex items-center gap-3">
                 <a
-                  href={`https://github.com/${pr.github_repo}/pull/${pr.pr_number}`}
+                  href={`https://github.com/${wsRepoMap[pr.workspace_id]}/pull/${pr.pr_number}`}
                   target="_blank"
                   rel="noreferrer"
-                  className="text-[var(--blue)] text-sm hover:underline font-medium"
+                  className="text-[var(--accent)] text-[12px] hover:underline font-semibold font-mono"
                 >
-                  PR #{pr.pr_number}
+                  #{pr.pr_number}
                 </a>
                 <PRStatusBadge status={pr.latest_status} />
                 <Badge variant="dim">
-                  {pr.iterations} iteration{pr.iterations !== 1 ? 's' : ''}
+                  {pr.iterations} iter{pr.iterations !== 1 ? 's' : ''}
                 </Badge>
                 {pr.total_comments > 0 && (
                   <Badge variant="yellow">
                     {pr.total_comments} comment{pr.total_comments !== 1 ? 's' : ''}
                   </Badge>
+                )}
+                {showWorkspace && wsMap[pr.workspace_id] && (
+                  <span className="text-[8px] text-black bg-white/90 px-1.5 py-0.5 rounded font-medium truncate max-w-[120px] ml-auto">
+                    {wsMap[pr.workspace_id]}
+                  </span>
                 )}
               </div>
               <ReviewThreads threads={pr.review_threads} />

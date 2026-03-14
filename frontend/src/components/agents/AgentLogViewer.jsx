@@ -4,56 +4,97 @@ import { Spinner } from '../ui/Spinner'
 
 const MAX_DISPLAY = 500
 
-function eventStyle(eventType) {
+function eventTypeClass(eventType) {
   switch (eventType) {
-    case 'assistant': return 'text-[var(--text)]'
-    case 'tool_use': return 'text-[var(--text-dim)]'
-    case 'tool_result': return 'text-[var(--blue)]'
+    case 'assistant': return 'text-[var(--accent)]'
+    case 'tool_use': return 'text-[var(--yellow)]'
+    case 'tool_result': return 'text-[var(--text-muted)]'
+    case 'result': return 'text-[var(--green)]'
     case 'error': return 'text-[var(--red)]'
-    case 'result': return 'text-[var(--accent)]'
-    default: return 'text-[var(--text-dim)]'
+    case 'system': return 'text-[var(--blue)]'
+    case 'user': return 'text-[var(--text-muted)]'
+    case 'rate_limit_event': return 'text-[var(--yellow)]'
+    default: return 'text-[var(--text-muted)]'
   }
 }
 
-function formatEvent(event) {
+function formatLogTime(ts) {
+  if (!ts) return ''
   try {
-    const data = typeof event.data === 'string' ? JSON.parse(event.data) : event.data
-    if (!data) return event.event_type
-
-    if (event.event_type === 'assistant') {
-      const content = data.message?.content
-      if (Array.isArray(content)) {
-        return content.map((c) => {
-          if (c.text != null) return c.text
-          if (c.input != null) return JSON.stringify(c.input)
-          return ''
-        }).filter(Boolean).join(' ')
-      }
-    }
-    if (event.event_type === 'tool_use') {
-      return `[tool] ${data.name || ''} ${data.input ? JSON.stringify(data.input).slice(0, 120) : ''}`
-    }
-    if (event.event_type === 'result') {
-      return `[result] ${data.result != null ? data.result : JSON.stringify(data).slice(0, 120)}`
-    }
-    return JSON.stringify(data).slice(0, 200)
+    const d = new Date(ts)
+    return d.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' })
   } catch {
-    return event.event_type
+    return ''
+  }
+}
+
+function formatToolUse(b) {
+  const tool = b.name || 'unknown'
+  const input = b.input || {}
+  if (tool === 'Bash') return `$ ${(input.command || '').substring(0, 120)}`
+  if (tool === 'Read') return `Read ${input.file_path || '?'}`
+  if (tool === 'Edit' || tool === 'Write') return `${tool} ${input.file_path || '?'}`
+  if (tool === 'Grep') return `Grep "${input.pattern || ''}"`
+  if (tool === 'Glob') return `Glob ${input.pattern || ''}`
+  if (tool === 'Skill') return `Skill: ${input.skill || '?'}`
+  return `${tool}`
+}
+
+function tryParseEventData(raw, eventType) {
+  try {
+    const d = typeof raw === 'string' ? JSON.parse(raw) : raw
+    if (eventType === 'assistant' || d?.type === 'assistant') {
+      const blocks = d.message?.content || []
+      const parts = []
+      for (const b of blocks) {
+        if (b.type === 'text' && b.text) parts.push(b.text)
+        else if (b.type === 'tool_use') parts.push(formatToolUse(b))
+        else if (b.type === 'thinking' && b.thinking) parts.push('(thinking) ' + b.thinking)
+        else if (typeof b === 'string') parts.push(b)
+      }
+      return parts.join(' ') || null
+    }
+    if (eventType === 'user' || d?.type === 'user') return null
+    if (eventType === 'tool_use' || d?.type === 'tool_use') {
+      const tool = d.tool || d.name || 'unknown'
+      const input = d.input || {}
+      if (tool === 'Bash') return `$ ${input.command || ''}`
+      if (tool === 'Read') return `Read ${input.file_path || '?'}`
+      if (tool === 'Edit' || tool === 'Write') return `${tool} ${input.file_path || '?'}`
+      if (tool === 'Grep') return `Grep "${input.pattern || ''}"`
+      if (tool === 'Glob') return `Glob ${input.pattern || ''}`
+      return `${tool}: ${JSON.stringify(input)}`
+    }
+    if (eventType === 'tool_result' || d?.type === 'tool_result') return null
+    if (eventType === 'result' || d?.type === 'result') {
+      const r = d.result
+      if (typeof r === 'string') return r
+      if (r && typeof r === 'object') return JSON.stringify(r)
+      return 'Agent finished'
+    }
+    if (eventType === 'error' || d?.type === 'error') {
+      const err = d.error
+      if (typeof err === 'string') return err
+      if (err && err.message) return err.message
+      return 'Error occurred'
+    }
+    if (eventType === 'system' || d?.type === 'system') {
+      if (d.subtype === 'init') return `Session started in ${d.cwd || '?'}`
+      return d.message || d.text || null
+    }
+    if (eventType === 'rate_limit_event') return 'Rate limit event'
+    return null
+  } catch {
+    return raw || null
   }
 }
 
 export function AgentLogViewer({ agentId, isRunning }) {
-  const bottomRef = useRef(null)
+  const containerRef = useRef(null)
   const [allEvents, setAllEvents] = useState([])
 
   const { data, isLoading, cursorRef } = useAgentLogs(agentId, { refetchInterval: isRunning ? 3000 : false })
 
-  // Declared before the agentId effect so it runs first in the same effects flush.
-  // When the user switches agents, TanStack Query immediately returns stale cached
-  // data for the new agent (staleTime=0), causing both effects to fire together.
-  // By running this effect first, it may advance cursorRef to the stale last-event
-  // ID — but the agentId effect below always resets cursorRef.current = 0 afterward,
-  // so the last write wins before the background refetch's queryFn fires.
   useEffect(() => {
     if (data?.events?.length > 0) {
       setAllEvents(prev => {
@@ -67,16 +108,17 @@ export function AgentLogViewer({ agentId, isRunning }) {
 
   useEffect(() => {
     setAllEvents([])
-    // Reset cursor here (in addition to the render-body guard in useAgentLogs) so
-    // this effect runs after the data effect above in the same flush, guaranteeing
-    // cursorRef.current === 0 when the background refetch's queryFn fires.
     cursorRef.current = 0
   }, [agentId])
 
-  // Auto-scroll only for running agents
+  // Only auto-scroll if the user is already near the bottom (within 50px).
+  // This prevents hijacking the scroll when the user is reading earlier logs.
   useEffect(() => {
-    if (isRunning && bottomRef.current) {
-      bottomRef.current.scrollIntoView({ behavior: 'smooth' })
+    const el = containerRef.current
+    if (!isRunning || !el) return
+    const nearBottom = (el.scrollHeight - el.scrollTop - el.clientHeight) < 50
+    if (nearBottom) {
+      el.scrollTop = el.scrollHeight
     }
   }, [allEvents, isRunning])
 
@@ -85,24 +127,34 @@ export function AgentLogViewer({ agentId, isRunning }) {
   if (isLoading && allEvents.length === 0) {
     return (
       <div className="flex items-center justify-center py-4">
-        <Spinner size={14} />
+        <Spinner size={12} />
       </div>
     )
   }
 
+  const formattedEvents = displayEvents
+    .map((event) => {
+      const summary = tryParseEventData(event.event_data, event.event_type)
+      if (!summary) return null
+      return { ...event, summary }
+    })
+    .filter(Boolean)
+
   return (
-    <div className="overflow-y-auto max-h-[300px] bg-[var(--bg)] rounded-md p-3 text-[11px] font-mono">
-      {displayEvents.length === 0 ? (
-        <span className="text-[var(--text-dim)]">No log events yet...</span>
+    <div ref={containerRef} className="overflow-y-auto max-h-[500px] bg-[var(--bg)] border border-[var(--border-subtle)] rounded-md p-3 text-[10px] font-mono leading-relaxed">
+      {formattedEvents.length === 0 ? (
+        <span className="text-[var(--text-muted)]">Waiting for events...</span>
       ) : (
-        displayEvents.map((event) => (
-          <div key={event.id} className={`py-0.5 leading-relaxed ${eventStyle(event.event_type)}`}>
-            <span className="text-[var(--text-dim)] mr-2 select-none">›</span>
-            {formatEvent(event)}
+        formattedEvents.map((event) => (
+          <div key={event.id} className="py-0.5 text-[var(--text-dim)] break-words">
+            <span className="text-[var(--text-muted)] mr-2 tabular-nums">{formatLogTime(event.timestamp)}</span>
+            <span className={`mr-2 font-semibold ${eventTypeClass(event.event_type)}`}>
+              {event.event_type}
+            </span>
+            <span className="text-[var(--text-dim)]">{event.summary}</span>
           </div>
         ))
       )}
-      <div ref={bottomRef} />
     </div>
   )
 }

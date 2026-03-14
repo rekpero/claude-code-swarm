@@ -49,6 +49,9 @@ export const updateWorkspace = (id, data) =>
 export const deleteWorkspace = (id) =>
   apiFetch(`/api/workspaces/${id}`, { method: 'DELETE' })
 
+export const getWorkspaceStructure = (wsId) =>
+  apiFetch(`/api/workspaces/${wsId}/structure`)
+
 // Env files
 export const getEnvFiles = (wsId) =>
   apiFetch(`/api/workspaces/${wsId}/env-files`)
@@ -88,10 +91,10 @@ export const refinePlan = (sessionId, message) =>
     body: JSON.stringify({ message }),
   })
 
-export const createIssueFromPlan = (sessionId, title = '') =>
+export const createIssueFromPlan = (sessionId, title = '', messageIndex = null) =>
   apiFetch(`/api/planning/${sessionId}/create-issue`, {
     method: 'POST',
-    body: JSON.stringify({ title }),
+    body: JSON.stringify({ title, message_index: messageIndex }),
   })
 
 export const cancelPlanning = (sessionId) =>

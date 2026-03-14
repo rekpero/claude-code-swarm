@@ -175,6 +175,7 @@ cmd_stop() {
 }
 
 cmd_restart() {
+  cmd_build_ui
   if _is_systemd; then
     sudo systemctl restart "$SERVICE_NAME"
     sudo systemctl status "$SERVICE_NAME" --no-pager
