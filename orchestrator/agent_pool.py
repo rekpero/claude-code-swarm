@@ -1044,7 +1044,10 @@ class AgentPool:
                             db.finish_agent(agent_id, status="completed")
                             db.update_agent(agent_id, pr_number=auto_pr)
                             db.update_issue(issue_number, workspace_id=workspace_id, status="pr_created", pr_number=auto_pr)
-                            cleanup_worktree(worktree_path, repo_path=repo_path)
+                            if worktree_path and repo_path:
+                                cleanup_worktree(worktree_path, repo_path=repo_path)
+                            elif worktree_path:
+                                logger.warning("repo_path is None for agent %s — skipping git worktree deregistration", agent_id)
                             return
 
                 db.finish_agent(agent_id, status="failed", error_message="Agent exited without creating PR (reattached)")
@@ -1054,8 +1057,10 @@ class AgentPool:
             db.finish_agent(agent_id, status="completed")
             db.update_issue(issue_number, workspace_id=workspace_id, status="pr_created")
 
-        if worktree_path:
+        if worktree_path and repo_path:
             cleanup_worktree(worktree_path, repo_path=repo_path)
+        elif worktree_path:
+            logger.warning("repo_path is None for agent %s — skipping git worktree deregistration", agent_id)
 
     def shutdown(self):
         """Gracefully shut down the pool — let running agents continue independently."""

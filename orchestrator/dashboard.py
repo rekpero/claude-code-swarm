@@ -235,7 +235,7 @@ async def list_agents(
     agents = db.get_all_agents(workspace_id=workspace_id, limit=limit, offset=offset)
     total = db.count_agents(workspace_id=workspace_id)
     for agent in agents:
-        if not agent.get("turns_used"):
+        if agent["status"] == "running" and not agent.get("turns_used"):
             agent["turns_used"] = db.get_agent_turn_count(agent["agent_id"])
     return {"agents": agents, "total": total, "limit": limit, "offset": offset}
 
