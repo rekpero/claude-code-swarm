@@ -7,6 +7,13 @@ import { usePRs } from '../../hooks/usePRs'
 import { useWorkspaceContext } from '../../context/WorkspaceContext'
 import { useWorkspaces } from '../../hooks/useWorkspaces'
 
+const REPO_RE = /^[\w.-]+\/[\w.-]+$/
+function buildGitHubUrl(repo, path) {
+  if (!repo || !REPO_RE.test(repo)) return null
+  const [owner, name] = repo.split('/')
+  return `https://github.com/${encodeURIComponent(owner)}/${encodeURIComponent(name)}/${path}`
+}
+
 function PRStatusBadge({ status }) {
   const MAP = {
     open: { variant: 'blue', label: 'Open' },
@@ -56,7 +63,7 @@ export function PRTracker() {
             >
               <div className="flex items-center gap-3">
                 <a
-                  href={`https://github.com/${wsRepoMap[pr.workspace_id]}/pull/${pr.pr_number}`}
+                  href={buildGitHubUrl(wsRepoMap[pr.workspace_id], `pull/${pr.pr_number}`) ?? '#'}
                   target="_blank"
                   rel="noreferrer"
                   className="text-[var(--accent)] text-[12px] hover:underline font-semibold font-mono"

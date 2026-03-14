@@ -420,17 +420,18 @@ export function PlannerModal({ open, onClose }) {
     || (workspaces.length > 0 ? workspaces[0].id : null)
 
   const planning = usePlanning(effectiveWsId)
+  const { loadSessions } = planning
   const chatRef = useRef(null)
   const inputRef = useRef(null)
   const [inputValue, setInputValue] = useState('')
 
   useEffect(() => {
     if (open && effectiveWsId) {
-      planning.loadSessions()
+      loadSessions()
       const id = setTimeout(() => inputRef.current?.focus(), 100)
       return () => clearTimeout(id)
     }
-  }, [open, effectiveWsId, planning.loadSessions])
+  }, [open, effectiveWsId, loadSessions])
 
   useEffect(() => {
     if (chatRef.current) {

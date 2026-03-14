@@ -9,6 +9,13 @@ import { useWorkspaceContext } from '../../context/WorkspaceContext'
 import { useWorkspaces } from '../../hooks/useWorkspaces'
 import { formatDistanceToNow } from 'date-fns'
 
+const REPO_RE = /^[\w.-]+\/[\w.-]+$/
+function buildGitHubUrl(repo, path) {
+  if (!repo || !REPO_RE.test(repo)) return null
+  const [owner, name] = repo.split('/')
+  return `https://github.com/${encodeURIComponent(owner)}/${encodeURIComponent(name)}/${path}`
+}
+
 export function IssueQueue() {
   const { selectedWorkspaceId } = useWorkspaceContext()
   const { data, isLoading } = useIssues(selectedWorkspaceId)
@@ -65,7 +72,7 @@ export function IssueQueue() {
                   </td>
                   <td className="py-2.5 px-4 max-w-[300px]">
                     <a
-                      href={`https://github.com/${wsRepoMap[issue.workspace_id]}/issues/${issue.issue_number}`}
+                      href={buildGitHubUrl(wsRepoMap[issue.workspace_id], `issues/${issue.issue_number}`) ?? '#'}
                       target="_blank"
                       rel="noreferrer"
                       className="hover:text-[var(--accent)] transition-colors flex items-center gap-1.5 truncate group"
@@ -90,7 +97,7 @@ export function IssueQueue() {
                   <td className="py-2.5 px-4">
                     {issue.pr_number ? (
                       <a
-                        href={`https://github.com/${wsRepoMap[issue.workspace_id]}/pull/${issue.pr_number}`}
+                        href={buildGitHubUrl(wsRepoMap[issue.workspace_id], `pull/${issue.pr_number}`) ?? '#'}
                         target="_blank"
                         rel="noreferrer"
                         className="text-[var(--accent)] hover:underline font-mono"
