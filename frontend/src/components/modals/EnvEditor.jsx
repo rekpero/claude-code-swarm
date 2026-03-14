@@ -113,7 +113,7 @@ export function EnvEditor({ workspaceId }) {
     const parsed = parseEnvText(pasteText)
     const newRows = Object.entries(parsed).map(([k, v]) => ({ id: k, key: k, value: v }))
     setRows((prev) => {
-      const existingMap = new Map(prev.map((r) => [r.key, r]))
+      const existingMap = new Map(prev.filter(r => r.key.trim()).map((r) => [r.key, r]))
       newRows.forEach((r) => {
         if (existingMap.has(r.key)) {
           existingMap.set(r.key, { ...existingMap.get(r.key), value: r.value })
@@ -136,7 +136,7 @@ export function EnvEditor({ workspaceId }) {
       const parsed = parseEnvText(ev.target.result)
       const newRows = Object.entries(parsed).map(([k, v]) => ({ id: k, key: k, value: v }))
       setRows((prev) => {
-        const existingMap = new Map(prev.map((r) => [r.key, r]))
+        const existingMap = new Map(prev.filter(r => r.key.trim()).map((r) => [r.key, r]))
         newRows.forEach((r) => {
           if (existingMap.has(r.key)) {
             existingMap.set(r.key, { ...existingMap.get(r.key), value: r.value })

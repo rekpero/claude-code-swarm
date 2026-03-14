@@ -122,7 +122,7 @@ export function IssueQueue() {
                         onClick={() => {
                           setRetryingIssue(`${issue.workspace_id}-${issue.issue_number}`)
                           updateStatus(
-                            { issueNumber: issue.issue_number, status: 'pending' },
+                            { issueNumber: issue.issue_number, status: 'pending', workspaceId: issue.workspace_id },
                             { onSettled: () => setRetryingIssue(null) }
                           )
                         }}

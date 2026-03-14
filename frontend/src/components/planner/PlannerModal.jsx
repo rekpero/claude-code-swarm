@@ -218,6 +218,7 @@ function LiveDraft({ events }) {
 function PlanIssueAction({ messageIndex, planning }) {
   const [showTitle, setShowTitle] = useState(false)
   const [title, setTitle] = useState('')
+  const [createError, setCreateError] = useState(null)
   const issueResult = planning.issueResults[messageIndex]
   const isCreating = planning.creatingIssue === messageIndex
   const isOtherCreating = planning.creatingIssue != null && planning.creatingIssue !== messageIndex
@@ -252,9 +253,14 @@ function PlanIssueAction({ messageIndex, planning }) {
           loading={isCreating}
           disabled={isCreating || isOtherCreating || planning.generating}
           onClick={async () => {
-            const result = await planning.createIssue(messageIndex, title.trim())
-            if (result?.error) {
-              alert('Failed to create issue: ' + result.error)
+            setCreateError(null)
+            try {
+              const result = await planning.createIssue(messageIndex, title.trim())
+              if (result?.error) {
+                setCreateError('Failed to create issue: ' + result.error)
+              }
+            } catch (err) {
+              setCreateError('Failed to create issue: ' + (err?.message || 'Unknown error'))
             }
           }}
         >
@@ -277,6 +283,9 @@ function PlanIssueAction({ messageIndex, planning }) {
           placeholder="Leave blank to auto-generate title"
           className="mt-2 w-full bg-[var(--surface)] border border-[var(--border)] rounded p-2 text-[10px] font-mono text-[var(--text)] focus:outline-none focus:border-[var(--accent-border)] placeholder:text-[var(--text-muted)] transition-colors"
         />
+      )}
+      {createError && (
+        <p className="mt-2 text-[10px] text-[var(--red)]">{createError}</p>
       )}
     </div>
   )

@@ -105,6 +105,12 @@ export function AgentLogViewer({ agentId, isRunning }) {
   const { data, isLoading, cursorRef } = useAgentLogs(agentId, { refetchInterval: isRunning ? 3000 : false })
 
   useEffect(() => {
+    cursorAgentIdRef.current = agentId
+    setAllEvents([])
+    cursorRef.current = 0
+  }, [agentId, cursorRef])
+
+  useEffect(() => {
     // Guard the entire update with the agentId check to prevent stale cached
     // events from a previous agent being appended before the reset effect runs.
     if (data?.events?.length > 0 && cursorAgentIdRef.current === agentId) {
@@ -119,12 +125,6 @@ export function AgentLogViewer({ agentId, isRunning }) {
       cursorRef.current = data.events[data.events.length - 1].id
     }
   }, [data, cursorRef, agentId])
-
-  useEffect(() => {
-    cursorAgentIdRef.current = agentId
-    setAllEvents([])
-    cursorRef.current = 0
-  }, [agentId, cursorRef])
 
   // Only auto-scroll if the user is already near the bottom (within 50px).
   // This prevents hijacking the scroll when the user is reading earlier logs.

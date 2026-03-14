@@ -13,7 +13,7 @@ export function useIssues(wsId) {
 export function useUpdateIssueStatus(wsId) {
   const queryClient = useQueryClient()
   return useMutation({
-    mutationFn: ({ issueNumber, status }) => updateIssueStatus(issueNumber, status, wsId),
+    mutationFn: ({ issueNumber, status, workspaceId }) => updateIssueStatus(issueNumber, status, workspaceId ?? wsId),
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ['issues', wsId] })
     },
