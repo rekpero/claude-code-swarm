@@ -66,6 +66,7 @@ export function EnvEditor({ workspaceId }) {
     }
     try {
       await saveEnv(workspaceId, activeFile, vars)
+      queryClient.invalidateQueries({ queryKey: ['env', workspaceId] })
     } catch (err) {
       setSaveError(err?.message || 'Failed to save')
     } finally {
@@ -90,7 +91,11 @@ export function EnvEditor({ workspaceId }) {
     const reader = new FileReader()
     reader.onload = (ev) => {
       const parsed = parseEnvText(ev.target.result)
-      setRows(Object.entries(parsed).map(([k, v]) => ({ key: k, value: v })))
+      const newRows = Object.entries(parsed).map(([k, v]) => ({ key: k, value: v }))
+      setRows((prev) => {
+        const existing = new Set(prev.map((r) => r.key))
+        return [...prev, ...newRows.filter((r) => !existing.has(r.key))]
+      })
     }
     reader.readAsText(file)
   }
