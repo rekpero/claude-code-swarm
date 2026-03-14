@@ -35,6 +35,8 @@ export function WorkspaceSettingsModal({ open, onClose }) {
   useEffect(() => {
     if (!open) {
       setConfirmDelete(false)
+    } else {
+      setUpdateError(null)
     }
   }, [open])
 
