@@ -176,7 +176,7 @@ def _run_planning_agent_impl(session_id: str, workspace: dict, prompt: str):
 
     cmd = [
         "claude",
-        "--allowedTools", "Read,Glob,Grep",
+        "--allowedTools", "Read,Glob,Grep,WebFetch,WebSearch,Agent",
         "--output-format", "stream-json",
         "--verbose",
     ]

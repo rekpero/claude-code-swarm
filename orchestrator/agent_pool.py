@@ -299,7 +299,7 @@ class AgentPool:
         workspace_id: str | None = None,
     ) -> AgentProcess:
         """Spawn a claude -p subprocess."""
-        allowed_tools = "Read,Edit,Bash,Write,Glob,Grep"
+        allowed_tools = "Read,Edit,Bash,Write,Glob,Grep,WebFetch,WebSearch,Agent,TodoWrite,NotebookEdit"
         if SKILLS_ENABLED:
             allowed_tools += ",Skill"
 
@@ -636,7 +636,7 @@ class AgentPool:
             cmd += ["--continue", "-p", prompt]
             logger.info("Continuing last session in worktree for agent %s", old_agent_id)
 
-        resume_allowed_tools = "Read,Edit,Bash,Write,Glob,Grep"
+        resume_allowed_tools = "Read,Edit,Bash,Write,Glob,Grep,WebFetch,WebSearch,Agent,TodoWrite,NotebookEdit"
         if SKILLS_ENABLED:
             resume_allowed_tools += ",Skill"
 
