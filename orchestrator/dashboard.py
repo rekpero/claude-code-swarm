@@ -142,7 +142,7 @@ async def workspace_git_status(workspace_id: str):
     if not local_path or not Path(local_path).exists():
         return JSONResponse(content={"error": "Workspace repo not cloned yet"}, status_code=400)
     try:
-        status = worktree.get_sync_status(local_path, workspace.get("base_branch", "main"))
+        status = await asyncio.to_thread(worktree.get_sync_status, local_path, workspace.get("base_branch", "main"))
         return status
     except Exception as e:
         return JSONResponse(content={"error": str(e)}, status_code=500)
@@ -158,8 +158,8 @@ async def workspace_git_pull(workspace_id: str):
     if not local_path or not Path(local_path).exists():
         return JSONResponse(content={"error": "Workspace repo not cloned yet"}, status_code=400)
     try:
-        worktree.ensure_repo_updated(local_path, workspace.get("base_branch", "main"))
-        status = worktree.get_sync_status(local_path, workspace.get("base_branch", "main"))
+        await asyncio.to_thread(worktree.ensure_repo_updated, local_path, workspace.get("base_branch", "main"))
+        status = await asyncio.to_thread(worktree.get_sync_status, local_path, workspace.get("base_branch", "main"))
         return {"ok": True, **status}
     except Exception as e:
         return JSONResponse(content={"error": str(e)}, status_code=500)
