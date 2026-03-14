@@ -101,6 +101,9 @@ class AgentProcess:
         # Store workspace config for use in completion handlers
         self._workspace: dict | None = None
         self.log_file = agent_log_path(agent_id)
+        # Set to True by AgentPool.mark_externally_stopped() so _monitor_agent
+        # knows to skip completion DB writes when restart_agent kills this process.
+        self.stopped_externally: bool = False
 
     def start_reader(self):
         """Start a background thread to tail the log file for events."""
@@ -169,6 +172,9 @@ class AgentPool:
         self._agents: dict[str, AgentProcess] = {}
         self._lock = threading.Lock()
         self._on_agent_complete: Callable[[AgentProcess], None] | None = None
+        # Agent IDs that were stopped externally (via restart_agent) so that
+        # _monitor_agent / _monitor_pid skip their completion DB writes.
+        self._stopped_agent_ids: set[str] = set()
 
     @property
     def active_count(self) -> int:
@@ -182,6 +188,20 @@ class AgentPool:
     def set_completion_callback(self, callback: Callable[[AgentProcess], None]):
         """Set a callback to be called when an agent completes."""
         self._on_agent_complete = callback
+
+    def mark_externally_stopped(self, agent_id: str) -> None:
+        """Signal that an agent is being stopped externally (e.g. via restart_agent).
+
+        Must be called *before* sending SIGTERM so that _monitor_agent and
+        _monitor_pid see the flag before they process the process exit and
+        skip their own DB completion writes, preventing a race where the
+        monitor thread overwrites the 'stopped' status set by restart_agent.
+        """
+        with self._lock:
+            self._stopped_agent_ids.add(agent_id)
+            agent = self._agents.get(agent_id)
+            if agent:
+                agent.stopped_externally = True
 
     def dispatch_implement(self, issue_number: int, workspace: dict | None = None) -> str | None:
         """Dispatch an agent to implement an issue. Returns agent_id or None if pool is full."""
@@ -425,7 +445,17 @@ class AgentPool:
                 return
             time.sleep(5)
 
-        # Agent finished
+        # Agent finished — skip completion logic if externally stopped to avoid
+        # racing with restart_agent's own DB writes.
+        if agent.stopped_externally:
+            logger.info("Agent %s was externally stopped — skipping completion logic", agent_id)
+            if self._on_agent_complete:
+                try:
+                    self._on_agent_complete(agent)
+                except Exception as e:
+                    logger.error("Completion callback error: %s", e)
+            return
+
         return_code = agent.process.returncode
         stderr_output = agent.process.stderr.read() if agent.process.stderr else ""
         turns = len([e for e in agent.events if e.event_type == "assistant"])
@@ -939,6 +969,15 @@ class AgentPool:
 
         # PID exited — handle completion
         logger.info("Reattached agent %s (PID %d) has exited", agent_id, pid)
+
+        # Skip completion logic if this agent was externally stopped (e.g. via
+        # restart_agent) to avoid overwriting the DB state set by the caller.
+        with self._lock:
+            externally_stopped = agent_id in self._stopped_agent_ids
+            self._stopped_agent_ids.discard(agent_id)
+        if externally_stopped:
+            logger.info("Reattached agent %s was externally stopped — skipping completion logic", agent_id)
+            return
 
         # Wait for the log tailer to finish ingesting remaining events before
         # reading the turn count so we get a complete picture.
