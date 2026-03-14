@@ -33,7 +33,7 @@ function getEventConfig(type) {
 
 /* ─── Session sidebar ──────────────────────────────────────────────── */
 
-function SessionSidebar({ sessions, activeSessionId, onSelect, onNew, onDelete }) {
+function SessionSidebar({ sessions, activeSessionId, onSelect, onNew, onDelete, confirmDeleteId, onCancelDelete }) {
   return (
     <div className="w-[220px] min-w-[220px] border-r border-[var(--border)] flex flex-col bg-[var(--bg)]">
       <div className="px-3.5 py-3 flex justify-between items-center border-b border-[var(--border)]">
@@ -76,13 +76,30 @@ function SessionSidebar({ sessions, activeSessionId, onSelect, onNew, onDelete }
                     </span>
                     {s.updated_at && formatDistanceToNow(new Date(s.updated_at), { addSuffix: true })}
                   </span>
-                  <button
-                    className="opacity-0 group-hover:opacity-50 hover:!opacity-100 text-[var(--red)] text-xs leading-none transition-opacity"
-                    onClick={(e) => { e.stopPropagation(); onDelete(s.id) }}
-                    title="Delete"
-                  >
-                    &times;
-                  </button>
+                  {confirmDeleteId === s.id ? (
+                    <span className="flex items-center gap-1" onClick={(e) => e.stopPropagation()}>
+                      <button
+                        className="text-[var(--red)] text-[8px] font-bold hover:underline"
+                        onClick={() => onDelete(s.id)}
+                      >
+                        Confirm
+                      </button>
+                      <button
+                        className="text-[var(--text-muted)] text-[8px] hover:underline"
+                        onClick={() => onCancelDelete()}
+                      >
+                        Cancel
+                      </button>
+                    </span>
+                  ) : (
+                    <button
+                      className="opacity-0 group-hover:opacity-50 hover:!opacity-100 text-[var(--red)] text-xs leading-none transition-opacity"
+                      onClick={(e) => { e.stopPropagation(); onDelete(s.id) }}
+                      title="Delete"
+                    >
+                      &times;
+                    </button>
+                  )}
                 </div>
               </div>
             )
@@ -435,6 +452,7 @@ export function PlannerModal({ open, onClose }) {
   const chatUserScrolledUpRef = useRef(false)
   const [inputValue, setInputValue] = useState('')
   const [wsError, setWsError] = useState(null)
+  const [confirmDeleteId, setConfirmDeleteId] = useState(null)
 
   useEffect(() => {
     if (open && effectiveWsId) {
@@ -483,8 +501,12 @@ export function PlannerModal({ open, onClose }) {
   }
 
   const handleDeleteSession = (sid) => {
-    if (!confirm('Delete this planning session?')) return
-    planning.deleteSession(sid)
+    if (confirmDeleteId === sid) {
+      setConfirmDeleteId(null)
+      planning.deleteSession(sid)
+    } else {
+      setConfirmDeleteId(sid)
+    }
   }
 
   if (!open) return null
@@ -504,6 +526,8 @@ export function PlannerModal({ open, onClose }) {
           onSelect={(sid) => planning.resumeSession(sid)}
           onNew={() => planning.startNew()}
           onDelete={handleDeleteSession}
+          confirmDeleteId={confirmDeleteId}
+          onCancelDelete={() => setConfirmDeleteId(null)}
         />
 
         <div className="flex-1 flex flex-col min-w-0">

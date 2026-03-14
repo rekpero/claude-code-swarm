@@ -34,9 +34,11 @@ export function EnvEditor({ workspaceId }) {
   const [pasteText, setPasteText] = useState('')
   const [showPaste, setShowPaste] = useState(false)
   const [syncing, setSyncing] = useState(false)
+  const [dirty, setDirty] = useState(false)
 
   useEffect(() => {
     setActiveFile('.env')
+    setDirty(false)
   }, [workspaceId])
 
   useEffect(() => {
@@ -50,8 +52,15 @@ export function EnvEditor({ workspaceId }) {
     }).catch(() => setEnvFiles(['.env']))
   }, [workspaceId])
 
+  // Reset dirty flag when switching files
+  useEffect(() => {
+    setDirty(false)
+  }, [activeFile])
+
   useEffect(() => {
     if (!workspaceId || !activeFile) return
+    // Don't overwrite unsaved edits on cache-bust refetches
+    if (dirty && fetchCounter > 0) return
     let cancelled = false
     setLoading(true)
     setFileReadError(null)
@@ -86,14 +95,15 @@ export function EnvEditor({ workspaceId }) {
         if (!cancelled) setLoading(false)
       })
     return () => { cancelled = true }
-  }, [workspaceId, activeFile, fetchCounter])
+  }, [workspaceId, activeFile, fetchCounter, dirty])
 
   const setRow = (i, field, val) => {
+    setDirty(true)
     setRows((prev) => prev.map((r, idx) => idx === i ? { ...r, [field]: val } : r))
   }
 
-  const addRow = () => setRows((prev) => [...prev, { id: crypto.randomUUID(), key: '', value: '' }])
-  const removeRow = (i) => setRows((prev) => prev.filter((_, idx) => idx !== i))
+  const addRow = () => { setDirty(true); setRows((prev) => [...prev, { id: crypto.randomUUID(), key: '', value: '' }]) }
+  const removeRow = (i) => { setDirty(true); setRows((prev) => prev.filter((_, idx) => idx !== i)) }
 
   const handleSave = async () => {
     if (!workspaceId) return
@@ -122,6 +132,7 @@ export function EnvEditor({ workspaceId }) {
     }
     try {
       await saveEnv(workspaceId, activeFile, vars)
+      setDirty(false)
     } catch (err) {
       setSaveError(err?.message || 'Failed to save')
     } finally {

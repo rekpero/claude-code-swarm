@@ -1,4 +1,4 @@
-import { useState, useEffect } from 'react'
+import { useState, useEffect, useRef } from 'react'
 import { ChevronDown, ChevronUp, Code, MessageSquare, RotateCw } from 'lucide-react'
 import { AgentStatusBadge } from './AgentStatusBadge'
 import { AgentLogViewer } from './AgentLogViewer'
@@ -41,6 +41,11 @@ export function AgentCard({ agent, workspaceName, onRestarted }) {
   const [expanded, setExpanded] = useState(isRunning)
   const [restarting, setRestarting] = useState(false)
   const [restartError, setRestartError] = useState(null)
+  const mountedRef = useRef(true)
+
+  useEffect(() => {
+    return () => { mountedRef.current = false }
+  }, [])
 
   useEffect(() => {
     if (isRunning) {
@@ -122,8 +127,8 @@ export function AgentCard({ agent, workspaceName, onRestarted }) {
                   setRestartError(null)
                   restartAgent(agent.agent_id)
                     .then(() => { Promise.resolve(onRestarted?.()).catch(() => {}) })
-                    .catch((err) => setRestartError(err?.message || 'Restart failed'))
-                    .finally(() => setRestarting(false))
+                    .catch((err) => { if (mountedRef.current) setRestartError(err?.message || 'Restart failed') })
+                    .finally(() => { if (mountedRef.current) setRestarting(false) })
                 }}
                 disabled={restarting}
                 className="flex items-center gap-1 px-2 py-1 text-[9px] font-medium text-[var(--yellow)] bg-[rgba(234,179,8,0.08)] border border-[rgba(234,179,8,0.15)] rounded hover:bg-[rgba(234,179,8,0.15)] transition-colors disabled:opacity-40"

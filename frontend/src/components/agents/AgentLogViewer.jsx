@@ -114,15 +114,16 @@ export function AgentLogViewer({ agentId, isRunning }) {
     // Guard the entire update with the agentId check to prevent stale cached
     // events from a previous agent being appended before the reset effect runs.
     if (data?.events?.length > 0 && cursorAgentIdRef.current === agentId) {
+      const newCursor = data.events[data.events.length - 1].id
       setAllEvents(prev => {
         const existingIds = new Set(prev.map(e => e.id))
         const newEvents = data.events.filter(e => !existingIds.has(e.id))
         if (newEvents.length > 0) {
+          cursorRef.current = newCursor
           return [...prev, ...newEvents]
         }
         return prev
       })
-      cursorRef.current = data.events[data.events.length - 1].id
     }
   }, [data, cursorRef, agentId])
 

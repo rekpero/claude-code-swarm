@@ -15,11 +15,11 @@ async function apiFetch(path, options = {}) {
 
 // Metrics
 export const getMetrics = (wsId) =>
-  apiFetch(`/api/metrics${wsId ? `?workspace_id=${wsId}` : ''}`)
+  apiFetch(`/api/metrics${wsId ? `?workspace_id=${encodeURIComponent(wsId)}` : ''}`)
 
 // Agents
 export const getAgents = (wsId, limit = 20, offset = 0) =>
-  apiFetch(`/api/agents?limit=${limit}&offset=${offset}${wsId ? `&workspace_id=${wsId}` : ''}`)
+  apiFetch(`/api/agents?limit=${limit}&offset=${offset}${wsId ? `&workspace_id=${encodeURIComponent(wsId)}` : ''}`)
 
 export const getAgentLogs = (agentId, since = 0) =>
   apiFetch(`/api/agents/${agentId}/logs?since=${since}`)
@@ -29,17 +29,17 @@ export const restartAgent = (agentId) =>
 
 // Issues
 export const getIssues = (wsId) =>
-  apiFetch(`/api/issues${wsId ? `?workspace_id=${wsId}` : ''}`)
+  apiFetch(`/api/issues${wsId ? `?workspace_id=${encodeURIComponent(wsId)}` : ''}`)
 
 export const updateIssueStatus = (issueNumber, status, wsId) =>
-  apiFetch(`/api/issues/${issueNumber}/status${wsId ? `?workspace_id=${wsId}` : ''}`, {
+  apiFetch(`/api/issues/${issueNumber}/status${wsId ? `?workspace_id=${encodeURIComponent(wsId)}` : ''}`, {
     method: 'PUT',
     body: JSON.stringify({ status }),
   })
 
 // PRs
 export const getPRs = (wsId) =>
-  apiFetch(`/api/prs${wsId ? `?workspace_id=${wsId}` : ''}`)
+  apiFetch(`/api/prs${wsId ? `?workspace_id=${encodeURIComponent(wsId)}` : ''}`)
 
 // Workspaces
 export const getWorkspaces = () => apiFetch('/api/workspaces')

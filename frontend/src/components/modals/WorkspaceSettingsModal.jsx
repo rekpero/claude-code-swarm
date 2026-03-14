@@ -1,4 +1,4 @@
-import { useState, useEffect } from 'react'
+import { useState, useEffect, useRef } from 'react'
 import { FolderTree, GitBranch, FileCode, Package, RefreshCw, Check, AlertTriangle, ArrowDown } from 'lucide-react'
 import { Modal } from '../ui/Modal'
 import { Button } from '../ui/Button'
@@ -222,7 +222,10 @@ export function WorkspaceSettingsModal({ open, onClose }) {
   const { mutate: update, isPending: isUpdating } = useUpdateWorkspace()
   const { mutate: del, isPending: isDeleting } = useDeleteWorkspace()
 
-  const workspace = data?.workspaces?.find((w) => w.id === selectedWorkspaceId)
+  const liveWorkspace = data?.workspaces?.find((w) => w.id === selectedWorkspaceId)
+  const workspaceRef = useRef(liveWorkspace)
+  if (liveWorkspace) workspaceRef.current = liveWorkspace
+  const workspace = liveWorkspace || (open ? workspaceRef.current : null)
   const [form, setForm] = useState({ name: '', repo_url: '', base_branch: '' })
 
   useEffect(() => {
@@ -242,6 +245,7 @@ export function WorkspaceSettingsModal({ open, onClose }) {
   useEffect(() => {
     if (!open) {
       setConfirmDelete(false)
+      setActiveTab('General')
     } else {
       setUpdateError(null)
     }
