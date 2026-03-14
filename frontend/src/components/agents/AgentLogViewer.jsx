@@ -107,13 +107,15 @@ export function AgentLogViewer({ agentId, isRunning }) {
         const existingIds = new Set(prev.map(e => e.id))
         const newEvents = data.events.filter(e => !existingIds.has(e.id))
         if (newEvents.length > 0) {
-          cursorRef.current = data.events[data.events.length - 1].id
           return [...prev, ...newEvents]
         }
         return prev
       })
+      // Update cursor outside the state updater so it runs synchronously,
+      // preventing it from overriding the agentId-reset effect's cursorRef.current = 0.
+      cursorRef.current = data.events[data.events.length - 1].id
     }
-  }, [data])
+  }, [data, cursorRef])
 
   useEffect(() => {
     setAllEvents([])

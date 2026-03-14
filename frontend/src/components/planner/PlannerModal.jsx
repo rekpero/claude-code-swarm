@@ -427,7 +427,8 @@ export function PlannerModal({ open, onClose }) {
   useEffect(() => {
     if (open && effectiveWsId) {
       planning.loadSessions()
-      setTimeout(() => inputRef.current?.focus(), 100)
+      const id = setTimeout(() => inputRef.current?.focus(), 100)
+      return () => clearTimeout(id)
     }
   }, [open, effectiveWsId, planning.loadSessions])
 

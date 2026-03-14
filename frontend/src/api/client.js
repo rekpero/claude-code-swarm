@@ -1,9 +1,10 @@
 const BASE = ''
 
 async function apiFetch(path, options = {}) {
+  const { headers: customHeaders, ...rest } = options
   const res = await fetch(`${BASE}${path}`, {
-    headers: { 'Content-Type': 'application/json', ...options.headers },
-    ...options,
+    headers: { 'Content-Type': 'application/json', ...customHeaders },
+    ...rest,
   })
   if (!res.ok) {
     const err = await res.json().catch(() => ({ error: res.statusText }))
