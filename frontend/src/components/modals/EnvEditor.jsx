@@ -12,7 +12,8 @@ function parseEnvText(text) {
     const idx = trimmed.indexOf('=')
     if (idx < 0) continue
     const key = trimmed.slice(0, idx).trim()
-    const val = trimmed.slice(idx + 1).trim().replace(/^["']|["']$/g, '')
+    const raw = trimmed.slice(idx + 1).trim()
+    const val = raw.replace(/^(['"])(.*)\1$/, '$2')
     if (key) vars[key] = val
   }
   return vars
@@ -39,12 +40,19 @@ export function EnvEditor({ workspaceId }) {
 
   useEffect(() => {
     if (!workspaceId || !activeFile) return
+    let cancelled = false
     setLoading(true)
     getEnv(workspaceId, activeFile).then((data) => {
-      const entries = Object.entries(data.vars || {}).map(([k, v]) => ({ key: k, value: v }))
-      setRows(entries)
-    }).catch(() => setRows([]))
-    .finally(() => setLoading(false))
+      if (!cancelled) {
+        const entries = Object.entries(data.vars || {}).map(([k, v]) => ({ key: k, value: v }))
+        setRows(entries)
+      }
+    }).catch(() => {
+      if (!cancelled) setRows([])
+    }).finally(() => {
+      if (!cancelled) setLoading(false)
+    })
+    return () => { cancelled = true }
   }, [workspaceId, activeFile, fetchCounter])
 
   const setRow = (i, field, val) => {

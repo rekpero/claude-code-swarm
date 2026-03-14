@@ -19,7 +19,7 @@ export function ReviewThreads({ threads }) {
       {open && (
         <div className="mt-2 flex flex-col gap-2">
           {threads.map((thread, i) => (
-            <div key={i} className="bg-[var(--bg)] border border-[var(--border)] rounded-md p-3">
+            <div key={thread.id ?? `${thread.path}-${thread.line}-${i}`} className="bg-[var(--bg)] border border-[var(--border)] rounded-md p-3">
               {thread.path && (
                 <div className="flex items-center gap-1.5 text-[10px] text-[var(--text-dim)] mb-1.5">
                   <FileCode size={10} />

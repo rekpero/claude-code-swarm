@@ -56,7 +56,7 @@ export function AgentCard({ agent }) {
             {agent.issue_number && (
               <a
                 href="#"
-                onClick={(e) => e.stopPropagation()}
+                onClick={(e) => { e.preventDefault(); e.stopPropagation() }}
                 className="text-[var(--blue)] text-xs hover:underline"
               >
                 #{agent.issue_number}
