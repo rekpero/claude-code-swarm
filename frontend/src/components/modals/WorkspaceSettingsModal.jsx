@@ -27,6 +27,8 @@ export function WorkspaceSettingsModal({ open, onClose }) {
         base_branch: workspace.base_branch || '',
       })
       setUpdateError(null)
+    } else {
+      setForm({ name: '', repo_url: '', base_branch: '' })
     }
   }, [workspace?.id, workspace?.name, workspace?.repo_url, workspace?.base_branch])
 
