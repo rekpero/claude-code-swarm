@@ -1,3 +1,4 @@
+import { useRef } from 'react'
 import { useQuery } from '@tanstack/react-query'
 import { getAgents, getAgentLogs } from '../api/client'
 
@@ -11,10 +12,14 @@ export function useAgents(wsId, { limit = 20, offset = 0 } = {}) {
 }
 
 export function useAgentLogs(agentId, { since = 0, refetchInterval = 3000 } = {}) {
-  return useQuery({
+  const cursorRef = useRef(since)
+
+  const query = useQuery({
     queryKey: ['agent-logs', agentId],
-    queryFn: () => getAgentLogs(agentId, since),
+    queryFn: () => getAgentLogs(agentId, cursorRef.current),
     refetchInterval,
     staleTime: 0,
   })
+
+  return { ...query, cursorRef }
 }

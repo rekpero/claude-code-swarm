@@ -28,7 +28,7 @@ export function WorkspaceSettingsModal({ open, onClose }) {
       })
       setUpdateError(null)
     }
-  }, [workspace?.id])
+  }, [workspace?.id, workspace?.name, workspace?.repo_url, workspace?.base_branch])
 
   const handleUpdate = (e) => {
     e.preventDefault()

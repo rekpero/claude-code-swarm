@@ -40,10 +40,9 @@ function formatEvent(event) {
 
 export function AgentLogViewer({ agentId, isRunning }) {
   const bottomRef = useRef(null)
-  const [since, setSince] = useState(0)
   const [allEvents, setAllEvents] = useState([])
 
-  const { data, isLoading } = useAgentLogs(agentId, { since, refetchInterval: isRunning ? 3000 : false })
+  const { data, isLoading, cursorRef } = useAgentLogs(agentId, { refetchInterval: isRunning ? 3000 : false })
 
   useEffect(() => {
     if (data?.events?.length > 0) {
@@ -52,7 +51,7 @@ export function AgentLogViewer({ agentId, isRunning }) {
         const newEvents = data.events.filter(e => !existingIds.has(e.id))
         return newEvents.length > 0 ? [...prev, ...newEvents] : prev
       })
-      setSince(data.events[data.events.length - 1].id)
+      cursorRef.current = data.events[data.events.length - 1].id
     }
   }, [data])
 

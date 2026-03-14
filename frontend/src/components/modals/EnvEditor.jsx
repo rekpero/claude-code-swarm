@@ -44,7 +44,7 @@ export function EnvEditor({ workspaceId }) {
     setLoading(true)
     getEnv(workspaceId, activeFile).then((data) => {
       if (!cancelled) {
-        const entries = Object.entries(data.vars || {}).map(([k, v]) => ({ key: k, value: v }))
+        const entries = Object.entries(data.vars || {}).map(([k, v]) => ({ id: crypto.randomUUID(), key: k, value: v }))
         setRows(entries)
       }
     }).catch(() => {
@@ -59,7 +59,7 @@ export function EnvEditor({ workspaceId }) {
     setRows((prev) => prev.map((r, idx) => idx === i ? { ...r, [field]: val } : r))
   }
 
-  const addRow = () => setRows((prev) => [...prev, { key: '', value: '' }])
+  const addRow = () => setRows((prev) => [...prev, { id: crypto.randomUUID(), key: '', value: '' }])
 
   const removeRow = (i) => setRows((prev) => prev.filter((_, idx) => idx !== i))
 
@@ -83,7 +83,7 @@ export function EnvEditor({ workspaceId }) {
 
   const handlePaste = () => {
     const parsed = parseEnvText(pasteText)
-    const newRows = Object.entries(parsed).map(([k, v]) => ({ key: k, value: v }))
+    const newRows = Object.entries(parsed).map(([k, v]) => ({ id: crypto.randomUUID(), key: k, value: v }))
     setRows((prev) => {
       const existing = new Set(prev.map((r) => r.key))
       return [...prev, ...newRows.filter((r) => !existing.has(r.key))]
@@ -98,7 +98,7 @@ export function EnvEditor({ workspaceId }) {
     const reader = new FileReader()
     reader.onload = (ev) => {
       const parsed = parseEnvText(ev.target.result)
-      const newRows = Object.entries(parsed).map(([k, v]) => ({ key: k, value: v }))
+      const newRows = Object.entries(parsed).map(([k, v]) => ({ id: crypto.randomUUID(), key: k, value: v }))
       setRows((prev) => {
         const existing = new Set(prev.map((r) => r.key))
         return [...prev, ...newRows.filter((r) => !existing.has(r.key))]
@@ -133,7 +133,7 @@ export function EnvEditor({ workspaceId }) {
       {/* Rows */}
       <div className="flex flex-col gap-1.5 mb-3">
         {rows.map((row, i) => (
-          <div key={i} className="flex gap-2 items-center">
+          <div key={row.id} className="flex gap-2 items-center">
             <input
               value={row.key}
               onChange={(e) => setRow(i, 'key', e.target.value)}
