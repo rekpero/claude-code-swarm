@@ -1,3 +1,4 @@
+import { useState } from 'react'
 import { ExternalLink, RefreshCw, Inbox } from 'lucide-react'
 import { IssueStatusBadge } from './IssueStatusBadge'
 import { EmptyState } from '../ui/EmptyState'
@@ -10,7 +11,8 @@ import { formatDistanceToNow } from 'date-fns'
 export function IssueQueue() {
   const { selectedWorkspaceId } = useWorkspaceContext()
   const { data, isLoading } = useIssues(selectedWorkspaceId)
-  const { mutate: updateStatus, isPending: isUpdating } = useUpdateIssueStatus(selectedWorkspaceId)
+  const { mutate: updateStatus } = useUpdateIssueStatus(selectedWorkspaceId)
+  const [retryingIssue, setRetryingIssue] = useState(null)
 
   const issues = data?.issues || []
 
@@ -95,10 +97,14 @@ export function IssueQueue() {
                       <Button
                         size="sm"
                         variant="ghost"
-                        loading={isUpdating}
-                        onClick={() =>
-                          updateStatus({ issueNumber: issue.issue_number, status: 'pending' })
-                        }
+                        loading={retryingIssue === issue.issue_number}
+                        onClick={() => {
+                          setRetryingIssue(issue.issue_number)
+                          updateStatus(
+                            { issueNumber: issue.issue_number, status: 'pending' },
+                            { onSettled: () => setRetryingIssue(null) }
+                          )
+                        }}
                         title="Retry this issue"
                       >
                         <RefreshCw size={10} />

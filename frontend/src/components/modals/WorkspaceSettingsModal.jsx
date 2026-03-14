@@ -30,6 +30,12 @@ export function WorkspaceSettingsModal({ open, onClose }) {
     }
   }, [workspace?.id, workspace?.name, workspace?.repo_url, workspace?.base_branch])
 
+  useEffect(() => {
+    if (!open) {
+      setConfirmDelete(false)
+    }
+  }, [open])
+
   const handleUpdate = (e) => {
     e.preventDefault()
     if (!selectedWorkspaceId) return
