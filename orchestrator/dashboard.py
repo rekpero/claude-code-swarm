@@ -380,6 +380,9 @@ async def get_metrics(workspace_id: str | None = Query(None)):
 # Serve static files
 app.mount("/static", StaticFiles(directory=str(STATIC_DIR)), name="static")
 
+# Serve Vite-built assets at /assets/ (index.html references them with root-relative /assets/... paths)
+app.mount("/assets", StaticFiles(directory=str(STATIC_DIR / "assets")), name="assets")
+
 
 # SPA catch-all — must be registered LAST, after all /api/* routes and static mount.
 # Returns index.html for any non-API, non-static path so React Router handles navigation.
