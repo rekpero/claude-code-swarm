@@ -94,6 +94,23 @@ export function EnvEditor({ workspaceId }) {
 
   const handleSave = async () => {
     if (!workspaceId) return
+
+    // Check for duplicate keys before saving
+    const keysSeen = new Set()
+    const duplicates = new Set()
+    for (const { key } of rows) {
+      const trimmed = key.trim()
+      if (!trimmed) continue
+      if (keysSeen.has(trimmed)) {
+        duplicates.add(trimmed)
+      }
+      keysSeen.add(trimmed)
+    }
+    if (duplicates.size > 0) {
+      setSaveError(`Duplicate keys detected: ${[...duplicates].join(', ')}. Remove or rename duplicate rows before saving.`)
+      return
+    }
+
     setSaving(true)
     setSaveError(null)
     const vars = {}
@@ -195,15 +212,31 @@ export function EnvEditor({ workspaceId }) {
       </div>
 
       <div className="flex flex-col gap-1.5 mb-4">
-        {rows.map((row, i) => (
-          <div key={row.id} className="flex gap-2 items-center">
-            <input value={row.key} onChange={(e) => setRow(i, 'key', e.target.value)} placeholder="KEY" className={`flex-1 ${inputClass}`} />
-            <input value={row.value} onChange={(e) => setRow(i, 'value', e.target.value)} placeholder="value" className={`flex-[2] ${inputClass}`} />
-            <button onClick={() => removeRow(i)} className="p-1 text-[var(--text-muted)] hover:text-[var(--red)] transition-colors">
-              <Trash2 size={11} />
-            </button>
-          </div>
-        ))}
+        {(() => {
+          const keyCounts = {}
+          for (const row of rows) {
+            const trimmed = row.key.trim()
+            if (trimmed) keyCounts[trimmed] = (keyCounts[trimmed] || 0) + 1
+          }
+          return rows.map((row, i) => {
+            const isDuplicate = row.key.trim() && keyCounts[row.key.trim()] > 1
+            return (
+              <div key={row.id} className="flex gap-2 items-center">
+                <input
+                  value={row.key}
+                  onChange={(e) => setRow(i, 'key', e.target.value)}
+                  placeholder="KEY"
+                  title={isDuplicate ? `Duplicate key: "${row.key.trim()}"` : undefined}
+                  className={`flex-1 ${inputClass} ${isDuplicate ? 'border-[var(--red)]' : ''}`}
+                />
+                <input value={row.value} onChange={(e) => setRow(i, 'value', e.target.value)} placeholder="value" className={`flex-[2] ${inputClass}`} />
+                <button onClick={() => removeRow(i)} className="p-1 text-[var(--text-muted)] hover:text-[var(--red)] transition-colors">
+                  <Trash2 size={11} />
+                </button>
+              </div>
+            )
+          })
+        })()}
       </div>
 
       {showPaste && (
