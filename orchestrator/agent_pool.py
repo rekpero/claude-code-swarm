@@ -975,8 +975,15 @@ class AgentPool:
                 db.finish_agent(agent_id, status="timeout", error_message="Agent exceeded timeout (reattached)")
                 db.update_issue(issue_number, workspace_id=workspace_id, status="pending")
                 repo_path = workspace.get("local_path") if workspace else None
-                if worktree_path:
+                if worktree_path and repo_path:
                     cleanup_worktree(worktree_path, repo_path=repo_path)
+                elif worktree_path and not repo_path:
+                    logger.warning(
+                        "Skipping git worktree deregistration for agent %s: workspace is None, "
+                        "worktree_path=%s may be orphaned",
+                        agent_id,
+                        worktree_path,
+                    )
                 return
 
             time.sleep(5)

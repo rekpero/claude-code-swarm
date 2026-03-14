@@ -301,13 +301,13 @@ async def restart_agent(agent_id: str):
         db.finish_agent(agent_id, status="stopped", error_message="Manually restarted by user")
         db.update_issue(agent["issue_number"], workspace_id=workspace_id, status="pending")
 
-    # Clean up worktree
-    repo_path = ws["local_path"]
-    if agent.get("worktree_path"):
-        try:
-            worktree.cleanup_worktree(agent["worktree_path"], repo_path=repo_path)
-        except Exception:
-            pass
+        # Clean up worktree only when the agent was still running (not already finished)
+        repo_path = ws["local_path"]
+        if agent.get("worktree_path"):
+            try:
+                worktree.cleanup_worktree(agent["worktree_path"], repo_path=repo_path)
+            except Exception:
+                pass
 
     # Dispatch a new agent
     new_agent_id = None
