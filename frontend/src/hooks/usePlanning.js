@@ -26,6 +26,7 @@ export function usePlanning(workspaceId) {
   const pollTimerRef = useRef(null)
   const sessionIdRef = useRef(null)
   const pollErrorCountRef = useRef(0)
+  const pollActiveRef = useRef(false)
 
   useEffect(() => {
     sessionIdRef.current = sessionId
@@ -80,12 +81,17 @@ export function usePlanning(workspaceId) {
   const poll = useCallback(() => {
     const sid = sessionIdRef.current
     if (!sid) return
+    // Guard against concurrent poll invocations: if a tick is already in-flight,
+    // do not start another one (avoids double-loop when cancelGeneration catches
+    // an error and calls poll() while a previous tick is still running).
+    if (pollActiveRef.current) return
     stopPolling()
 
     pollTimerRef.current = setTimeout(async () => {
       const localSid = sessionIdRef.current
       if (localSid !== sid) return
 
+      pollActiveRef.current = true
       try {
         const [data, evData] = await Promise.all([
           getPlanningSession(localSid),
@@ -128,6 +134,8 @@ export function usePlanning(workspaceId) {
           pollTimerRef.current = setTimeout(() => poll(), backoff)
         }
         // else: stop retrying after MAX_POLL_ERRORS consecutive failures
+      } finally {
+        pollActiveRef.current = false
       }
     }, 300)
   }, [stopPolling])

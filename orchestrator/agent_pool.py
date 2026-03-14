@@ -99,6 +99,7 @@ class AgentProcess:
         self.events: list[AgentEvent] = []
         self.started_at = time.time()
         self._reader_thread: threading.Thread | None = None
+        self._tailer_done: threading.Event = threading.Event()
         # Store workspace config for use in completion handlers
         self._workspace: dict | None = None
         self.log_file = agent_log_path(agent_id)
@@ -143,6 +144,8 @@ class AgentProcess:
                         time.sleep(0.5)
         except Exception as e:
             logger.error("[%s] Stream reader error: %s", self.agent_id, e)
+        finally:
+            self._tailer_done.set()
 
     @property
     def is_running(self) -> bool:
@@ -469,6 +472,12 @@ class AgentPool:
                 except Exception as e:
                     logger.error("Completion callback error: %s", e)
             return
+
+        # Wait for the tailer thread to finish draining the log before reading
+        # turn count, mirroring the reattached-agent pattern (_tail_log_file /
+        # tailer_done.wait).  This prevents _monitor_agent from seeing a partial
+        # event list when the process exits quickly.
+        agent._tailer_done.wait(timeout=30)
 
         return_code = agent.process.returncode
         stderr_output = agent.process.stderr.read() if agent.process.stderr else ""
@@ -1077,7 +1086,7 @@ class AgentPool:
             if worktree_path and os.path.exists(worktree_path) and started_at:
                 try:
                     result = subprocess.run(
-                        ["git", "log", "--oneline", f"--after={datetime.fromtimestamp(started_at).strftime('%Y-%m-%dT%H:%M:%S')}"],
+                        ["git", "log", "--oneline", f"--after={datetime.fromtimestamp(started_at, tz=timezone.utc).strftime('%Y-%m-%dT%H:%M:%SZ')}"],
                         capture_output=True, text=True, cwd=worktree_path, timeout=10,
                     )
                     agent_succeeded = result.returncode == 0 and bool(result.stdout.strip())

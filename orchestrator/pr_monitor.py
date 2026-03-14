@@ -26,6 +26,8 @@ def _run_gh(*args: str) -> subprocess.CompletedProcess:
 
 def get_pr_comments(pr_number: int, github_repo: str | None = None) -> list[dict]:
     """Fetch all review comments on a PR (REST API — no resolution status)."""
+    if not github_repo:
+        return []
     repo = github_repo
     owner, repo_name = repo.split("/", 1)
     result = _run_gh(
@@ -49,6 +51,8 @@ def get_unresolved_threads(pr_number: int, github_repo: str | None = None) -> li
     has more than 100 threads.  Comments per thread are fetched up to 100
     (plenty for review context).
     """
+    if not github_repo:
+        return None
     repo = github_repo
     owner, repo_name = repo.split("/", 1)
     query = """
