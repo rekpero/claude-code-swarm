@@ -45,8 +45,6 @@ export function AgentCard({ agent, workspaceName, onRestarted }) {
   useEffect(() => {
     if (isRunning) {
       setExpanded(true)
-    } else {
-      setExpanded(false)
     }
   }, [isRunning])
 
