@@ -27,6 +27,7 @@ export function EnvEditor({ workspaceId }) {
   const [loading, setLoading] = useState(false)
   const [saving, setSaving] = useState(false)
   const [saveError, setSaveError] = useState(null)
+  const [fileReadError, setFileReadError] = useState(null)
   const [pasteText, setPasteText] = useState('')
   const [showPaste, setShowPaste] = useState(false)
 
@@ -90,7 +91,13 @@ export function EnvEditor({ workspaceId }) {
     const newRows = Object.entries(parsed).map(([k, v]) => ({ id: crypto.randomUUID(), key: k, value: v }))
     setRows((prev) => {
       const existingMap = new Map(prev.map((r) => [r.key, r]))
-      newRows.forEach((r) => existingMap.set(r.key, r))
+      newRows.forEach((r) => {
+        if (existingMap.has(r.key)) {
+          existingMap.set(r.key, { ...existingMap.get(r.key), value: r.value })
+        } else {
+          existingMap.set(r.key, r)
+        }
+      })
       return Array.from(existingMap.values())
     })
     setPasteText('')
@@ -102,16 +109,23 @@ export function EnvEditor({ workspaceId }) {
     if (!file) return
     const reader = new FileReader()
     reader.onload = (ev) => {
+      setFileReadError(null)
       const parsed = parseEnvText(ev.target.result)
       const newRows = Object.entries(parsed).map(([k, v]) => ({ id: crypto.randomUUID(), key: k, value: v }))
       setRows((prev) => {
         const existingMap = new Map(prev.map((r) => [r.key, r]))
-        newRows.forEach((r) => existingMap.set(r.key, r))
+        newRows.forEach((r) => {
+          if (existingMap.has(r.key)) {
+            existingMap.set(r.key, { ...existingMap.get(r.key), value: r.value })
+          } else {
+            existingMap.set(r.key, r)
+          }
+        })
         return Array.from(existingMap.values())
       })
     }
     reader.onerror = () => {
-      setSaveError('Failed to read file')
+      setFileReadError('Failed to read file')
     }
     reader.readAsText(file)
     e.target.value = ''
@@ -181,6 +195,9 @@ export function EnvEditor({ workspaceId }) {
         </div>
       )}
 
+      {fileReadError && (
+        <p className="text-[11px] text-[var(--red)] mb-2">{fileReadError}</p>
+      )}
       {saveError && (
         <p className="text-[11px] text-[var(--red)] mb-2">{saveError}</p>
       )}

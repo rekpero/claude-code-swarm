@@ -1,6 +1,7 @@
 """FastAPI dashboard server for the swarm orchestrator."""
 
 import json
+import logging
 import uuid
 from pathlib import Path
 
@@ -384,8 +385,16 @@ async def get_metrics(workspace_id: str | None = Query(None)):
 app.mount("/static", StaticFiles(directory=str(STATIC_DIR)), name="static")
 
 # Serve Vite-built assets at /assets/ (index.html references them with root-relative /assets/... paths)
-# check_dir=False prevents a RuntimeError at startup when the frontend hasn't been built yet
-app.mount("/assets", StaticFiles(directory=str(STATIC_DIR / "assets"), check_dir=False), name="assets")
+# Only mount if the directory exists; otherwise log a warning and let the spa_fallback return 404.
+_assets_dir = STATIC_DIR / "assets"
+if _assets_dir.exists():
+    app.mount("/assets", StaticFiles(directory=str(_assets_dir)), name="assets")
+else:
+    logging.getLogger(__name__).warning(
+        "Assets directory '%s' not found — frontend build may be missing. "
+        "Requests to /assets/... will return 404.",
+        _assets_dir,
+    )
 
 
 # SPA catch-all — must be registered LAST, after all /api/* routes and static mount.

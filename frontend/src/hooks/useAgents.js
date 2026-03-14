@@ -33,7 +33,10 @@ export function useAgentLogs(agentId, { since = 0, refetchInterval = 3000 } = {}
 
   const query = useQuery({
     queryKey: ['agent-logs', agentId],
-    queryFn: () => getAgentLogs(agentId, cursorRef.current),
+    queryFn: () => {
+      const cursor = cursorRef.current
+      return getAgentLogs(agentId, cursor)
+    },
     refetchInterval,
     staleTime: 0,
   })
