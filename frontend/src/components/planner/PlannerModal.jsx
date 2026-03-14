@@ -546,7 +546,7 @@ export function PlannerModal({ open, onClose }) {
             ))}
 
             {/* Streaming analysis steps */}
-            {planning.streamEvents.length > 0 && (
+            {(planning.streamEvents?.length > 0) && (
               <StreamingSteps
                 events={planning.streamEvents}
                 isGenerating={planning.generating}

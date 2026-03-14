@@ -98,6 +98,9 @@ function tryParseEventData(raw, eventType) {
 export function AgentLogViewer({ agentId, isRunning }) {
   const containerRef = useRef(null)
   const [allEvents, setAllEvents] = useState([])
+  // Track the agentId for which the cursor was last reset so the data effect
+  // can guard against overwriting the reset with stale cached data.
+  const cursorAgentIdRef = useRef(agentId)
 
   const { data, isLoading, cursorRef } = useAgentLogs(agentId, { refetchInterval: isRunning ? 3000 : false })
 
@@ -111,16 +114,21 @@ export function AgentLogViewer({ agentId, isRunning }) {
         }
         return prev
       })
-      // Update cursor outside the state updater so it runs synchronously,
-      // preventing it from overriding the agentId-reset effect's cursorRef.current = 0.
-      cursorRef.current = data.events[data.events.length - 1].id
+      // Only advance the cursor when the data belongs to the current agent.
+      // This guards against the race where agentId changes but stale cached
+      // data still fires this effect before the agentId-reset effect below
+      // has had a chance to update cursorAgentIdRef and reset cursorRef.
+      if (cursorAgentIdRef.current === agentId) {
+        cursorRef.current = data.events[data.events.length - 1].id
+      }
     }
-  }, [data, cursorRef])
+  }, [data, cursorRef, agentId])
 
   useEffect(() => {
+    cursorAgentIdRef.current = agentId
     setAllEvents([])
     cursorRef.current = 0
-  }, [agentId])
+  }, [agentId, cursorRef])
 
   // Only auto-scroll if the user is already near the bottom (within 50px).
   // This prevents hijacking the scroll when the user is reading earlier logs.
