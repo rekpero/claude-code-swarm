@@ -219,7 +219,7 @@ function PlanIssueAction({ messageIndex, planning }) {
   const [showTitle, setShowTitle] = useState(false)
   const [title, setTitle] = useState('')
   const [createError, setCreateError] = useState(null)
-  const issueResult = planning.issueResults[messageIndex]
+  const issueResult = planning.issueResults?.[messageIndex]
   const isCreating = planning.creatingIssue === messageIndex
   const isOtherCreating = planning.creatingIssue != null && planning.creatingIssue !== messageIndex
 
@@ -485,12 +485,12 @@ export function PlannerModal({ open, onClose }) {
 
             {planning.messages.map((m, i) => (
               m.role === 'user' ? (
-                <div key={i} className="bg-[var(--accent-dim)] border border-[var(--accent-border)] rounded-lg p-3 my-2 text-[11px] whitespace-pre-wrap font-mono text-[var(--text)]">
+                <div key={`${planning.sessionId}-${i}`} className="bg-[var(--accent-dim)] border border-[var(--accent-border)] rounded-lg p-3 my-2 text-[11px] whitespace-pre-wrap font-mono text-[var(--text)]">
                   {m.content}
                 </div>
               ) : (
                 <div
-                  key={i}
+                  key={`${planning.sessionId}-${i}`}
                   className="bg-[var(--bg)] border border-[var(--border-subtle)] rounded-lg my-2 overflow-hidden"
                 >
                   {/* Plan content */}

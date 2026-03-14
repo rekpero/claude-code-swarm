@@ -99,7 +99,7 @@ function GitPullSection({ workspace }) {
 
 function StructureTab({ workspace }) {
   const [structure, setStructure] = useState(null)
-  const [loading, setLoading] = useState(true)
+  const [loading, setLoading] = useState(false)
 
   useEffect(() => {
     if (!workspace?.id) return

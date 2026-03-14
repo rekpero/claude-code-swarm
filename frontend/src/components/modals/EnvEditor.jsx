@@ -101,7 +101,6 @@ export function EnvEditor({ workspaceId }) {
     }
     try {
       await saveEnv(workspaceId, activeFile, vars)
-      setFetchCounter((c) => c + 1)
     } catch (err) {
       setSaveError(err?.message || 'Failed to save')
     } finally {
@@ -113,6 +112,7 @@ export function EnvEditor({ workspaceId }) {
     const parsed = parseEnvText(pasteText)
     const newRows = Object.entries(parsed).map(([k, v]) => ({ id: crypto.randomUUID(), key: k, value: v }))
     setRows((prev) => {
+      const emptyKeyRows = prev.filter(r => !r.key.trim())
       const existingMap = new Map(prev.filter(r => r.key.trim()).map((r) => [r.key, r]))
       newRows.forEach((r) => {
         if (existingMap.has(r.key)) {
@@ -121,7 +121,7 @@ export function EnvEditor({ workspaceId }) {
           existingMap.set(r.key, r)
         }
       })
-      return Array.from(existingMap.values())
+      return [...Array.from(existingMap.values()), ...emptyKeyRows]
     })
     setPasteText('')
     setShowPaste(false)
@@ -136,6 +136,7 @@ export function EnvEditor({ workspaceId }) {
       const parsed = parseEnvText(ev.target.result)
       const newRows = Object.entries(parsed).map(([k, v]) => ({ id: crypto.randomUUID(), key: k, value: v }))
       setRows((prev) => {
+        const emptyKeyRows = prev.filter(r => !r.key.trim())
         const existingMap = new Map(prev.filter(r => r.key.trim()).map((r) => [r.key, r]))
         newRows.forEach((r) => {
           if (existingMap.has(r.key)) {
@@ -144,7 +145,7 @@ export function EnvEditor({ workspaceId }) {
             existingMap.set(r.key, r)
           }
         })
-        return Array.from(existingMap.values())
+        return [...Array.from(existingMap.values()), ...emptyKeyRows]
       })
     }
     reader.onerror = () => {
