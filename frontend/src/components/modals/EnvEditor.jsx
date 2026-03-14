@@ -31,6 +31,10 @@ export function EnvEditor({ workspaceId }) {
   const [showPaste, setShowPaste] = useState(false)
 
   useEffect(() => {
+    setActiveFile('.env')
+  }, [workspaceId])
+
+  useEffect(() => {
     if (!workspaceId) return
     getEnvFiles(workspaceId).then((data) => {
       const files = [...new Set(['.env', ...(data.managed || []), ...(data.discovered || [])])]

@@ -30,7 +30,7 @@ function formatEvent(event) {
       return `[tool] ${data.name || ''} ${data.input ? JSON.stringify(data.input).slice(0, 120) : ''}`
     }
     if (event.event_type === 'result') {
-      return `[result] ${data.result || JSON.stringify(data).slice(0, 120)}`
+      return `[result] ${data.result != null ? data.result : JSON.stringify(data).slice(0, 120)}`
     }
     return JSON.stringify(data).slice(0, 200)
   } catch {

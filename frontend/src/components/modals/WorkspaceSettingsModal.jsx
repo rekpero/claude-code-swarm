@@ -30,6 +30,7 @@ export function WorkspaceSettingsModal({ open, onClose }) {
     } else {
       setForm({ name: '', repo_url: '', base_branch: '' })
     }
+    setConfirmDelete(false)
   }, [workspace?.id, workspace?.name, workspace?.repo_url, workspace?.base_branch])
 
   useEffect(() => {
