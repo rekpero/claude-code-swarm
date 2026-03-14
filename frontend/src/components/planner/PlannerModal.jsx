@@ -16,7 +16,8 @@ import DOMPurify from 'dompurify'
 
 function renderMarkdown(text) {
   if (!text) return ''
-  return DOMPurify.sanitize(marked.parse(text, { async: false }))
+  const html = marked.parse(text, { async: false })
+  return typeof html === 'string' ? DOMPurify.sanitize(html) : ''
 }
 
 const EVENT_CONFIG = {

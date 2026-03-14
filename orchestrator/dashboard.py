@@ -1,5 +1,6 @@
 """FastAPI dashboard server for the swarm orchestrator."""
 
+import asyncio
 import json
 import logging
 import os
@@ -264,7 +265,7 @@ async def restart_agent(agent_id: str):
             os.kill(pid, signal.SIGTERM)
             # Wait up to 10s for the process to exit
             for _ in range(20):
-                time.sleep(0.5)
+                await asyncio.sleep(0.5)
                 try:
                     os.kill(pid, 0)
                 except (OSError, ProcessLookupError):
@@ -273,7 +274,7 @@ async def restart_agent(agent_id: str):
                 # Force kill if still alive
                 try:
                     os.kill(pid, signal.SIGKILL)
-                    time.sleep(0.5)
+                    await asyncio.sleep(0.5)
                 except (OSError, ProcessLookupError):
                     pass
         except (OSError, ProcessLookupError):

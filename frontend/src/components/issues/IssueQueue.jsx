@@ -10,10 +10,11 @@ import { useWorkspaces } from '../../hooks/useWorkspaces'
 import { formatDistanceToNow } from 'date-fns'
 
 const REPO_RE = /^[\w.-]+\/[\w.-]+$/
-function buildGitHubUrl(repo, path) {
+function buildGitHubUrl(repo, section, number) {
   if (!repo || !REPO_RE.test(repo)) return null
+  if (!Number.isInteger(number) || number <= 0) return null
   const [owner, name] = repo.split('/')
-  return `https://github.com/${encodeURIComponent(owner)}/${encodeURIComponent(name)}/${path}`
+  return `https://github.com/${encodeURIComponent(owner)}/${encodeURIComponent(name)}/${section}/${number}`
 }
 
 export function IssueQueue() {
@@ -72,7 +73,7 @@ export function IssueQueue() {
                   </td>
                   <td className="py-2.5 px-4 max-w-[300px]">
                     <a
-                      href={buildGitHubUrl(wsRepoMap[issue.workspace_id], `issues/${issue.issue_number}`) ?? '#'}
+                      href={buildGitHubUrl(wsRepoMap[issue.workspace_id], 'issues', issue.issue_number) ?? '#'}
                       target="_blank"
                       rel="noreferrer"
                       className="hover:text-[var(--accent)] transition-colors flex items-center gap-1.5 truncate group"
@@ -97,7 +98,7 @@ export function IssueQueue() {
                   <td className="py-2.5 px-4">
                     {issue.pr_number ? (
                       <a
-                        href={buildGitHubUrl(wsRepoMap[issue.workspace_id], `pull/${issue.pr_number}`) ?? '#'}
+                        href={buildGitHubUrl(wsRepoMap[issue.workspace_id], 'pull', issue.pr_number) ?? '#'}
                         target="_blank"
                         rel="noreferrer"
                         className="text-[var(--accent)] hover:underline font-mono"

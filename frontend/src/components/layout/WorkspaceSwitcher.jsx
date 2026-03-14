@@ -17,7 +17,7 @@ function StatusDot({ status }) {
 export function WorkspaceSwitcher({ onAddWorkspace }) {
   const [open, setOpen] = useState(false)
   const ref = useRef(null)
-  const { data } = useWorkspaces()
+  const { data, isLoading } = useWorkspaces()
   const { selectedWorkspaceId, setSelectedWorkspaceId } = useWorkspaceContext()
 
   const workspaces = data?.workspaces || []
@@ -32,10 +32,10 @@ export function WorkspaceSwitcher({ onAddWorkspace }) {
   }, [])
 
   useEffect(() => {
-    if (selectedWorkspaceId && workspaces.length > 0 && !selected) {
+    if (!isLoading && selectedWorkspaceId && workspaces.length > 0 && !selected) {
       setSelectedWorkspaceId(null)
     }
-  }, [selectedWorkspaceId, workspaces, selected, setSelectedWorkspaceId])
+  }, [isLoading, selectedWorkspaceId, workspaces, selected, setSelectedWorkspaceId])
 
   return (
     <div ref={ref} className="relative">

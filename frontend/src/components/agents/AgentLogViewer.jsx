@@ -98,6 +98,10 @@ function tryParseEventData(raw, eventType) {
 export function AgentLogViewer({ agentId, isRunning }) {
   const containerRef = useRef(null)
   const [allEvents, setAllEvents] = useState([])
+  // Mirror of allEvents state — kept in sync so cursor and events can be
+  // updated atomically in the same synchronous block (fixes the race condition
+  // where the cursor could advance even when React deferred the state update).
+  const allEventsRef = useRef([])
   // Track the agentId for which the cursor was last reset so the data effect
   // can guard against overwriting the reset with stale cached data.
   const cursorAgentIdRef = useRef(agentId)
@@ -107,6 +111,7 @@ export function AgentLogViewer({ agentId, isRunning }) {
   useEffect(() => {
     cursorAgentIdRef.current = agentId
     setAllEvents([])
+    allEventsRef.current = []
     cursorRef.current = 0
   }, [agentId, cursorRef])
 
@@ -114,17 +119,21 @@ export function AgentLogViewer({ agentId, isRunning }) {
     // Guard the entire update with the agentId check to prevent stale cached
     // events from a previous agent being appended before the reset effect runs.
     if (data?.events?.length > 0 && cursorAgentIdRef.current === agentId) {
-      const newCursor = data.events[data.events.length - 1].id
-      setAllEvents(prev => {
-        const existingIds = new Set(prev.map(e => e.id))
-        const newEvents = data.events.filter(e => !existingIds.has(e.id))
-        if (newEvents.length === 0) return prev
-        return [...prev, ...newEvents]
-      })
-      // Update cursor outside the state updater: React may invoke updater
-      // functions more than once in StrictMode/concurrent mode, which would
-      // advance the cursor even when the state update is ultimately discarded.
-      cursorRef.current = newCursor
+      const existingIds = new Set(allEventsRef.current.map(e => e.id))
+      const newEvents = data.events.filter(e => !existingIds.has(e.id))
+      // Only advance the cursor and update state when there are genuinely new
+      // events. Advancing unconditionally would skip events on the next poll
+      // whenever deduplication discards an entire response (fixes Thread 3).
+      // Updating cursor and state in the same synchronous block ensures they
+      // stay atomic — no window where the cursor has moved but state hasn't
+      // been committed (fixes Thread 4).
+      if (newEvents.length > 0) {
+        const newCursor = data.events[data.events.length - 1].id
+        const merged = [...allEventsRef.current, ...newEvents]
+        allEventsRef.current = merged
+        setAllEvents(merged)
+        cursorRef.current = newCursor
+      }
     }
   }, [data, cursorRef, agentId])
 

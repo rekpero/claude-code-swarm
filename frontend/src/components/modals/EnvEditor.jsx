@@ -6,18 +6,38 @@ import { getEnvFiles, getEnv, saveEnv, deleteEnvFile, loadEnvFromDisk } from '..
 
 function parseEnvText(text) {
   const vars = {}
-  for (const line of text.split('\n')) {
-    const trimmed = line.trim()
+  const lines = text.split('\n')
+  let i = 0
+  while (i < lines.length) {
+    const trimmed = lines[i++].trim()
     if (!trimmed || trimmed.startsWith('#')) continue
     const idx = trimmed.indexOf('=')
     if (idx < 0) continue
     const key = trimmed.slice(0, idx).trim()
-    const raw = trimmed.slice(idx + 1).trim()
+    if (!key) continue
+    let raw = trimmed.slice(idx + 1).trim()
+    // Accumulate continuation lines for multi-line quoted values.
+    // Count unescaped occurrences of the quote char — we need at least
+    // two (opening + closing) before the value is complete.
+    if (raw.startsWith('"') || raw.startsWith("'")) {
+      const q = raw[0]
+      const countUnescaped = (s) => {
+        let count = 0
+        for (let j = 0; j < s.length; j++) {
+          if (s[j] === '\\') { j++; continue }
+          if (s[j] === q) count++
+        }
+        return count
+      }
+      while (countUnescaped(raw) < 2 && i < lines.length) {
+        raw += '\n' + lines[i++]
+      }
+    }
     const quoteMatch = raw.match(/^(['"])([\s\S]*)\1$/)
     const val = quoteMatch
       ? quoteMatch[2].replace(new RegExp(`\\\\${quoteMatch[1]}`, 'g'), quoteMatch[1])
       : raw
-    if (key) vars[key] = val
+    vars[key] = val
   }
   return vars
 }
@@ -139,6 +159,7 @@ export function EnvEditor({ workspaceId }) {
     try {
       await saveEnv(workspaceId, activeFile, vars)
       setDirty(false)
+      setFetchCounter(c => c + 1)
     } catch (err) {
       setSaveError(err?.message || 'Failed to save')
     } finally {
