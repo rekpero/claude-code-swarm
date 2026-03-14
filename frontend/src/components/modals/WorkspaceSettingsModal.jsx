@@ -26,6 +26,7 @@ export function WorkspaceSettingsModal({ open, onClose }) {
         repo_url: workspace.repo_url || '',
         base_branch: workspace.base_branch || '',
       })
+      setUpdateError(null)
     }
   }, [workspace])
 
@@ -49,6 +50,7 @@ export function WorkspaceSettingsModal({ open, onClose }) {
         setSelectedWorkspaceId(null)
         onClose()
       },
+      onError: (err) => setUpdateError(err?.message || 'Failed to delete workspace.'),
     })
   }
 

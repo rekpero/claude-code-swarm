@@ -10,12 +10,11 @@ export function useAgents(wsId, { limit = 20, offset = 0 } = {}) {
   })
 }
 
-export function useAgentLogs(agentId, { enabled = true, since = 0 } = {}) {
+export function useAgentLogs(agentId, { since = 0, refetchInterval = 3000 } = {}) {
   return useQuery({
-    queryKey: ['agent-logs', agentId, since],
+    queryKey: ['agent-logs', agentId],
     queryFn: () => getAgentLogs(agentId, since),
-    refetchInterval: enabled ? 3000 : false,
-    enabled,
+    refetchInterval,
     staleTime: 0,
   })
 }
