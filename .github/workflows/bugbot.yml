@@ -19,7 +19,7 @@ jobs:
         uses: actions/checkout@v4
 
       - name: Run Claude BugBot
-        uses: rekpero/claude-bugbot-github-action@v1.0.7
+        uses: rekpero/claude-bugbot-github-action@v1.0.8
         with:
           claude-setup-token: ${{ secrets.CLAUDE_SETUP_TOKEN }}
           github-token: ${{ secrets.GH_TOKEN }}
