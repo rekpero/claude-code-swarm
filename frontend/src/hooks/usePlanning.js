@@ -20,6 +20,7 @@ export function usePlanning(workspaceId) {
   const [issueResults, setIssueResults] = useState({})
   const [creatingIssue, setCreatingIssue] = useState(null) // message index or null
   const [sessionStatus, setSessionStatus] = useState(null)
+  const [loadingSession, setLoadingSession] = useState(false)
 
   const lastEventIdRef = useRef(0)
   const pollTimerRef = useRef(null)
@@ -137,17 +138,29 @@ export function usePlanning(workspaceId) {
   const resumeSession = useCallback(async (sid) => {
     stopPolling()
     setStreamEvents([])
+    setMessages([])
     setSessionId(sid)
+    sessionIdRef.current = sid
     setIssueResults({})
     setCreatingIssue(null)
     lastEventIdRef.current = 0
+    setLoadingSession(true)
 
     try {
-      const data = await getPlanningSession(sid)
+      const [data, evData] = await Promise.all([
+        getPlanningSession(sid),
+        getPlanningEvents(sid, 0),
+      ])
       if (!data || data.error) return
 
       setMessages(data.messages || [])
       setSessionStatus(data.session?.status || null)
+
+      // Restore all events so the analysis steps accordion is visible
+      if (evData?.events?.length) {
+        setStreamEvents(evData.events)
+        lastEventIdRef.current = evData.events[evData.events.length - 1].id
+      }
 
       if (data.session?.status === 'completed' && data.session.issue_url) {
         // Mark the last assistant message as having an issue
@@ -166,7 +179,9 @@ export function usePlanning(workspaceId) {
       } else {
         setGenerating(false)
       }
-    } catch { /* ignore */ }
+    } catch { /* ignore */ } finally {
+      setLoadingSession(false)
+    }
   }, [stopPolling, poll])
 
   const sendMessage = useCallback(async (msg) => {
@@ -182,6 +197,7 @@ export function usePlanning(workspaceId) {
         data = await startPlanning(workspaceId, msg)
         if (data.error) { setGenerating(false); return }
         setSessionId(data.session.id)
+        sessionIdRef.current = data.session.id
         loadSessions()
       } else {
         data = await refinePlan(sessionIdRef.current, msg)
@@ -273,6 +289,7 @@ export function usePlanning(workspaceId) {
     issueResults,
     creatingIssue,
     sessionStatus,
+    loadingSession,
     hasPlan,
     loadSessions,
     startNew,

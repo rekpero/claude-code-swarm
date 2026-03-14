@@ -1,6 +1,10 @@
 import { useEffect, useRef, useState } from 'react'
 import { createPortal } from 'react-dom'
-import { X, Plus, ChevronRight, ChevronDown, Layers } from 'lucide-react'
+import {
+  X, Plus, ChevronRight, ChevronDown,
+  Search, FileText, CheckCircle2, Brain,
+  Info, Terminal,
+} from 'lucide-react'
 import { Button } from '../ui/Button'
 import { Spinner } from '../ui/Spinner'
 import { usePlanning } from '../../hooks/usePlanning'
@@ -15,30 +19,19 @@ function renderMarkdown(text) {
   return DOMPurify.sanitize(marked.parse(text, { async: false }))
 }
 
-function eventIcon(eventType) {
-  if (eventType === 'tool_use') return '\u{1f50d}'
-  if (eventType === 'tool_result') return '\u2713'
-  if (eventType === 'thinking') return '\u{1f4ad}'
-  if (eventType === 'info') return '\u25c8'
-  if (eventType === 'text') return '\u25cb'
-  return '\u2699\ufe0f'
+const EVENT_CONFIG = {
+  tool_use:    { Icon: Search,       color: 'var(--yellow)',  bg: 'var(--yellow-dim)', label: 'Searching' },
+  tool_result: { Icon: CheckCircle2, color: 'var(--green)',   bg: 'var(--green-dim)',  label: 'Result' },
+  thinking:    { Icon: Brain,        color: 'var(--accent)',  bg: 'var(--accent-dim)', label: 'Thinking' },
+  info:        { Icon: Info,         color: 'var(--blue)',    bg: 'var(--blue-dim)',   label: 'Info' },
+  text:        { Icon: FileText,     color: 'var(--text-dim)',bg: 'rgba(255,255,255,0.04)', label: 'Output' },
 }
 
-function eventColor(eventType) {
-  switch (eventType) {
-    case 'tool_use': return 'text-[var(--yellow)]'
-    case 'tool_result': return 'text-[var(--green)]'
-    case 'thinking': return 'text-[var(--accent)]'
-    case 'text': return 'text-[var(--text-dim)]'
-    case 'info': return 'text-[var(--blue)]'
-    default: return 'text-[var(--text-muted)]'
-  }
+function getEventConfig(type) {
+  return EVENT_CONFIG[type] || { Icon: Terminal, color: 'var(--text-muted)', bg: 'rgba(255,255,255,0.04)', label: type }
 }
 
-// Whether this event type's text should wrap rather than truncate
-function eventWraps(eventType) {
-  return eventType === 'thinking' || eventType === 'text'
-}
+/* ─── Session sidebar ──────────────────────────────────────────────── */
 
 function SessionSidebar({ sessions, activeSessionId, onSelect, onNew, onDelete }) {
   return (
@@ -100,121 +93,175 @@ function SessionSidebar({ sessions, activeSessionId, onSelect, onNew, onDelete }
   )
 }
 
-/**
- * Streaming analysis steps — shown while Claude is generating.
- * Each event animates in. When generation completes, collapses into
- * a clickable "View analysis steps (N)" summary.
- */
-function StreamingSteps({ events, isGenerating }) {
-  const [expanded, setExpanded] = useState(true)
-  const listRef = useRef(null)
+/* ─── Activity feed — replaces StreamingSteps + status bar ─────────── */
 
-  // Separate non-draft events for the step list
+function ActivityFeed({ events, isGenerating }) {
+  const [collapsed, setCollapsed] = useState(false)
+  const listRef = useRef(null)
+  const userScrolledUpRef = useRef(false)
+
   const stepEvents = events.filter(e => e.event_type !== 'draft')
 
-  // Auto-scroll the event list to bottom when new events arrive
+  // Track whether user has scrolled up
   useEffect(() => {
-    if (expanded && listRef.current) {
+    const el = listRef.current
+    if (!el) return
+    const handleScroll = () => {
+      const threshold = 30
+      const isAtBottom = el.scrollHeight - el.scrollTop - el.clientHeight < threshold
+      userScrolledUpRef.current = !isAtBottom
+    }
+    el.addEventListener('scroll', handleScroll)
+    return () => el.removeEventListener('scroll', handleScroll)
+  }, [collapsed])
+
+  // Auto-scroll only if user hasn't scrolled up
+  useEffect(() => {
+    if (!collapsed && listRef.current && !userScrolledUpRef.current) {
       listRef.current.scrollTop = listRef.current.scrollHeight
     }
-  }, [stepEvents.length, expanded])
+  }, [stepEvents.length, collapsed])
 
-  if (stepEvents.length === 0) return null
+  if (stepEvents.length === 0 && !isGenerating) return null
+
+  // When generating with no events yet, show a pulsing indicator
+  if (stepEvents.length === 0 && isGenerating) {
+    return (
+      <div className="flex items-center gap-2.5 py-3 px-4 my-2 rounded-lg bg-[var(--surface)]">
+        <Spinner size={12} />
+        <span className="text-[11px] text-[var(--text-muted)] font-mono">{'Starting analysis\u2026'}</span>
+      </div>
+    )
+  }
 
   const lastStep = stepEvents[stepEvents.length - 1]
-  const lastLabel = lastStep?.summary?.length > 70
-    ? lastStep.summary.slice(0, 67) + '\u2026'
-    : (lastStep?.summary || 'Analyzing\u2026')
+  const lastConfig = getEventConfig(lastStep?.event_type)
+  const stepCount = stepEvents.length
 
-  return (
-    <div className="bg-[var(--accent-dim)] border border-[var(--accent-border)] rounded-lg my-2.5 overflow-hidden">
-      {/* Header — clickable to toggle */}
-      <div
-        className="flex items-center gap-2 px-3.5 py-2.5 cursor-pointer hover:bg-[rgba(139,92,246,0.06)] transition-colors"
-        onClick={() => setExpanded(v => !v)}
-      >
-        {isGenerating ? (
-          <Spinner size={10} />
-        ) : (
+  // Completed state — collapsed by default
+  if (!isGenerating) {
+    return (
+      <div className="my-2 rounded-lg border border-[var(--border-subtle)] overflow-hidden">
+        <button
+          className="w-full flex items-center gap-2.5 px-4 py-2.5 hover:bg-[var(--surface-hover)] transition-colors text-left"
+          onClick={() => setCollapsed(v => !v)}
+        >
           <ChevronRight
-            size={10}
-            className={`text-[var(--accent)] transition-transform duration-200 ${expanded ? 'rotate-90' : ''}`}
+            size={11}
+            className={`text-[var(--text-muted)] transition-transform duration-200 ${!collapsed ? 'rotate-90' : ''}`}
           />
-        )}
-        <span className="text-[10px] text-[var(--accent)] font-medium flex-1 truncate font-mono">
-          {isGenerating
-            ? lastLabel
-            : `View analysis steps (${stepEvents.length})`
-          }
-        </span>
-        {!isGenerating && (
-          <span className="text-[9px] text-[var(--text-muted)]">
-            {stepEvents.length} step{stepEvents.length !== 1 ? 's' : ''}
+          <span className="text-[10px] text-[var(--text-muted)] font-mono">
+            Analysis complete — {stepCount} step{stepCount !== 1 ? 's' : ''}
           </span>
+        </button>
+        {!collapsed && (
+          <div ref={listRef} className="px-2 pb-2 max-h-[200px] overflow-y-auto">
+            <EventList events={stepEvents} />
+          </div>
         )}
       </div>
+    )
+  }
 
-      {/* Event list */}
-      {expanded && (
-        <div
-          ref={listRef}
-          className="px-3.5 pb-3 max-h-[240px] overflow-y-auto"
-        >
-          <div className="border-t border-[rgba(139,92,246,0.1)] pt-2 space-y-px">
-            {stepEvents.map((ev, i) => {
-              const icon = eventIcon(ev.event_type)
-              const color = eventColor(ev.event_type)
-              const wraps = eventWraps(ev.event_type)
+  // Generating state — open by default, with live header
+  return (
+    <div className="my-2 rounded-lg border border-[var(--accent-border)] bg-[var(--surface)] overflow-hidden">
+      {/* Live status header */}
+      <div
+        className="flex items-center gap-2.5 px-4 py-2.5 border-b border-[var(--border-subtle)] cursor-pointer hover:bg-[var(--surface-hover)] transition-colors"
+        onClick={() => setCollapsed(v => !v)}
+      >
+        <Spinner size={11} />
+        <lastConfig.Icon size={11} style={{ color: lastConfig.color }} className="flex-shrink-0" />
+        <span className="text-[10px] font-mono flex-1 truncate" style={{ color: lastConfig.color }}>
+          {lastStep?.summary || 'Analyzing\u2026'}
+        </span>
+        <span className="text-[9px] text-[var(--text-muted)] flex-shrink-0 tabular-nums">
+          {stepCount}
+        </span>
+        <ChevronRight
+          size={10}
+          className={`text-[var(--text-muted)] transition-transform duration-200 flex-shrink-0 ${!collapsed ? 'rotate-90' : ''}`}
+        />
+      </div>
 
-              return (
-                <div
-                  key={ev.id || i}
-                  className="flex items-start gap-2 py-1 animate-fade-in"
-                  style={{ animationDelay: `${Math.min(i * 20, 200)}ms` }}
-                >
-                  <span className="text-[11px] flex-shrink-0 mt-px select-none">{icon}</span>
-                  <span
-                    className={`text-[10px] font-mono leading-relaxed ${color} ${
-                      wraps
-                        ? 'whitespace-pre-wrap break-words italic'
-                        : 'truncate'
-                    }`}
-                  >
-                    {ev.summary}
-                  </span>
-                </div>
-              )
-            })}
-          </div>
+      {/* Scrollable event list */}
+      {!collapsed && (
+        <div ref={listRef} className="px-2 pb-2 max-h-[220px] overflow-y-auto">
+          <EventList events={stepEvents} />
         </div>
       )}
     </div>
   )
 }
 
-/**
- * Live draft — growing plan preview rendered with markdown.
- * Shows while Claude is still generating, with a violet left accent border.
- */
+function EventList({ events }) {
+  return (
+    <div className="pt-1">
+      {events.map((ev, i) => {
+        const cfg = getEventConfig(ev.event_type)
+        const isThinking = ev.event_type === 'thinking' || ev.event_type === 'text'
+        const isResult = ev.event_type === 'tool_result'
+
+        return (
+          <div
+            key={ev.id || i}
+            className={`group flex items-start gap-2.5 py-[5px] animate-slide-in ${
+              isResult ? 'pl-[30px]' : 'px-2'
+            }`}
+            style={{ animationDelay: `${Math.min(i * 12, 120)}ms` }}
+          >
+            {/* Icon — results are indented under their tool_use, no icon */}
+            {!isResult && (
+              <span
+                className="flex-shrink-0 mt-px w-[18px] h-[18px] rounded flex items-center justify-center"
+                style={{ background: cfg.bg }}
+              >
+                <cfg.Icon size={10} style={{ color: cfg.color }} />
+              </span>
+            )}
+            {isResult && (
+              <span className="flex-shrink-0 mt-[3px] w-[6px] h-[6px] rounded-full" style={{ background: cfg.color, opacity: 0.6 }} />
+            )}
+
+            {/* Content */}
+            <span
+              className={`text-[10px] font-mono leading-[1.6] min-w-0 ${
+                isThinking
+                  ? 'whitespace-pre-wrap break-words italic text-[var(--text-muted)]'
+                  : isResult
+                    ? 'truncate text-[var(--text-muted)] text-[9px]'
+                    : 'truncate text-[var(--text-dim)]'
+              }`}
+            >
+              {ev.summary}
+            </span>
+          </div>
+        )
+      })}
+    </div>
+  )
+}
+
+/* ─── Live draft (growing plan preview) ────────────────────────────── */
+
 function LiveDraft({ events }) {
   const drafts = events.filter(e => e.event_type === 'draft')
   if (drafts.length === 0) return null
   const lastDraft = drafts[drafts.length - 1]
   return (
-    <div className="my-2.5 relative">
-      {/* Accent left border */}
-      <div className="absolute left-0 top-0 bottom-0 w-[2px] rounded-full bg-[var(--accent)] opacity-50" />
+    <div className="my-2 relative group">
+      <div className="absolute left-0 top-0 bottom-0 w-[2px] rounded-full bg-[var(--accent)] opacity-40" />
       <div
-        className="bg-[var(--bg)] border border-[var(--border-subtle)] rounded-lg ml-3 p-4 text-[11px] leading-relaxed opacity-75 transition-opacity"
+        className="ml-4 p-4 rounded-lg bg-[var(--bg)] border border-[var(--border-subtle)] text-[11px] leading-relaxed opacity-60 group-hover:opacity-80 transition-opacity prose-planner"
         dangerouslySetInnerHTML={{ __html: renderMarkdown(lastDraft.summary) }}
       />
     </div>
   )
 }
 
-/**
- * Inline "Create Issue" controls embedded in each assistant plan message.
- */
+/* ─── Create Issue action ──────────────────────────────────────────── */
+
 function PlanIssueAction({ messageIndex, planning }) {
   const [showTitle, setShowTitle] = useState(false)
   const [title, setTitle] = useState('')
@@ -227,10 +274,10 @@ function PlanIssueAction({ messageIndex, planning }) {
     return (
       <div className="mt-3 pt-3 border-t border-[var(--border-subtle)]">
         <div className="flex items-center gap-2 text-[10px] text-[var(--green)] font-medium">
-          <span className="w-4 h-4 rounded-full bg-[var(--green-dim)] flex items-center justify-center text-[9px]">{'\u2713'}</span>
+          <CheckCircle2 size={12} />
           Issue created:{' '}
           {issueResult.url?.startsWith('https://') ? (
-            <a href={issueResult.url} target="_blank" rel="noopener noreferrer" className="underline">
+            <a href={issueResult.url} target="_blank" rel="noopener noreferrer" className="underline hover:no-underline">
               {issueResult.url}
             </a>
           ) : (
@@ -264,14 +311,15 @@ function PlanIssueAction({ messageIndex, planning }) {
             }
           }}
         >
-          Create Issue from this Plan
+          Create Issue
         </Button>
         {!isCreating && (
           <button
             className="text-[9px] text-[var(--text-muted)] hover:text-[var(--text-dim)] transition-colors font-medium"
             onClick={() => setShowTitle(v => !v)}
           >
-            {showTitle ? '\u25bc' : '\u25b6'} title
+            {showTitle ? <ChevronDown size={8} className="inline" /> : <ChevronRight size={8} className="inline" />}
+            {' '}custom title
           </button>
         )}
       </div>
@@ -290,6 +338,8 @@ function PlanIssueAction({ messageIndex, planning }) {
     </div>
   )
 }
+
+/* ─── Workspace picker ─────────────────────────────────────────────── */
 
 function PlannerWorkspacePicker({ workspaceId, onChange }) {
   const { data } = useWorkspaces()
@@ -356,17 +406,16 @@ function PlannerWorkspacePicker({ workspaceId, onChange }) {
   )
 }
 
+/* ─── Main modal ───────────────────────────────────────────────────── */
+
 export function PlannerModal({ open, onClose }) {
   const { selectedWorkspaceId } = useWorkspaceContext()
   const { data: wsData } = useWorkspaces()
   const workspaces = wsData?.workspaces || []
 
-  // Planner has its own workspace state. Reset to the current global
-  // workspace each time the modal opens so it matches what the user sees.
   const [plannerWsId, setPlannerWsId] = useState(null)
   const prevOpenRef = useRef(false)
 
-  // On each open transition (false -> true), sync to global workspace
   useEffect(() => {
     if (open && !prevOpenRef.current) {
       const initial = selectedWorkspaceId || (workspaces.length > 0 ? workspaces[0].id : null)
@@ -375,7 +424,6 @@ export function PlannerModal({ open, onClose }) {
     prevOpenRef.current = open
   }, [open, selectedWorkspaceId, workspaces])
 
-  // Derive the effective workspace ID for the first render before useEffect fires
   const effectiveWsId = plannerWsId
     || selectedWorkspaceId
     || (workspaces.length > 0 ? workspaces[0].id : null)
@@ -384,6 +432,7 @@ export function PlannerModal({ open, onClose }) {
   const { loadSessions } = planning
   const chatRef = useRef(null)
   const inputRef = useRef(null)
+  const chatUserScrolledUpRef = useRef(false)
   const [inputValue, setInputValue] = useState('')
   const [wsError, setWsError] = useState(null)
 
@@ -395,8 +444,22 @@ export function PlannerModal({ open, onClose }) {
     }
   }, [open, effectiveWsId, loadSessions])
 
+  // Track whether user has scrolled up in chat area
   useEffect(() => {
-    if (chatRef.current) {
+    const el = chatRef.current
+    if (!el) return
+    const handleScroll = () => {
+      const threshold = 50
+      const isAtBottom = el.scrollHeight - el.scrollTop - el.clientHeight < threshold
+      chatUserScrolledUpRef.current = !isAtBottom
+    }
+    el.addEventListener('scroll', handleScroll)
+    return () => el.removeEventListener('scroll', handleScroll)
+  }, [open])
+
+  // Auto-scroll chat only if user hasn't scrolled up
+  useEffect(() => {
+    if (chatRef.current && !chatUserScrolledUpRef.current) {
       chatRef.current.scrollTop = chatRef.current.scrollHeight
     }
   }, [planning.messages, planning.streamEvents])
@@ -424,14 +487,6 @@ export function PlannerModal({ open, onClose }) {
     planning.deleteSession(sid)
   }
 
-  const latestStepSummary = (() => {
-    const steps = (planning.streamEvents || []).filter(e => e.event_type !== 'draft')
-    if (steps.length === 0) return null
-    const last = steps[steps.length - 1]
-    if (!last?.summary) return null
-    return last.summary.length > 80 ? last.summary.slice(0, 77) + '\u2026' : last.summary
-  })()
-
   if (!open) return null
 
   return createPortal(
@@ -451,8 +506,9 @@ export function PlannerModal({ open, onClose }) {
           onDelete={handleDeleteSession}
         />
 
-        <div className="flex-1 flex flex-col p-6 min-w-0">
-          <div className="flex justify-between items-center mb-4">
+        <div className="flex-1 flex flex-col min-w-0">
+          {/* Header */}
+          <div className="flex justify-between items-center px-6 py-4 border-b border-[var(--border-subtle)]">
             <div className="flex items-center gap-3">
               <h3 className="text-[14px] font-semibold tracking-tight">Plan Issue</h3>
               <span className="text-[var(--border)] text-xs">/</span>
@@ -467,107 +523,130 @@ export function PlannerModal({ open, onClose }) {
             </div>
             <button
               onClick={onClose}
-              className="p-1 rounded-md text-[var(--text-muted)] hover:text-[var(--text-dim)] hover:bg-[var(--surface-hover)] transition-colors"
+              className="p-1.5 rounded-md text-[var(--text-muted)] hover:text-[var(--text-dim)] hover:bg-[var(--surface-hover)] transition-colors"
             >
               <X size={14} />
             </button>
           </div>
 
           {/* Chat area */}
-          <div ref={chatRef} className="flex-1 overflow-y-auto min-h-[200px] max-h-[420px] py-2">
-            {planning.messages.length === 0 && !planning.generating && (
-              <div className="flex flex-col items-center justify-center py-12 text-center">
-                <div className="w-8 h-8 rounded-lg bg-[var(--accent-dim)] flex items-center justify-center mb-3">
-                  <span className="text-[var(--accent)] text-sm">{'\u25c8'}</span>
+          <div ref={chatRef} className="flex-1 overflow-y-auto px-6 py-4 min-h-[200px]">
+            {/* Loading state */}
+            {planning.loadingSession && (
+              <div className="flex flex-col items-center justify-center py-16">
+                <Spinner size={20} />
+                <p className="mt-3 text-[11px] text-[var(--text-muted)] font-mono">Loading session{'\u2026'}</p>
+              </div>
+            )}
+
+            {/* Empty state */}
+            {planning.messages.length === 0 && !planning.generating && !planning.loadingSession && (
+              <div className="flex flex-col items-center justify-center py-16 text-center">
+                <div className="w-10 h-10 rounded-xl bg-[var(--accent-dim)] flex items-center justify-center mb-4">
+                  <Brain size={18} className="text-[var(--accent)]" />
                 </div>
-                <p className="text-[11px] text-[var(--text-muted)]">
-                  Describe a feature or bug fix and Claude will analyze the codebase to create a plan.
+                <p className="text-[12px] text-[var(--text-dim)] mb-1 font-medium">Plan an implementation</p>
+                <p className="text-[10px] text-[var(--text-muted)] max-w-[300px]">
+                  Describe a feature or bug fix and Claude will analyze the codebase to create an implementation plan.
                 </p>
               </div>
             )}
 
+            {/* Messages */}
             {planning.messages.map((m, i) => (
               m.role === 'user' ? (
-                <div key={`${planning.sessionId}-${i}`} className="bg-[var(--accent-dim)] border border-[var(--accent-border)] rounded-lg p-3 my-2 text-[11px] whitespace-pre-wrap font-mono text-[var(--text)]">
-                  {m.content}
+                <div key={`${planning.sessionId}-${i}`} className="flex justify-end my-3">
+                  <div className="max-w-[85%] bg-[var(--accent-dim)] border border-[var(--accent-border)] rounded-xl rounded-br-sm px-4 py-3 text-[11px] whitespace-pre-wrap font-mono text-[var(--text)] leading-relaxed">
+                    {m.content}
+                  </div>
                 </div>
               ) : (
                 <div
                   key={`${planning.sessionId}-${i}`}
-                  className="bg-[var(--bg)] border border-[var(--border-subtle)] rounded-lg my-2 overflow-hidden"
+                  className="my-3 bg-[var(--bg)] border border-[var(--border-subtle)] rounded-xl overflow-hidden"
                 >
-                  {/* Plan content */}
                   <div
-                    className="p-4 text-[11px] leading-relaxed"
+                    className="p-5 text-[11px] leading-relaxed prose-planner"
                     dangerouslySetInnerHTML={{ __html: renderMarkdown(m.content) }}
                   />
-                  {/* Embedded Create Issue action */}
-                  <div className="px-4 pb-3">
+                  <div className="px-5 pb-4">
                     <PlanIssueAction messageIndex={i} planning={planning} />
                   </div>
                 </div>
               )
             ))}
 
-            {/* Streaming analysis steps */}
-            {(planning.streamEvents?.length > 0) && (
-              <StreamingSteps
-                events={planning.streamEvents}
+            {/* Activity feed — streaming events */}
+            {(planning.generating || planning.streamEvents?.length > 0) && (
+              <ActivityFeed
+                events={planning.streamEvents || []}
                 isGenerating={planning.generating}
               />
             )}
 
-            {/* Live draft preview while generating */}
-            {planning.generating && planning.streamEvents && <LiveDraft events={planning.streamEvents} />}
+            {/* Live draft */}
+            {planning.generating && planning.streamEvents && (
+              <LiveDraft events={planning.streamEvents} />
+            )}
+
+            {/* Issue creation progress */}
+            {planning.creatingIssue != null && (
+              <div className="flex items-center gap-2.5 py-3 px-4 my-2 rounded-lg bg-[var(--surface)] border border-[var(--border-subtle)]">
+                <Spinner size={12} />
+                <span className="text-[11px] text-[var(--text-muted)] font-mono">{'Creating GitHub issue\u2026'}</span>
+              </div>
+            )}
           </div>
 
-          {/* Status bar */}
-          {(planning.generating || planning.creatingIssue != null) && (
-            <div className="flex items-center gap-2 py-2 px-1 border-t border-[var(--border-subtle)]">
-              <Spinner size={9} />
-              <span className="text-[10px] text-[var(--text-muted)] font-mono truncate flex-1">
-                {planning.creatingIssue != null
-                  ? 'Creating GitHub issue\u2026'
-                  : (latestStepSummary || 'Starting analysis\u2026')
-                }
-              </span>
-            </div>
-          )}
-
           {/* Input area */}
-          <div className="mt-3">
-            <textarea
-              ref={inputRef}
-              value={inputValue}
-              onChange={(e) => setInputValue(e.target.value)}
-              onKeyDown={handleKeyDown}
-              disabled={planning.generating}
-              placeholder={planning.hasPlan
-                ? 'Refine the plan \u2014 your feedback will update it with full context\u2026'
-                : 'Describe the feature or fix you want to implement\u2026'
-              }
-              className="w-full bg-[var(--bg)] border border-[var(--border)] rounded-lg p-3 text-[11px] font-mono text-[var(--text)] resize-none focus:outline-none focus:border-[var(--accent-border)] disabled:opacity-40 placeholder:text-[var(--text-muted)] transition-colors"
-              rows={3}
-            />
+          <div className="px-6 pb-5 pt-3 border-t border-[var(--border-subtle)]">
+            <div className="relative">
+              <textarea
+                ref={inputRef}
+                value={inputValue}
+                onChange={(e) => setInputValue(e.target.value)}
+                onKeyDown={handleKeyDown}
+                disabled={planning.generating}
+                placeholder={planning.hasPlan
+                  ? 'Refine the plan \u2014 your feedback will update it with full context\u2026'
+                  : 'Describe the feature or fix you want to implement\u2026'
+                }
+                className="w-full bg-[var(--bg)] border border-[var(--border)] rounded-xl p-3.5 pr-24 text-[11px] font-mono text-[var(--text)] resize-none focus:outline-none focus:border-[var(--accent-border)] disabled:opacity-40 placeholder:text-[var(--text-muted)] transition-colors"
+                rows={2}
+              />
+              <div className="absolute right-2 bottom-2 flex items-center gap-1.5">
+                {planning.generating ? (
+                  <Button size="sm" onClick={() => planning.cancelGeneration()}>
+                    Cancel
+                  </Button>
+                ) : (
+                  <Button
+                    size="sm"
+                    variant="primary"
+                    onClick={handleSend}
+                    disabled={!inputValue.trim()}
+                  >
+                    {planning.hasPlan ? 'Refine' : 'Plan'}
+                  </Button>
+                )}
+              </div>
+            </div>
             {wsError && (
               <p className="mt-1.5 text-[10px] text-[var(--red)]">{wsError}</p>
             )}
-            <div className="flex items-center gap-2 mt-2">
-              <Button variant="primary" onClick={handleSend} disabled={planning.generating || !inputValue.trim()}>
-                {planning.hasPlan ? 'Refine Plan' : 'Generate Plan'}
-              </Button>
-              {planning.generating && (
-                <Button onClick={() => planning.cancelGeneration()}>Cancel</Button>
-              )}
-              <span className="text-[9px] text-[var(--text-muted)] ml-1">
+            <div className="flex items-center gap-2 mt-1.5">
+              <span className="text-[9px] text-[var(--text-muted)]">
                 {(navigator.userAgentData?.platform || navigator.userAgent)?.toLowerCase().includes('mac') ? '\u2318' : 'Ctrl'}+Enter to send
               </span>
+              {planning.hasPlan && !planning.generating && (
+                <>
+                  <span className="text-[var(--border)] text-[9px]">{'\u00b7'}</span>
+                  <span className="text-[9px] text-[var(--text-muted)]">
+                    Each plan above has its own "Create Issue" button
+                  </span>
+                </>
+              )}
             </div>
-            {planning.hasPlan && !planning.generating && (
-              <p className="mt-1.5 text-[9px] text-[var(--text-muted)]">
-                Refinements update the existing plan with full conversation context. Each plan above has its own "Create Issue" button.
-              </p>
-            )}
           </div>
         </div>
       </div>
