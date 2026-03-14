@@ -152,6 +152,7 @@ def init_db():
     _migrate_add_column(conn, "agents", "session_id", "TEXT")
     _migrate_add_column(conn, "agents", "resume_count", "INTEGER DEFAULT 0")
     _migrate_add_column(conn, "agents", "rate_limited_at", "TIMESTAMP")
+    _migrate_add_column(conn, "agents", "log_offset", "INTEGER DEFAULT 0")
     _migrate_add_column(conn, "pr_reviews", "comments_json", "TEXT")
     # Multi-workspace migration
     _migrate_add_column(conn, "issues", "workspace_id", "TEXT")

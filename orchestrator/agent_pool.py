@@ -362,19 +362,20 @@ class AgentPool:
         _ensure_log_dir()
         log_file = agent_log_path(agent_id)
         stdout_file = open(log_file, "w")
-
-        logger.info("Spawning agent %s in %s (PID will be independent)", agent_id, worktree_path)
-        process = subprocess.Popen(
-            cmd,
-            cwd=worktree_path,
-            stdout=stdout_file,
-            stderr=subprocess.PIPE,
-            text=True,
-            env=env,
-            start_new_session=True,  # Agent survives orchestrator restart
-        )
-        # Close our copy of the file descriptor — the child process keeps its own
-        stdout_file.close()
+        try:
+            logger.info("Spawning agent %s in %s (PID will be independent)", agent_id, worktree_path)
+            process = subprocess.Popen(
+                cmd,
+                cwd=worktree_path,
+                stdout=stdout_file,
+                stderr=subprocess.PIPE,
+                text=True,
+                env=env,
+                start_new_session=True,  # Agent survives orchestrator restart
+            )
+        finally:
+            # Close our copy of the file descriptor — the child process keeps its own
+            stdout_file.close()
 
         return AgentProcess(
             agent_id=agent_id,
@@ -703,16 +704,18 @@ class AgentPool:
             _ensure_log_dir()
             resume_log_file = agent_log_path(new_agent_id)
             resume_stdout = open(resume_log_file, "w")
-            process = subprocess.Popen(
-                cmd,
-                cwd=worktree_path,
-                stdout=resume_stdout,
-                stderr=subprocess.PIPE,
-                text=True,
-                env=env,
-                start_new_session=True,
-            )
-            resume_stdout.close()
+            try:
+                process = subprocess.Popen(
+                    cmd,
+                    cwd=worktree_path,
+                    stdout=resume_stdout,
+                    stderr=subprocess.PIPE,
+                    text=True,
+                    env=env,
+                    start_new_session=True,
+                )
+            finally:
+                resume_stdout.close()
         except Exception as e:
             logger.error("Failed to resume agent %s: %s", old_agent_id, e)
             return None
@@ -811,11 +814,14 @@ class AgentPool:
         # Start log file tailer to continue ingesting events
         log_file = agent_log_path(agent_id)
         if log_file.exists():
-            # Count existing events in DB so we know where to resume from
-            existing_count = db.get_agent_event_count(agent_id)
+            # Use the persisted byte offset so the tailer resumes from the exact
+            # position it last reached.  Falling back to 0 makes the tailer
+            # re-read the whole file (safe, though slower) when no offset has
+            # been stored yet (e.g. for agents started before this migration).
+            log_offset = agent_record.get("log_offset") or 0
             threading.Thread(
                 target=self._tail_log_file,
-                args=(agent_id, log_file, pid, existing_count),
+                args=(agent_id, log_file, pid, log_offset),
                 daemon=True,
                 name=f"tail-{agent_id}",
             ).start()
@@ -827,16 +833,21 @@ class AgentPool:
             name=f"monitor-reattach-{agent_id}",
         ).start()
 
-    def _tail_log_file(self, agent_id: str, log_file: Path, pid: int, skip_lines: int):
-        """Tail an agent's log file and ingest new events into the DB."""
-        logger.info("Tailing log file for agent %s from line %d: %s", agent_id, skip_lines, log_file)
+    def _tail_log_file(self, agent_id: str, log_file: Path, pid: int, log_offset: int = 0):
+        """Tail an agent's log file and ingest new events into the DB.
+
+        Uses a byte offset (not a line count) to resume from the correct position
+        after an orchestrator restart.  Tracking total bytes consumed rather than
+        only successfully-stored events avoids re-processing lines that were read
+        but not stored (e.g. non-JSON output or lines parse_stream_line ignores).
+        """
+        logger.info("Tailing log file for agent %s from offset %d: %s", agent_id, log_offset, log_file)
         try:
             with open(log_file) as f:
-                # Skip lines we already have in DB
-                for _ in range(skip_lines):
-                    line = f.readline()
-                    if not line:
-                        break
+                # Seek to the last processed byte offset so we skip lines that
+                # have already been consumed (both stored and non-stored).
+                if log_offset > 0:
+                    f.seek(log_offset)
 
                 # Now tail for new lines
                 while True:
@@ -847,6 +858,9 @@ class AgentPool:
                             db.insert_event(agent_id, event.event_type, json.dumps(event.raw))
                             if event.event_type == "tool_use":
                                 logger.info("[%s] %s", agent_id, event.summary)
+                        # Persist the current file position after every line
+                        # (stored or not) so a restart can seek to the right spot.
+                        db.update_agent(agent_id, log_offset=f.tell())
                     else:
                         # No new data — check if process is still alive
                         try:
@@ -857,6 +871,7 @@ class AgentPool:
                                 event = parse_stream_line(remaining)
                                 if event:
                                     db.insert_event(agent_id, event.event_type, json.dumps(event.raw))
+                            db.update_agent(agent_id, log_offset=f.tell())
                             break
                         time.sleep(1)
         except Exception as e:

@@ -8,10 +8,11 @@ import { useWorkspaceContext } from '../../context/WorkspaceContext'
 import { useWorkspaces } from '../../hooks/useWorkspaces'
 
 const REPO_RE = /^[\w.-]+\/[\w.-]+$/
-function buildGitHubUrl(repo, path) {
+function buildGitHubUrl(repo, section, number) {
   if (!repo || !REPO_RE.test(repo)) return null
+  if (!Number.isInteger(number) || number <= 0) return null
   const [owner, name] = repo.split('/')
-  return `https://github.com/${encodeURIComponent(owner)}/${encodeURIComponent(name)}/${path}`
+  return `https://github.com/${encodeURIComponent(owner)}/${encodeURIComponent(name)}/${section}/${number}`
 }
 
 function PRStatusBadge({ status }) {
@@ -63,7 +64,7 @@ export function PRTracker() {
             >
               <div className="flex items-center gap-3">
                 <a
-                  href={buildGitHubUrl(wsRepoMap[pr.workspace_id], `pull/${pr.pr_number}`) ?? '#'}
+                  href={buildGitHubUrl(wsRepoMap[pr.workspace_id], 'pull', pr.pr_number) ?? '#'}
                   target="_blank"
                   rel="noreferrer"
                   className="text-[var(--accent)] text-[12px] hover:underline font-semibold font-mono"
