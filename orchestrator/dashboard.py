@@ -309,22 +309,24 @@ async def restart_agent(agent_id: str):
             except Exception:
                 pass
 
-    # Dispatch a new agent
-    new_agent_id = None
-    if agent.get("agent_type") == "fix_review" and agent.get("pr_number"):
-        from orchestrator.pr_monitor import get_pr_branch, get_unresolved_threads
-        branch = get_pr_branch(agent["pr_number"], github_repo=ws["github_repo"])
-        threads = get_unresolved_threads(agent["pr_number"], github_repo=ws["github_repo"])
-        if branch:
-            new_agent_id = _agent_pool.dispatch_fix_review(
-                agent["pr_number"], branch, agent["issue_number"], ws, threads,
-            )
-    else:
-        new_agent_id = _agent_pool.dispatch_implement(agent["issue_number"], workspace=ws)
+        # Dispatch a new agent only when the old one was still running (not already completed)
+        new_agent_id = None
+        if agent.get("agent_type") == "fix_review" and agent.get("pr_number"):
+            from orchestrator.pr_monitor import get_pr_branch, get_unresolved_threads
+            branch = get_pr_branch(agent["pr_number"], github_repo=ws["github_repo"])
+            threads = get_unresolved_threads(agent["pr_number"], github_repo=ws["github_repo"])
+            if branch:
+                new_agent_id = _agent_pool.dispatch_fix_review(
+                    agent["pr_number"], branch, agent["issue_number"], ws, threads,
+                )
+        else:
+            new_agent_id = _agent_pool.dispatch_implement(agent["issue_number"], workspace=ws)
 
-    if new_agent_id:
-        return {"ok": True, "old_agent_id": agent_id, "new_agent_id": new_agent_id}
-    return JSONResponse(content={"error": "Failed to dispatch new agent"}, status_code=500)
+        if new_agent_id:
+            return {"ok": True, "old_agent_id": agent_id, "new_agent_id": new_agent_id}
+        return JSONResponse(content={"error": "Failed to dispatch new agent"}, status_code=500)
+
+    return JSONResponse(content={"error": "Agent completed before restart could dispatch a new one"}, status_code=409)
 
 
 @app.get("/api/issues")
