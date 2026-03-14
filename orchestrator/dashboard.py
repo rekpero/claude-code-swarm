@@ -385,7 +385,7 @@ app.mount("/static", StaticFiles(directory=str(STATIC_DIR)), name="static")
 # Returns index.html for any non-API, non-static path so React Router handles navigation.
 @app.get("/{full_path:path}")
 async def spa_fallback(full_path: str):
-    if full_path.startswith("api/"):
+    if full_path == "api" or full_path.startswith("api/"):
         raise HTTPException(status_code=404, detail="Not found")
     index = STATIC_DIR / "index.html"
     if not index.exists():

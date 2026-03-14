@@ -105,6 +105,7 @@ export function EnvEditor({ workspaceId }) {
       })
     }
     reader.readAsText(file)
+    e.target.value = ''
   }
 
   if (loading) {

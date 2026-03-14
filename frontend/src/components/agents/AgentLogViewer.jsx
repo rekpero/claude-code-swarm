@@ -45,6 +45,11 @@ export function AgentLogViewer({ agentId, isRunning }) {
   const { data, isLoading, cursorRef } = useAgentLogs(agentId, { refetchInterval: isRunning ? 3000 : false })
 
   useEffect(() => {
+    setAllEvents([])
+    cursorRef.current = 0
+  }, [agentId])
+
+  useEffect(() => {
     if (data?.events?.length > 0) {
       setAllEvents(prev => {
         const existingIds = new Set(prev.map(e => e.id))
