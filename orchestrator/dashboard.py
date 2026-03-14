@@ -280,6 +280,7 @@ async def restart_agent(agent_id: str):
         except (OSError, ProcessLookupError):
             pass
     db.finish_agent(agent_id, status="stopped", error_message="Manually restarted by user")
+    db.update_issue(agent["issue_number"], workspace_id=agent.get("workspace_id"), status="pending")
 
     # Clean up worktree
     workspace_id = agent.get("workspace_id")

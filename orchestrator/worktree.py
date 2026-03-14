@@ -26,7 +26,7 @@ def ensure_repo_updated(repo_path: Path | str, base_branch: str = "main"):
     logger.info("Updating target repo at %s", target)
     _run_git("fetch", "origin", repo_path=target)
     # Ensure we're on the base branch (not a stale feature branch)
-    _run_git("checkout", branch, repo_path=target, check=False)
+    _run_git("checkout", branch, repo_path=target, check=True)
     _run_git("pull", "origin", branch, repo_path=target, check=False)
 
 

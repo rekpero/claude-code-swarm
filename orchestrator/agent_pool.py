@@ -122,6 +122,9 @@ class AgentProcess:
                             db.insert_event(self.agent_id, event.event_type, json.dumps(event.raw))
                             if event.event_type == "tool_use":
                                 logger.info("[%s] %s", self.agent_id, event.summary)
+                        # Persist the current file position after every line so a
+                        # restart via reattach_agent can seek to the right spot.
+                        db.update_agent(self.agent_id, log_offset=f.tell())
                     else:
                         # No new data — check if process exited
                         if self.process.poll() is not None:
@@ -131,6 +134,7 @@ class AgentProcess:
                                 if event:
                                     self.events.append(event)
                                     db.insert_event(self.agent_id, event.event_type, json.dumps(event.raw))
+                            db.update_agent(self.agent_id, log_offset=f.tell())
                             break
                         time.sleep(0.5)
         except Exception as e:
@@ -988,6 +992,7 @@ class AgentPool:
         else:
             # fix_review agent — just mark as completed (can't read stderr to determine status)
             db.finish_agent(agent_id, status="completed")
+            db.update_issue(issue_number, workspace_id=workspace_id, status="pr_created")
 
         if worktree_path:
             cleanup_worktree(worktree_path, repo_path=repo_path)
