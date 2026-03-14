@@ -796,6 +796,18 @@ def create_issue_from_plan(session_id: str, title: str = "", message_index: int 
             _issue_creating.discard(session_id)
 
 
+def cleanup_session_issue_keys(session_id: str):
+    """Remove all _issue_created_keys entries for the given session_id.
+
+    Call this when a planning session is permanently deleted so the set does
+    not grow without bound in a long-running orchestrator.
+    """
+    with _issue_creating_lock:
+        _issue_created_keys.difference_update(
+            {k for k in _issue_created_keys if k[0] == session_id}
+        )
+
+
 def cancel_planning(session_id: str):
     """Terminate the active planning subprocess for this session, if any."""
     with _active_lock:

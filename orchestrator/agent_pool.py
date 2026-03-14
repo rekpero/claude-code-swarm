@@ -7,6 +7,7 @@ import signal
 import subprocess
 import threading
 import time
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Callable
 
@@ -385,7 +386,7 @@ class AgentPool:
 
         _ensure_log_dir()
         log_file = agent_log_path(agent_id)
-        stdout_file = open(log_file, "w")
+        stdout_file = open(log_file, "a")
         try:
             logger.info("Spawning agent %s in %s (PID will be independent)", agent_id, worktree_path)
             process = subprocess.Popen(
@@ -864,9 +865,20 @@ class AgentPool:
             # No log file — signal immediately so the monitor doesn't wait
             tailer_done.set()
 
+        # Parse the agent's original start time from the DB record so that
+        # _monitor_pid uses the true elapsed time rather than resetting the
+        # timeout clock to the moment of reattachment.
+        started_at_str = agent_record.get("started_at")
+        try:
+            agent_started_at = datetime.fromisoformat(
+                started_at_str.replace(" ", "T")
+            ).replace(tzinfo=timezone.utc).timestamp()
+        except (ValueError, AttributeError, TypeError):
+            agent_started_at = time.time()
+
         threading.Thread(
             target=self._monitor_pid,
-            args=(agent_id, pid, issue_number, agent_type, worktree_path, pr_number, workspace_id, workspace, tailer_done),
+            args=(agent_id, pid, issue_number, agent_type, worktree_path, pr_number, workspace_id, workspace, tailer_done, agent_started_at),
             daemon=True,
             name=f"monitor-reattach-{agent_id}",
         ).start()
@@ -929,9 +941,11 @@ class AgentPool:
         workspace_id: str | None,
         workspace: dict | None,
         tailer_done: threading.Event | None = None,
+        started_at: float | None = None,
     ):
         """Poll a PID until it exits, then handle agent completion."""
-        started_at = time.time()
+        if started_at is None:
+            started_at = time.time()
 
         while True:
             try:
@@ -960,7 +974,7 @@ class AgentPool:
                     db.update_agent(agent_id, turns_used=turns)
                 db.finish_agent(agent_id, status="timeout", error_message="Agent exceeded timeout (reattached)")
                 db.update_issue(issue_number, workspace_id=workspace_id, status="pending")
-                repo_path = workspace["local_path"] if workspace else None
+                repo_path = workspace.get("local_path") if workspace else None
                 if worktree_path:
                     cleanup_worktree(worktree_path, repo_path=repo_path)
                 return
@@ -989,8 +1003,8 @@ class AgentPool:
         if turns:
             db.update_agent(agent_id, turns_used=turns)
 
-        repo_path = workspace["local_path"] if workspace else None
-        github_repo = workspace["github_repo"] if workspace else None
+        repo_path = workspace.get("local_path") if workspace else None
+        github_repo = workspace.get("github_repo") if workspace else None
 
         if agent_type == "implement":
             # Check if a PR was created

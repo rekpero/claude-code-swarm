@@ -291,8 +291,15 @@ async def restart_agent(agent_id: str):
                     pass
         except (OSError, ProcessLookupError):
             pass
-    db.finish_agent(agent_id, status="stopped", error_message="Manually restarted by user")
-    db.update_issue(agent["issue_number"], workspace_id=workspace_id, status="pending")
+    # Re-fetch the agent record after the kill to check whether it had already
+    # completed naturally (e.g. just created a PR) before we sent SIGTERM.
+    # Only overwrite the DB state when the agent is still recorded as "running";
+    # if it already reached "completed"/"pr_created"/etc. leave those states
+    # untouched to avoid re-queuing the issue and triggering a duplicate PR.
+    current_agent = db.get_agent(agent_id)
+    if current_agent and current_agent["status"] == "running":
+        db.finish_agent(agent_id, status="stopped", error_message="Manually restarted by user")
+        db.update_issue(agent["issue_number"], workspace_id=workspace_id, status="pending")
 
     # Clean up worktree
     repo_path = ws["local_path"]
@@ -412,6 +419,7 @@ def delete_planning_session(session_id: str):
     if not session:
         return JSONResponse(content={"error": "Session not found"}, status_code=404)
     planner.cancel_planning(session_id)
+    planner.cleanup_session_issue_keys(session_id)
     db.delete_planning_session(session_id)
     return {"ok": True}
 
