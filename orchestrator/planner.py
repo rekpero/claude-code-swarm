@@ -39,6 +39,12 @@ _active_lock = threading.Lock()
 # _issue_creating is protected by _issue_creating_lock.
 _issue_creating: set[str] = set()
 _issue_creating_lock = threading.Lock()
+# Tracks (session_id, message_index) pairs for which a GitHub issue has already
+# been successfully created.  When message_index is provided the session-level
+# status=="completed" guard is intentionally skipped, so this set provides the
+# equivalent deduplication at the (session, message) granularity.
+# Protected by _issue_creating_lock.
+_issue_created_keys: set[tuple[str, int]] = set()
 
 
 def is_generating(session_id: str) -> bool:
@@ -657,6 +663,15 @@ def create_issue_from_plan(session_id: str, title: str = "", message_index: int 
     with _issue_creating_lock:
         if session_id in _issue_creating:
             raise RuntimeError("Issue creation already in progress for this session")
+        # When message_index is provided, also check whether an issue was already
+        # created for this exact (session, message) pair.  Concurrent requests are
+        # already serialised by _issue_creating above; this check additionally
+        # blocks sequential duplicate requests that arrive after the first one
+        # completes and is removed from _issue_creating.
+        if message_index is not None and (session_id, message_index) in _issue_created_keys:
+            raise RuntimeError(
+                f"Issue already created for message {message_index} in this session"
+            )
         _issue_creating.add(session_id)
 
     try:
@@ -770,6 +785,10 @@ def create_issue_from_plan(session_id: str, title: str = "", message_index: int 
                 "Failed to update planning session %s after issue creation: %s",
                 session_id, db_err,
             )
+
+        if message_index is not None:
+            with _issue_creating_lock:
+                _issue_created_keys.add((session_id, message_index))
 
         return {"issue_number": issue_number, "issue_url": issue_url, "title": title}
     finally:

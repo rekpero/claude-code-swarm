@@ -25,8 +25,16 @@ def ensure_repo_updated(repo_path: Path | str, base_branch: str = "main"):
     branch = base_branch
     logger.info("Updating target repo at %s", target)
     _run_git("fetch", "origin", repo_path=target)
-    # Ensure we're on the base branch (not a stale feature branch)
-    _run_git("checkout", branch, repo_path=target, check=True)
+    # Ensure we're on the base branch (not a stale feature branch).
+    # Use check=False so that a dirty working tree (e.g. from an interrupted
+    # prior operation) does not raise an exception and break the git-pull
+    # endpoint; log a warning instead so operators can investigate.
+    result = _run_git("checkout", branch, repo_path=target, check=False)
+    if result.returncode != 0:
+        logger.warning(
+            "git checkout %s failed for repo %s (repo may have uncommitted changes): %s",
+            branch, target, result.stderr.strip(),
+        )
     _run_git("pull", "origin", branch, repo_path=target, check=False)
 
 
