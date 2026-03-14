@@ -5,7 +5,7 @@ import uuid
 from pathlib import Path
 
 from fastapi import FastAPI, Query
-from fastapi.responses import HTMLResponse, JSONResponse
+from fastapi.responses import FileResponse, HTMLResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 
@@ -39,10 +39,9 @@ class SaveEnvRequest(BaseModel):
 
 # === Dashboard HTML ===
 
-@app.get("/", response_class=HTMLResponse)
+@app.get("/", response_class=FileResponse)
 async def index():
-    index_file = STATIC_DIR / "index.html"
-    return index_file.read_text()
+    return FileResponse(str(STATIC_DIR / "index.html"))
 
 
 # === Workspace Endpoints ===
@@ -380,3 +379,11 @@ async def get_metrics(workspace_id: str | None = Query(None)):
 
 # Serve static files
 app.mount("/static", StaticFiles(directory=str(STATIC_DIR)), name="static")
+
+
+# SPA catch-all — must be registered LAST, after all /api/* routes and static mount.
+# Returns index.html for any non-API, non-static path so React Router handles navigation.
+@app.get("/{full_path:path}")
+async def spa_fallback(full_path: str):
+    index = STATIC_DIR / "index.html"
+    return FileResponse(str(index))

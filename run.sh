@@ -218,6 +218,7 @@ cmd_install() {
   _ensure_deps
   _ensure_venv
   _ensure_env
+  cmd_build_ui
 
   # Build PATH that includes claude, gh, node, etc.
   SVC_PATH="/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
@@ -280,6 +281,21 @@ cmd_uninstall() {
   else
     echo "Service not installed"
   fi
+}
+
+# ── UI Build ─────────────────────────────────────────────
+
+cmd_build_ui() {
+  FRONTEND_DIR="$DIR/frontend"
+  if [ ! -d "$FRONTEND_DIR" ]; then
+    echo "ERROR: frontend/ directory not found at $FRONTEND_DIR"
+    exit 1
+  fi
+  echo "Building dashboard UI..."
+  cd "$FRONTEND_DIR"
+  npm install --silent
+  npm run build
+  echo "Dashboard UI built successfully — output in orchestrator/static/"
 }
 
 # ── Skills (powered by skills.sh) ─────────────────────────
@@ -475,6 +491,7 @@ case "${1:-help}" in
   logs)     cmd_logs ;;
   install)  _require_sudo "$@"; cmd_install ;;
   uninstall) _require_sudo "$@"; cmd_uninstall ;;
+  build-ui) cmd_build_ui ;;
   install-skills)   cmd_install_skills "$@" ;;
   uninstall-skills) cmd_uninstall_skills "$@" ;;
   list-skills)      cmd_list_skills ;;
@@ -491,6 +508,7 @@ case "${1:-help}" in
     echo "  logs               Tail live logs"
     echo "  install            Install as systemd service (auto-start on boot, auto-restart on crash)"
     echo "  uninstall          Remove the systemd service"
+    echo "  build-ui           Build the React dashboard UI (frontend/ → orchestrator/static/)"
     echo ""
     echo "Skills (powered by skills.sh):"
     echo "  install-skills                           Install default skills into target repo"
