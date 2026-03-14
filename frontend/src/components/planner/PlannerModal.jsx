@@ -111,12 +111,6 @@ function StreamingSteps({ events, isGenerating }) {
 
   // Separate non-draft events for the step list
   const stepEvents = events.filter(e => e.event_type !== 'draft')
-  if (stepEvents.length === 0) return null
-
-  const lastStep = stepEvents[stepEvents.length - 1]
-  const lastLabel = lastStep?.summary?.length > 70
-    ? lastStep.summary.slice(0, 67) + '\u2026'
-    : (lastStep?.summary || 'Analyzing\u2026')
 
   // Auto-scroll the event list to bottom when new events arrive
   useEffect(() => {
@@ -124,6 +118,13 @@ function StreamingSteps({ events, isGenerating }) {
       listRef.current.scrollTop = listRef.current.scrollHeight
     }
   }, [stepEvents.length, expanded])
+
+  if (stepEvents.length === 0) return null
+
+  const lastStep = stepEvents[stepEvents.length - 1]
+  const lastLabel = lastStep?.summary?.length > 70
+    ? lastStep.summary.slice(0, 67) + '\u2026'
+    : (lastStep?.summary || 'Analyzing\u2026')
 
   return (
     <div className="bg-[var(--accent-dim)] border border-[var(--accent-border)] rounded-lg my-2.5 overflow-hidden">
@@ -544,7 +545,7 @@ export function PlannerModal({ open, onClose }) {
                 <Button onClick={() => planning.cancelGeneration()}>Cancel</Button>
               )}
               <span className="text-[9px] text-[var(--text-muted)] ml-1">
-                {navigator.platform?.includes('Mac') ? '\u2318' : 'Ctrl'}+Enter to send
+                {(navigator.userAgentData?.platform || navigator.userAgent)?.toLowerCase().includes('mac') ? '\u2318' : 'Ctrl'}+Enter to send
               </span>
             </div>
             {planning.hasPlan && !planning.generating && (

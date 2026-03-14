@@ -18,7 +18,7 @@ export function ActiveAgents() {
   const showWorkspace = !selectedWorkspaceId
 
   useEffect(() => { setOffset(0) }, [selectedWorkspaceId])
-  const { data, isLoading } = useAgents(selectedWorkspaceId, { limit: PAGE_SIZE, offset })
+  const { data, isLoading, refetch } = useAgents(selectedWorkspaceId, { limit: PAGE_SIZE, offset })
 
   const agents = data?.agents || []
   const total = data?.total ?? 0
@@ -66,7 +66,7 @@ export function ActiveAgents() {
       ) : (
         <div className="flex flex-col gap-2">
           {agents.map((agent) => (
-            <AgentCard key={agent.agent_id} agent={agent} workspaceName={showWorkspace ? wsMap[agent.workspace_id] : null} onRestarted={() => {}} />
+            <AgentCard key={agent.agent_id} agent={agent} workspaceName={showWorkspace ? wsMap[agent.workspace_id] : null} onRestarted={refetch} />
           ))}
         </div>
       )}

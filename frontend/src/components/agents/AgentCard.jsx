@@ -40,6 +40,7 @@ export function AgentCard({ agent, workspaceName, onRestarted }) {
   const isRunning = agent.status === 'running'
   const [expanded, setExpanded] = useState(isRunning)
   const [restarting, setRestarting] = useState(false)
+  const [restartError, setRestartError] = useState(null)
 
   useEffect(() => {
     if (isRunning) {
@@ -112,23 +113,29 @@ export function AgentCard({ agent, workspaceName, onRestarted }) {
             {agent.max_turns ? `/${agent.max_turns}` : ''} turns
           </span>
           {isRunning && (
-            <button
-              onClick={(e) => {
-                e.stopPropagation()
-                if (restarting) return
-                setRestarting(true)
-                restartAgent(agent.agent_id)
-                  .then(() => onRestarted?.())
-                  .catch(() => {})
-                  .finally(() => setRestarting(false))
-              }}
-              disabled={restarting}
-              className="flex items-center gap-1 px-2 py-1 text-[9px] font-medium text-[var(--yellow)] bg-[rgba(234,179,8,0.08)] border border-[rgba(234,179,8,0.15)] rounded hover:bg-[rgba(234,179,8,0.15)] transition-colors disabled:opacity-40"
-              title="Kill and restart this agent"
-            >
-              <RotateCw size={9} className={restarting ? 'animate-spin' : ''} />
-              {restarting ? 'Restarting...' : 'Restart'}
-            </button>
+            <div className="flex flex-col items-end gap-0.5">
+              <button
+                onClick={(e) => {
+                  e.stopPropagation()
+                  if (restarting) return
+                  setRestarting(true)
+                  setRestartError(null)
+                  restartAgent(agent.agent_id)
+                    .then(() => onRestarted?.())
+                    .catch((err) => setRestartError(err?.message || 'Restart failed'))
+                    .finally(() => setRestarting(false))
+                }}
+                disabled={restarting}
+                className="flex items-center gap-1 px-2 py-1 text-[9px] font-medium text-[var(--yellow)] bg-[rgba(234,179,8,0.08)] border border-[rgba(234,179,8,0.15)] rounded hover:bg-[rgba(234,179,8,0.15)] transition-colors disabled:opacity-40"
+                title="Kill and restart this agent"
+              >
+                <RotateCw size={9} className={restarting ? 'animate-spin' : ''} />
+                {restarting ? 'Restarting...' : 'Restart'}
+              </button>
+              {restartError && (
+                <span className="text-[8px] text-[var(--red)]">{restartError}</span>
+              )}
+            </div>
           )}
           <div className="text-[var(--text-muted)]">
             {expanded ? <ChevronUp size={12} /> : <ChevronDown size={12} />}

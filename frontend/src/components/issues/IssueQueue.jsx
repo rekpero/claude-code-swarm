@@ -118,9 +118,9 @@ export function IssueQueue() {
                       <Button
                         size="sm"
                         variant="ghost"
-                        loading={retryingIssue === issue.issue_number}
+                        loading={retryingIssue === `${issue.workspace_id}-${issue.issue_number}`}
                         onClick={() => {
-                          setRetryingIssue(issue.issue_number)
+                          setRetryingIssue(`${issue.workspace_id}-${issue.issue_number}`)
                           updateStatus(
                             { issueNumber: issue.issue_number, status: 'pending' },
                             { onSettled: () => setRetryingIssue(null) }

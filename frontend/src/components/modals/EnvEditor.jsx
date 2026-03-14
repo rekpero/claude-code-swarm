@@ -162,7 +162,7 @@ export function EnvEditor({ workspaceId }) {
       const entries = Object.entries(data.vars || {}).map(([k, v]) => ({ id: k, key: k, value: v }))
       setRows(entries)
     } catch (err) {
-      setSaveError(err?.message || 'Failed to sync from disk')
+      setFileReadError(err?.message || 'Failed to sync from disk')
     } finally {
       setSyncing(false)
     }
