@@ -1,4 +1,4 @@
-import { useState } from 'react'
+import { useState, useEffect } from 'react'
 import { Modal } from '../ui/Modal'
 import { Button } from '../ui/Button'
 import { EnvEditor } from './EnvEditor'
@@ -17,6 +17,16 @@ export function WorkspaceSettingsModal({ open, onClose }) {
 
   const workspace = data?.workspaces?.find((w) => w.id === selectedWorkspaceId)
   const [form, setForm] = useState({ name: '', repo_url: '', base_branch: '' })
+
+  useEffect(() => {
+    if (workspace) {
+      setForm({
+        name: workspace.name || '',
+        repo_url: workspace.repo_url || '',
+        base_branch: workspace.base_branch || '',
+      })
+    }
+  }, [workspace])
 
   const handleUpdate = (e) => {
     e.preventDefault()
@@ -69,7 +79,7 @@ export function WorkspaceSettingsModal({ open, onClose }) {
           <div>
             <label className="block text-[10px] uppercase tracking-wide text-[var(--text-dim)] mb-1">Display Name</label>
             <input
-              defaultValue={workspace.name || ''}
+              value={form.name}
               onChange={(e) => setForm((f) => ({ ...f, name: e.target.value }))}
               className="w-full px-2.5 py-2 text-[12px] bg-[var(--bg)] border border-[var(--border)] rounded-md text-[var(--text)] font-mono focus:border-[var(--accent)] outline-none"
             />
@@ -77,7 +87,7 @@ export function WorkspaceSettingsModal({ open, onClose }) {
           <div>
             <label className="block text-[10px] uppercase tracking-wide text-[var(--text-dim)] mb-1">Repository URL</label>
             <input
-              defaultValue={workspace.repo_url || ''}
+              value={form.repo_url}
               onChange={(e) => setForm((f) => ({ ...f, repo_url: e.target.value }))}
               className="w-full px-2.5 py-2 text-[12px] bg-[var(--bg)] border border-[var(--border)] rounded-md text-[var(--text)] font-mono focus:border-[var(--accent)] outline-none"
             />
@@ -85,7 +95,7 @@ export function WorkspaceSettingsModal({ open, onClose }) {
           <div>
             <label className="block text-[10px] uppercase tracking-wide text-[var(--text-dim)] mb-1">Base Branch</label>
             <input
-              defaultValue={workspace.base_branch || 'main'}
+              value={form.base_branch}
               onChange={(e) => setForm((f) => ({ ...f, base_branch: e.target.value }))}
               className="w-full px-2.5 py-2 text-[12px] bg-[var(--bg)] border border-[var(--border)] rounded-md text-[var(--text)] font-mono focus:border-[var(--accent)] outline-none"
             />

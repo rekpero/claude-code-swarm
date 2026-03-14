@@ -20,10 +20,11 @@ function ElapsedTime({ startedAt, status }) {
       setElapsed(parts.join(' '))
     }
     update()
+    let t
     if (status === 'running') {
-      const t = setInterval(update, 1000)
-      return () => clearInterval(t)
+      t = setInterval(update, 1000)
     }
+    return () => clearInterval(t)
   }, [startedAt, status])
 
   return <span className="text-[var(--text-dim)] text-[11px]">{elapsed}</span>

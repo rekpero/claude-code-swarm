@@ -26,6 +26,7 @@ export function EnvEditor({ workspaceId }) {
   const [rows, setRows] = useState([])
   const [loading, setLoading] = useState(false)
   const [saving, setSaving] = useState(false)
+  const [saveError, setSaveError] = useState(null)
   const [pasteText, setPasteText] = useState('')
   const [showPaste, setShowPaste] = useState(false)
 
@@ -58,12 +59,18 @@ export function EnvEditor({ workspaceId }) {
   const handleSave = async () => {
     if (!workspaceId) return
     setSaving(true)
+    setSaveError(null)
     const vars = {}
     for (const { key, value } of rows) {
       if (key.trim()) vars[key.trim()] = value
     }
-    await saveEnv(workspaceId, activeFile, vars).catch(() => {})
-    setSaving(false)
+    try {
+      await saveEnv(workspaceId, activeFile, vars)
+    } catch (err) {
+      setSaveError(err?.message || 'Failed to save')
+    } finally {
+      setSaving(false)
+    }
   }
 
   const handlePaste = () => {
@@ -152,6 +159,9 @@ export function EnvEditor({ workspaceId }) {
         </div>
       )}
 
+      {saveError && (
+        <p className="text-[11px] text-[var(--red)] mb-2">{saveError}</p>
+      )}
       <div className="flex items-center gap-2 flex-wrap">
         <Button size="sm" variant="ghost" onClick={addRow}>
           <Plus size={11} /> Add row

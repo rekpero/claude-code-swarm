@@ -50,7 +50,7 @@ export function PRTracker() {
             >
               <div className="flex items-center gap-3">
                 <a
-                  href={`https://github.com/pulls`}
+                  href={`https://github.com/${pr.github_repo}/pull/${pr.pr_number}`}
                   target="_blank"
                   rel="noreferrer"
                   className="text-[var(--blue)] text-sm hover:underline font-medium"

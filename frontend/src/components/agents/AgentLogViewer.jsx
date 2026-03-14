@@ -43,7 +43,7 @@ export function AgentLogViewer({ agentId, isRunning }) {
   const [since, setSince] = useState(0)
   const [allEvents, setAllEvents] = useState([])
 
-  const { data, isLoading } = useAgentLogs(agentId, { enabled: true, since: 0 })
+  const { data, isLoading } = useAgentLogs(agentId, { enabled: true, since })
 
   useEffect(() => {
     if (data?.events) {
