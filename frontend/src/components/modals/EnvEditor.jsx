@@ -182,6 +182,7 @@ export function EnvEditor({ workspaceId }) {
       })
       return [...Array.from(existingMap.values()), ...emptyKeyRows]
     })
+    setDirty(true)
     setPasteText('')
     setShowPaste(false)
   }
@@ -206,6 +207,7 @@ export function EnvEditor({ workspaceId }) {
         })
         return [...Array.from(existingMap.values()), ...emptyKeyRows]
       })
+      setDirty(true)
     }
     reader.onerror = () => {
       setFileReadError('Failed to read file')
