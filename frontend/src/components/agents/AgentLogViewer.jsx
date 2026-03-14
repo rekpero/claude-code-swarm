@@ -46,7 +46,8 @@ export function AgentLogViewer({ agentId, isRunning }) {
 
   useEffect(() => {
     setAllEvents([])
-    cursorRef.current = 0
+    // cursorRef is reset synchronously inside useAgentLogs when agentId changes,
+    // so no need to reset it here (which would race with TanStack Query's first fetch).
   }, [agentId])
 
   useEffect(() => {

@@ -381,7 +381,8 @@ async def get_metrics(workspace_id: str | None = Query(None)):
 app.mount("/static", StaticFiles(directory=str(STATIC_DIR)), name="static")
 
 # Serve Vite-built assets at /assets/ (index.html references them with root-relative /assets/... paths)
-app.mount("/assets", StaticFiles(directory=str(STATIC_DIR / "assets")), name="assets")
+# check_dir=False prevents a RuntimeError at startup when the frontend hasn't been built yet
+app.mount("/assets", StaticFiles(directory=str(STATIC_DIR / "assets"), check_dir=False), name="assets")
 
 
 # SPA catch-all — must be registered LAST, after all /api/* routes and static mount.
