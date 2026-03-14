@@ -13,7 +13,10 @@ function parseEnvText(text) {
     if (idx < 0) continue
     const key = trimmed.slice(0, idx).trim()
     const raw = trimmed.slice(idx + 1).trim()
-    const val = raw.replace(/^(['"])(.*)\1$/, '$2')
+    const quoteMatch = raw.match(/^(['"])([\s\S]*)\1$/)
+    const val = quoteMatch
+      ? quoteMatch[2].replace(new RegExp(`\\\\${quoteMatch[1]}`, 'g'), quoteMatch[1])
+      : raw
     if (key) vars[key] = val
   }
   return vars

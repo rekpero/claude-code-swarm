@@ -385,6 +385,7 @@ export function PlannerModal({ open, onClose }) {
   const chatRef = useRef(null)
   const inputRef = useRef(null)
   const [inputValue, setInputValue] = useState('')
+  const [wsError, setWsError] = useState(null)
 
   useEffect(() => {
     if (open && effectiveWsId) {
@@ -403,9 +404,10 @@ export function PlannerModal({ open, onClose }) {
   const handleSend = () => {
     if (!inputValue.trim() || planning.generating) return
     if (!effectiveWsId) {
-      alert('Please select a workspace first.')
+      setWsError('Please select a workspace first.')
       return
     }
+    setWsError(null)
     planning.sendMessage(inputValue.trim())
     setInputValue('')
   }
@@ -458,6 +460,7 @@ export function PlannerModal({ open, onClose }) {
                 workspaceId={effectiveWsId}
                 onChange={(id) => {
                   setPlannerWsId(id)
+                  setWsError(null)
                   planning.startNew()
                 }}
               />
@@ -546,6 +549,9 @@ export function PlannerModal({ open, onClose }) {
               className="w-full bg-[var(--bg)] border border-[var(--border)] rounded-lg p-3 text-[11px] font-mono text-[var(--text)] resize-none focus:outline-none focus:border-[var(--accent-border)] disabled:opacity-40 placeholder:text-[var(--text-muted)] transition-colors"
               rows={3}
             />
+            {wsError && (
+              <p className="mt-1.5 text-[10px] text-[var(--red)]">{wsError}</p>
+            )}
             <div className="flex items-center gap-2 mt-2">
               <Button variant="primary" onClick={handleSend} disabled={planning.generating || !inputValue.trim()}>
                 {planning.hasPlan ? 'Refine Plan' : 'Generate Plan'}
