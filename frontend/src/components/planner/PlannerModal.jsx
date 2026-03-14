@@ -429,7 +429,7 @@ export function PlannerModal({ open, onClose }) {
       planning.loadSessions()
       setTimeout(() => inputRef.current?.focus(), 100)
     }
-  }, [open, effectiveWsId])
+  }, [open, effectiveWsId, planning.loadSessions])
 
   useEffect(() => {
     if (chatRef.current) {

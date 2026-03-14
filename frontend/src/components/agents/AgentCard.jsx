@@ -41,6 +41,12 @@ export function AgentCard({ agent, workspaceName, onRestarted }) {
   const [expanded, setExpanded] = useState(isRunning)
   const [restarting, setRestarting] = useState(false)
 
+  useEffect(() => {
+    if (isRunning) {
+      setExpanded(true)
+    }
+  }, [isRunning])
+
   return (
     <div
       className={`rounded-lg border bg-[var(--surface)] overflow-hidden transition-all duration-200 ${
