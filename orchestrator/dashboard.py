@@ -324,6 +324,7 @@ async def restart_agent(agent_id: str):
 
         if new_agent_id:
             return {"ok": True, "old_agent_id": agent_id, "new_agent_id": new_agent_id}
+        _agent_pool.unmark_externally_stopped(agent_id)
         return JSONResponse(content={"error": "Failed to dispatch new agent"}, status_code=500)
 
     # The agent had already completed naturally before we could restart it.

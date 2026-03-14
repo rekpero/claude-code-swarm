@@ -1066,34 +1066,26 @@ class AgentPool:
                 db.finish_agent(agent_id, status="failed", error_message="Agent exited without creating PR (reattached)")
                 db.update_issue(issue_number, workspace_id=workspace_id, status="pending")
         else:
-            # fix_review agent — determine success from exit code or git state.
-            # For reattached non-child processes the OS has already reaped the
-            # process, so psutil cannot retrieve the exit code; we fall back to
-            # checking for new branch commits as a proxy for success.
+            # fix_review agent — determine success from git state.
+            # For reattached non-child processes the PID is already reaped by
+            # the time we reach here (os.kill(pid, 0) raised ProcessLookupError
+            # above), so psutil.Process(pid).wait() would raise NoSuchProcess
+            # and cannot provide the exit code.  We fall back to checking for
+            # new branch commits as a proxy for success instead.
             exit_code = None
-            try:
-                import psutil as _psutil  # optional; may not be installed
-                exit_code = _psutil.Process(pid).wait(timeout=0)
-            except Exception:
-                pass
-
-            if exit_code is not None:
-                agent_succeeded = exit_code == 0
-            else:
-                # Exit code unavailable — check for new commits on the branch.
-                agent_succeeded = False
-                if worktree_path and os.path.exists(worktree_path) and started_at:
-                    try:
-                        result = subprocess.run(
-                            ["git", "log", "--oneline", f"--after={int(started_at)}"],
-                            capture_output=True, text=True, cwd=worktree_path, timeout=10,
-                        )
-                        agent_succeeded = result.returncode == 0 and bool(result.stdout.strip())
-                    except Exception as e:
-                        logger.warning(
-                            "Could not check git state for reattached fix_review agent %s: %s",
-                            agent_id, e,
-                        )
+            agent_succeeded = False
+            if worktree_path and os.path.exists(worktree_path) and started_at:
+                try:
+                    result = subprocess.run(
+                        ["git", "log", "--oneline", f"--after={datetime.fromtimestamp(started_at).strftime('%Y-%m-%dT%H:%M:%S')}"],
+                        capture_output=True, text=True, cwd=worktree_path, timeout=10,
+                    )
+                    agent_succeeded = result.returncode == 0 and bool(result.stdout.strip())
+                except Exception as e:
+                    logger.warning(
+                        "Could not check git state for reattached fix_review agent %s: %s",
+                        agent_id, e,
+                    )
 
             if agent_succeeded:
                 logger.info("Reattached fix_review agent %s succeeded — marking completed", agent_id)
