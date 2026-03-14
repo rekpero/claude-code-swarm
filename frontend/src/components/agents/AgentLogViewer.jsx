@@ -44,12 +44,12 @@ export function AgentLogViewer({ agentId, isRunning }) {
 
   const { data, isLoading, cursorRef } = useAgentLogs(agentId, { refetchInterval: isRunning ? 3000 : false })
 
-  useEffect(() => {
-    setAllEvents([])
-    // cursorRef is reset inside a useEffect in useAgentLogs on agentId change,
-    // which runs alongside this effect after the same render commit.
-  }, [agentId])
-
+  // Declared before the agentId effect so it runs first in the same effects flush.
+  // When the user switches agents, TanStack Query immediately returns stale cached
+  // data for the new agent (staleTime=0), causing both effects to fire together.
+  // By running this effect first, it may advance cursorRef to the stale last-event
+  // ID — but the agentId effect below always resets cursorRef.current = 0 afterward,
+  // so the last write wins before the background refetch's queryFn fires.
   useEffect(() => {
     if (data?.events?.length > 0) {
       setAllEvents(prev => {
@@ -60,6 +60,14 @@ export function AgentLogViewer({ agentId, isRunning }) {
       cursorRef.current = data.events[data.events.length - 1].id
     }
   }, [data])
+
+  useEffect(() => {
+    setAllEvents([])
+    // Reset cursor here (in addition to the render-body guard in useAgentLogs) so
+    // this effect runs after the data effect above in the same flush, guaranteeing
+    // cursorRef.current === 0 when the background refetch's queryFn fires.
+    cursorRef.current = 0
+  }, [agentId])
 
   // Auto-scroll only for running agents
   useEffect(() => {

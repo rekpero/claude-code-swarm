@@ -85,8 +85,9 @@ export function EnvEditor({ workspaceId }) {
     const parsed = parseEnvText(pasteText)
     const newRows = Object.entries(parsed).map(([k, v]) => ({ id: crypto.randomUUID(), key: k, value: v }))
     setRows((prev) => {
-      const existing = new Set(prev.map((r) => r.key))
-      return [...prev, ...newRows.filter((r) => !existing.has(r.key))]
+      const existingMap = new Map(prev.map((r) => [r.key, r]))
+      newRows.forEach((r) => existingMap.set(r.key, r))
+      return Array.from(existingMap.values())
     })
     setPasteText('')
     setShowPaste(false)
@@ -100,8 +101,9 @@ export function EnvEditor({ workspaceId }) {
       const parsed = parseEnvText(ev.target.result)
       const newRows = Object.entries(parsed).map(([k, v]) => ({ id: crypto.randomUUID(), key: k, value: v }))
       setRows((prev) => {
-        const existing = new Set(prev.map((r) => r.key))
-        return [...prev, ...newRows.filter((r) => !existing.has(r.key))]
+        const existingMap = new Map(prev.map((r) => [r.key, r]))
+        newRows.forEach((r) => existingMap.set(r.key, r))
+        return Array.from(existingMap.values())
       })
     }
     reader.readAsText(file)
