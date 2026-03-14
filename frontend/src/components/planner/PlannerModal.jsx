@@ -7,61 +7,12 @@ import { usePlanning } from '../../hooks/usePlanning'
 import { useWorkspaceContext } from '../../context/WorkspaceContext'
 import { useWorkspaces } from '../../hooks/useWorkspaces'
 import { formatDistanceToNow } from 'date-fns'
+import { marked } from 'marked'
+import DOMPurify from 'dompurify'
 
 function renderMarkdown(text) {
   if (!text) return ''
-  let html = text
-    .replace(/&/g, '&amp;')
-    .replace(/</g, '&lt;')
-    .replace(/>/g, '&gt;')
-
-  const protected_ = []
-  const protect = (content) => {
-    const token = `\x00MDCODE${protected_.length}\x00`
-    protected_.push(content)
-    return token
-  }
-
-  html = html.replace(/```(\w*)\n([\s\S]*?)```/g, (_, lang, code) =>
-    protect(`<pre style="background:var(--bg);border:1px solid var(--border-subtle);border-radius:6px;padding:10px;margin:8px 0;font-size:10px;overflow-x:auto;font-family:'JetBrains Mono',monospace"><code>${code.trimEnd()}</code></pre>`)
-  )
-  html = html.replace(/`([^`\n]+)`/g, (_, code) =>
-    protect(`<code style="background:var(--bg);padding:1px 5px;border-radius:3px;font-size:10px;font-family:'JetBrains Mono',monospace">${code}</code>`)
-  )
-  html = html.replace(/^### (.+)$/gm, '<h3 style="font-weight:600;font-size:13px;margin:12px 0 4px">$1</h3>')
-  html = html.replace(/^## (.+)$/gm, '<h2 style="font-weight:600;font-size:14px;margin:16px 0 4px">$1</h2>')
-  html = html.replace(/^# (.+)$/gm, '<h1 style="font-weight:700;font-size:16px;margin:16px 0 6px">$1</h1>')
-  html = html.replace(/\*\*\*(.+?)\*\*\*/g, '<strong><em>$1</em></strong>')
-  html = html.replace(/\*\*(.+?)\*\*/g, '<strong>$1</strong>')
-  html = html.replace(/\*(.+?)\*/g, '<em>$1</em>')
-
-  html = html.replace(/(\|.+\|\n)(\|[-| :]+\|\n)((?:\|.+\|\n?)*)/g, (_, header, sep, rows) => {
-    const thCells = header.split('|').filter(c => c.trim()).map(c => `<th style="padding:4px 8px;text-align:left;border-bottom:1px solid var(--border)">${c.trim()}</th>`).join('')
-    const trRows = rows.trim().split('\n').filter(Boolean).map(row => {
-      const tds = row.split('|').filter(c => c.trim()).map(c => `<td style="padding:4px 8px;border-bottom:1px solid var(--border-subtle)">${c.trim()}</td>`).join('')
-      return `<tr>${tds}</tr>`
-    }).join('')
-    return `<table style="width:100%;font-size:11px;margin:8px 0;border:1px solid var(--border);border-radius:4px;border-collapse:collapse"><tr>${thCells}</tr>${trRows}</table>`
-  })
-
-  html = html.replace(/((?:^[-*+] .+\n?)+)/gm, match => {
-    const items = match.trim().split('\n').map(l => `<li style="margin-left:16px">${l.replace(/^[-*+] /, '')}</li>`).join('')
-    return `<ul style="list-style:disc;margin:4px 0">${items}</ul>`
-  })
-  html = html.replace(/((?:^\d+\. .+\n?)+)/gm, match => {
-    const items = match.trim().split('\n').map(l => `<li style="margin-left:16px">${l.replace(/^\d+\. /, '')}</li>`).join('')
-    return `<ol style="list-style:decimal;margin:4px 0">${items}</ol>`
-  })
-
-  html = html.replace(/^(?!<[houlp]|<pre|<table|<li|<\/|\x00)(.*\S.*)$/gm, '<p style="margin:4px 0">$1</p>')
-  html = html.replace(/(<\/(?:h[1-6]|ul|ol|li|table|p|pre|blockquote)>)\n+/g, '$1')
-  html = html.replace(/\n/g, '<br>')
-
-  protected_.forEach((content, i) => {
-    html = html.replace(`\x00MDCODE${i}\x00`, () => content)
-  })
-
-  return html
+  return DOMPurify.sanitize(marked.parse(text))
 }
 
 function eventIcon(eventType) {

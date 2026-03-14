@@ -88,7 +88,7 @@ export function EnvEditor({ workspaceId }) {
     setRows((prev) => prev.map((r, idx) => idx === i ? { ...r, [field]: val } : r))
   }
 
-  const addRow = () => setRows((prev) => [...prev, { id: Math.random().toString(36).slice(2), key: '', value: '' }])
+  const addRow = () => setRows((prev) => [...prev, { id: crypto.randomUUID(), key: '', value: '' }])
   const removeRow = (i) => setRows((prev) => prev.filter((_, idx) => idx !== i))
 
   const handleSave = async () => {

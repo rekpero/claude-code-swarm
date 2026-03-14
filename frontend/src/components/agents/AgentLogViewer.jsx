@@ -105,7 +105,9 @@ export function AgentLogViewer({ agentId, isRunning }) {
   const { data, isLoading, cursorRef } = useAgentLogs(agentId, { refetchInterval: isRunning ? 3000 : false })
 
   useEffect(() => {
-    if (data?.events?.length > 0) {
+    // Guard the entire update with the agentId check to prevent stale cached
+    // events from a previous agent being appended before the reset effect runs.
+    if (data?.events?.length > 0 && cursorAgentIdRef.current === agentId) {
       setAllEvents(prev => {
         const existingIds = new Set(prev.map(e => e.id))
         const newEvents = data.events.filter(e => !existingIds.has(e.id))
@@ -114,13 +116,7 @@ export function AgentLogViewer({ agentId, isRunning }) {
         }
         return prev
       })
-      // Only advance the cursor when the data belongs to the current agent.
-      // This guards against the race where agentId changes but stale cached
-      // data still fires this effect before the agentId-reset effect below
-      // has had a chance to update cursorAgentIdRef and reset cursorRef.
-      if (cursorAgentIdRef.current === agentId) {
-        cursorRef.current = data.events[data.events.length - 1].id
-      }
+      cursorRef.current = data.events[data.events.length - 1].id
     }
   }, [data, cursorRef, agentId])
 
