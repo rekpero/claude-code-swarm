@@ -326,6 +326,9 @@ async def restart_agent(agent_id: str):
             return {"ok": True, "old_agent_id": agent_id, "new_agent_id": new_agent_id}
         return JSONResponse(content={"error": "Failed to dispatch new agent"}, status_code=500)
 
+    # The agent had already completed naturally before we could restart it.
+    # Remove agent_id from _stopped_agent_ids so it doesn't leak in the set.
+    _agent_pool.unmark_externally_stopped(agent_id)
     return JSONResponse(content={"error": "Agent completed before restart could dispatch a new one"}, status_code=409)
 
 
@@ -341,13 +344,15 @@ async def list_prs(workspace_id: str | None = Query(None)):
     """List all tracked PRs and their review loop count."""
     reviews = db.get_all_pr_reviews(workspace_id=workspace_id)
 
-    # Build a lookup of PR number -> issue status so we can mark merged PRs.
-    # An issue with status "resolved" whose pr_number matches means the PR was merged.
+    # Build a lookup of (workspace_id, pr_number) -> issue status so we can
+    # mark merged PRs.  Using a composite key prevents PRs with the same
+    # number in different workspaces from overwriting each other.
     all_issues = db.get_all_issues(workspace_id=workspace_id)
-    pr_issue_status: dict[int, str] = {}
+    pr_issue_status: dict[tuple, str] = {}
     for issue in all_issues:
         if issue.get("pr_number"):
-            pr_issue_status[issue["pr_number"]] = issue["status"]
+            key = (issue.get("workspace_id"), issue["pr_number"])
+            pr_issue_status[key] = issue["status"]
 
     pr_map: dict[int, dict] = {}
     for review in reviews:
@@ -376,7 +381,7 @@ async def list_prs(workspace_id: str | None = Query(None)):
     # - issue "resolved" → PR was merged
     # - issue "needs_human" → PR needs human intervention
     for pr_num, pr_data in pr_map.items():
-        issue_status = pr_issue_status.get(pr_num)
+        issue_status = pr_issue_status.get((pr_data.get("workspace_id"), pr_num))
         if issue_status == "resolved":
             pr_data["latest_status"] = "merged"
         elif issue_status == "needs_human":

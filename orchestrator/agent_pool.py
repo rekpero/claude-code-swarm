@@ -126,9 +126,9 @@ class AgentProcess:
                             db.insert_event(self.agent_id, event.event_type, json.dumps(event.raw))
                             if event.event_type == "tool_use":
                                 logger.info("[%s] %s", self.agent_id, event.summary)
-                        # Persist the current file position after every line so a
-                        # restart via reattach_agent can seek to the right spot.
-                        db.update_agent(self.agent_id, log_offset=f.tell())
+                            # Persist the offset only when an event is stored to
+                            # avoid one SQLite UPDATE per log line (write amplification).
+                            db.update_agent(self.agent_id, log_offset=f.tell())
                     else:
                         # No new data — check if process exited
                         if self.process.poll() is not None:
@@ -203,6 +203,19 @@ class AgentPool:
             agent = self._agents.get(agent_id)
             if agent:
                 agent.stopped_externally = True
+
+    def unmark_externally_stopped(self, agent_id: str) -> None:
+        """Remove agent_id from the externally-stopped set.
+
+        Call this when a restart is aborted (e.g. the agent already completed
+        naturally) so the set does not leak entries for the lifetime of the
+        orchestrator process.
+        """
+        with self._lock:
+            self._stopped_agent_ids.discard(agent_id)
+            agent = self._agents.get(agent_id)
+            if agent:
+                agent.stopped_externally = False
 
     def dispatch_implement(self, issue_number: int, workspace: dict | None = None) -> str | None:
         """Dispatch an agent to implement an issue. Returns agent_id or None if pool is full."""
@@ -908,9 +921,9 @@ class AgentPool:
                             db.insert_event(agent_id, event.event_type, json.dumps(event.raw))
                             if event.event_type == "tool_use":
                                 logger.info("[%s] %s", agent_id, event.summary)
-                        # Persist the current file position after every line
-                        # (stored or not) so a restart can seek to the right spot.
-                        db.update_agent(agent_id, log_offset=f.tell())
+                            # Persist the offset only when an event is stored to
+                            # avoid one SQLite UPDATE per log line (write amplification).
+                            db.update_agent(agent_id, log_offset=f.tell())
                     else:
                         # No new data — check if process is still alive
                         try:

@@ -221,6 +221,7 @@ export function EnvEditor({ workspaceId }) {
       const data = await loadEnvFromDisk(workspaceId, activeFile)
       const entries = Object.entries(data.vars || {}).map(([k, v]) => ({ id: k, key: k, value: v }))
       setRows(entries)
+      setDirty(false)
     } catch (err) {
       setFileReadError(err?.message || 'Failed to sync from disk')
     } finally {
