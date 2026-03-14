@@ -23,7 +23,11 @@ function formatEvent(event) {
     if (event.event_type === 'assistant') {
       const content = data.message?.content
       if (Array.isArray(content)) {
-        return content.map((c) => c.text || c.input && JSON.stringify(c.input) || '').filter(Boolean).join(' ')
+        return content.map((c) => {
+          if (c.text != null) return c.text
+          if (c.input != null) return JSON.stringify(c.input)
+          return ''
+        }).filter(Boolean).join(' ')
       }
     }
     if (event.event_type === 'tool_use') {

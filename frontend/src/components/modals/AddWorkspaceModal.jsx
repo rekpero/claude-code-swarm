@@ -13,7 +13,7 @@ export function AddWorkspaceModal({ open, onClose }) {
   useEffect(() => {
     if (!open) {
       setForm({ repo_url: '', name: '', base_branch: 'main' })
-      setError(null)
+      setError('')
     }
   }, [open])
 
