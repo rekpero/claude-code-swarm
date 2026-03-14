@@ -57,6 +57,18 @@ def parse_stream_line(line: str) -> AgentEvent | None:
                         text_parts.append(f"[{tool_name} {tool_input.get('file_path', '?')}]")
                     elif tool_name == "Skill":
                         text_parts.append(f"[Skill: {tool_input.get('skill', '?')}]")
+                    elif tool_name == "WebSearch":
+                        text_parts.append(f"[WebSearch: {tool_input.get('query', '?')}]")
+                    elif tool_name == "WebFetch":
+                        text_parts.append(f"[WebFetch: {tool_input.get('url', '?')}]")
+                    elif tool_name == "Grep":
+                        text_parts.append(f"[Grep: {tool_input.get('pattern', '?')}]")
+                    elif tool_name == "Glob":
+                        text_parts.append(f"[Glob: {tool_input.get('pattern', '?')}]")
+                    elif tool_name == "Agent":
+                        text_parts.append(f"[Agent: {tool_input.get('description', '?')}]")
+                    elif tool_name == "TodoWrite":
+                        text_parts.append(f"[TodoWrite]")
                     else:
                         text_parts.append(f"[{tool_name}]")
                 elif block.get("type") == "thinking":
@@ -81,6 +93,16 @@ def parse_stream_line(line: str) -> AgentEvent | None:
             summary = f"Read: {tool_input.get('file_path', '?')}"
         elif tool_name in ("Edit", "Write"):
             summary = f"{tool_name}: {tool_input.get('file_path', '?')}"
+        elif tool_name == "WebSearch":
+            summary = f"WebSearch: {tool_input.get('query', '?')}"
+        elif tool_name == "WebFetch":
+            summary = f"WebFetch: {tool_input.get('url', '?')}"
+        elif tool_name == "Grep":
+            summary = f"Grep: {tool_input.get('pattern', '?')}"
+        elif tool_name == "Glob":
+            summary = f"Glob: {tool_input.get('pattern', '?')}"
+        elif tool_name == "Agent":
+            summary = f"Agent: {tool_input.get('description', '?')}"
         else:
             summary = f"{tool_name}: {json.dumps(tool_input)[:100]}"
         return AgentEvent(event_type="tool_use", summary=summary, raw=data)

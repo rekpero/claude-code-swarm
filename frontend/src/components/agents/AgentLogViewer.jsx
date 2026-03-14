@@ -37,6 +37,9 @@ function formatToolUse(b) {
   if (tool === 'Grep') return `Grep "${input.pattern || ''}"`
   if (tool === 'Glob') return `Glob ${input.pattern || ''}`
   if (tool === 'Skill') return `Skill: ${input.skill || '?'}`
+  if (tool === 'WebSearch') return `WebSearch: ${input.query || '?'}`
+  if (tool === 'WebFetch') return `WebFetch: ${input.url || '?'}`
+  if (tool === 'Agent') return `Agent: ${input.description || '?'}`
   return `${tool}`
 }
 
@@ -63,6 +66,9 @@ function tryParseEventData(raw, eventType) {
       if (tool === 'Edit' || tool === 'Write') return `${tool} ${input.file_path || '?'}`
       if (tool === 'Grep') return `Grep "${input.pattern || ''}"`
       if (tool === 'Glob') return `Glob ${input.pattern || ''}`
+      if (tool === 'WebSearch') return `WebSearch: ${input.query || '?'}`
+      if (tool === 'WebFetch') return `WebFetch: ${input.url || '?'}`
+      if (tool === 'Agent') return `Agent: ${input.description || '?'}`
       return `${tool}: ${JSON.stringify(input)}`
     }
     if (eventType === 'tool_result' || d?.type === 'tool_result') return null
