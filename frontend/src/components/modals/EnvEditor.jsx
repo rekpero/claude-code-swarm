@@ -51,6 +51,7 @@ export function EnvEditor({ workspaceId }) {
     if (!workspaceId || !activeFile) return
     let cancelled = false
     setLoading(true)
+    setFileReadError(null)
 
     const toRows = (vars) =>
       Object.entries(vars || {}).map(([k, v]) => ({ id: k, key: k, value: v }))

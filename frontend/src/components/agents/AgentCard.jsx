@@ -121,7 +121,7 @@ export function AgentCard({ agent, workspaceName, onRestarted }) {
                   setRestarting(true)
                   setRestartError(null)
                   restartAgent(agent.agent_id)
-                    .then(() => onRestarted?.())
+                    .then(() => { Promise.resolve(onRestarted?.()).catch(() => {}) })
                     .catch((err) => setRestartError(err?.message || 'Restart failed'))
                     .finally(() => setRestarting(false))
                 }}
