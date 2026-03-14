@@ -41,7 +41,10 @@ class SaveEnvRequest(BaseModel):
 
 @app.get("/", response_class=FileResponse)
 async def index():
-    return FileResponse(str(STATIC_DIR / "index.html"))
+    index = STATIC_DIR / "index.html"
+    if not index.exists():
+        raise HTTPException(status_code=404, detail="Frontend not built")
+    return FileResponse(str(index))
 
 
 # === Workspace Endpoints ===

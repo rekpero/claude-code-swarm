@@ -1,4 +1,4 @@
-import { useState } from 'react'
+import { useState, useEffect } from 'react'
 import { Bot, ChevronLeft, ChevronRight } from 'lucide-react'
 import { AgentCard } from './AgentCard'
 import { EmptyState } from '../ui/EmptyState'
@@ -12,6 +12,8 @@ const PAGE_SIZE = 20
 export function ActiveAgents() {
   const [offset, setOffset] = useState(0)
   const { selectedWorkspaceId } = useWorkspaceContext()
+
+  useEffect(() => { setOffset(0) }, [selectedWorkspaceId])
   const { data, isLoading } = useAgents(selectedWorkspaceId, { limit: PAGE_SIZE, offset })
 
   const agents = data?.agents || []
