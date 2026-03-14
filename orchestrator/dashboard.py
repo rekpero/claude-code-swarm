@@ -355,34 +355,36 @@ async def list_prs(workspace_id: str | None = Query(None)):
             key = (issue.get("workspace_id"), issue["pr_number"])
             pr_issue_status[key] = issue["status"]
 
-    pr_map: dict[int, dict] = {}
+    pr_map: dict[tuple, dict] = {}
     for review in reviews:
         pr_num = review["pr_number"]
-        if pr_num not in pr_map:
-            pr_map[pr_num] = {
+        ws_id = review.get("workspace_id")
+        key = (ws_id, pr_num)
+        if key not in pr_map:
+            pr_map[key] = {
                 "pr_number": pr_num,
                 "iterations": 0,
                 "latest_status": review["status"],
                 "total_comments": 0,
                 "review_threads": [],
-                "workspace_id": review.get("workspace_id"),
+                "workspace_id": ws_id,
             }
-        pr_map[pr_num]["iterations"] = max(pr_map[pr_num]["iterations"], review["iteration"])
-        pr_map[pr_num]["latest_status"] = review["status"]
-        pr_map[pr_num]["total_comments"] += review.get("comments_count", 0)
+        pr_map[key]["iterations"] = max(pr_map[key]["iterations"], review["iteration"])
+        pr_map[key]["latest_status"] = review["status"]
+        pr_map[key]["total_comments"] += review.get("comments_count", 0)
 
         comments_json = review.get("comments_json")
         if comments_json:
             try:
-                pr_map[pr_num]["review_threads"] = json.loads(comments_json)
+                pr_map[key]["review_threads"] = json.loads(comments_json)
             except (json.JSONDecodeError, TypeError):
                 pass
 
     # Enrich PR statuses from issue state:
     # - issue "resolved" → PR was merged
     # - issue "needs_human" → PR needs human intervention
-    for pr_num, pr_data in pr_map.items():
-        issue_status = pr_issue_status.get((pr_data.get("workspace_id"), pr_num))
+    for (ws_id, pr_num), pr_data in pr_map.items():
+        issue_status = pr_issue_status.get((ws_id, pr_num))
         if issue_status == "resolved":
             pr_data["latest_status"] = "merged"
         elif issue_status == "needs_human":

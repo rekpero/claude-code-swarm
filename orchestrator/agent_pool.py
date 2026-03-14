@@ -127,9 +127,10 @@ class AgentProcess:
                             db.insert_event(self.agent_id, event.event_type, json.dumps(event.raw))
                             if event.event_type == "tool_use":
                                 logger.info("[%s] %s", self.agent_id, event.summary)
-                            # Persist the offset only when an event is stored to
-                            # avoid one SQLite UPDATE per log line (write amplification).
-                            db.update_agent(self.agent_id, log_offset=f.tell())
+                        # Persist offset after every readline so non-JSON lines
+                        # also advance the saved position, preventing duplicate
+                        # re-reads after a restart.
+                        db.update_agent(self.agent_id, log_offset=f.tell())
                     else:
                         # No new data — check if process exited
                         if self.process.poll() is not None:
@@ -139,7 +140,7 @@ class AgentProcess:
                                 if event:
                                     self.events.append(event)
                                     db.insert_event(self.agent_id, event.event_type, json.dumps(event.raw))
-                            db.update_agent(self.agent_id, log_offset=f.tell())
+                                db.update_agent(self.agent_id, log_offset=f.tell())
                             break
                         time.sleep(0.5)
         except Exception as e:

@@ -237,7 +237,6 @@ export function usePlanning(workspaceId) {
       setStreamEvents([])
       setGenerating(false)
     } catch {
-      setGenerating(true)
       poll()
     }
   }, [stopPolling, poll])
