@@ -114,7 +114,9 @@ def get_unresolved_threads(pr_number: int, github_repo: str | None = None) -> li
 
             if not page_info.get("hasNextPage"):
                 break
-            cursor = page_info["endCursor"]
+            cursor = page_info.get("endCursor")
+            if not cursor:
+                break
 
         except (json.JSONDecodeError, KeyError, TypeError) as e:
             logger.warning("Failed to parse GraphQL response for PR #%d: %s", pr_number, e)

@@ -37,6 +37,7 @@ export function useAgentLogs(agentId, { since = 0, refetchInterval = 3000 } = {}
       const cursor = cursorRef.current
       return getAgentLogs(agentId, cursor)
     },
+    enabled: !!agentId,
     refetchInterval,
     staleTime: 0,
   })

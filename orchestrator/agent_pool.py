@@ -813,6 +813,7 @@ class AgentPool:
 
         # Start log file tailer to continue ingesting events
         log_file = agent_log_path(agent_id)
+        tailer_done = threading.Event()
         if log_file.exists():
             # Use the persisted byte offset so the tailer resumes from the exact
             # position it last reached.  Falling back to 0 makes the tailer
@@ -821,19 +822,22 @@ class AgentPool:
             log_offset = agent_record.get("log_offset") or 0
             threading.Thread(
                 target=self._tail_log_file,
-                args=(agent_id, log_file, pid, log_offset),
+                args=(agent_id, log_file, pid, log_offset, tailer_done),
                 daemon=True,
                 name=f"tail-{agent_id}",
             ).start()
+        else:
+            # No log file — signal immediately so the monitor doesn't wait
+            tailer_done.set()
 
         threading.Thread(
             target=self._monitor_pid,
-            args=(agent_id, pid, issue_number, agent_type, worktree_path, pr_number, workspace_id, workspace),
+            args=(agent_id, pid, issue_number, agent_type, worktree_path, pr_number, workspace_id, workspace, tailer_done),
             daemon=True,
             name=f"monitor-reattach-{agent_id}",
         ).start()
 
-    def _tail_log_file(self, agent_id: str, log_file: Path, pid: int, log_offset: int = 0):
+    def _tail_log_file(self, agent_id: str, log_file: Path, pid: int, log_offset: int = 0, done_event: threading.Event | None = None):
         """Tail an agent's log file and ingest new events into the DB.
 
         Uses a byte offset (not a line count) to resume from the correct position
@@ -876,6 +880,9 @@ class AgentPool:
                         time.sleep(1)
         except Exception as e:
             logger.error("[%s] Log tailer error: %s", agent_id, e)
+        finally:
+            if done_event is not None:
+                done_event.set()
 
     def _monitor_pid(
         self,
@@ -887,6 +894,7 @@ class AgentPool:
         pr_number: int | None,
         workspace_id: str | None,
         workspace: dict | None,
+        tailer_done: threading.Event | None = None,
     ):
         """Poll a PID until it exits, then handle agent completion."""
         started_at = time.time()
@@ -917,6 +925,7 @@ class AgentPool:
                 if turns:
                     db.update_agent(agent_id, turns_used=turns)
                 db.finish_agent(agent_id, status="timeout", error_message="Agent exceeded timeout (reattached)")
+                db.update_issue(issue_number, workspace_id=workspace_id, status="pending")
                 repo_path = workspace["local_path"] if workspace else None
                 if worktree_path:
                     cleanup_worktree(worktree_path, repo_path=repo_path)
@@ -927,8 +936,10 @@ class AgentPool:
         # PID exited — handle completion
         logger.info("Reattached agent %s (PID %d) has exited", agent_id, pid)
 
-        # Give the log tailer a moment to finish ingesting remaining events
-        time.sleep(2)
+        # Wait for the log tailer to finish ingesting remaining events before
+        # reading the turn count so we get a complete picture.
+        if tailer_done is not None:
+            tailer_done.wait(timeout=30)
 
         # Update turns_used from DB events (reattached agents don't track in-memory)
         turns = db.get_agent_turn_count(agent_id)
