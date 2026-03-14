@@ -1,5 +1,5 @@
 import { useState, useEffect } from 'react'
-import { FolderTree, GitBranch, FileCode, Package } from 'lucide-react'
+import { FolderTree, GitBranch, FileCode, Package, RefreshCw, Check, AlertTriangle, ArrowDown } from 'lucide-react'
 import { Modal } from '../ui/Modal'
 import { Button } from '../ui/Button'
 import { Badge } from '../ui/Badge'
@@ -7,9 +7,95 @@ import { Spinner } from '../ui/Spinner'
 import { EnvEditor } from './EnvEditor'
 import { useUpdateWorkspace, useDeleteWorkspace, useWorkspaces } from '../../hooks/useWorkspaces'
 import { useWorkspaceContext } from '../../context/WorkspaceContext'
+import { useGitSync } from '../../hooks/useGitSync'
 import { getWorkspaceStructure } from '../../api/client'
 
 const TABS = ['General', 'Env Files', 'Structure']
+
+function GitPullSection({ workspace }) {
+  const { data: syncStatus, isLoading, refetch, pull } = useGitSync(workspace?.id)
+
+  const isSynced = syncStatus?.synced
+  const behind = syncStatus?.behind || 0
+  const ahead = syncStatus?.ahead || 0
+
+  return (
+    <div className="bg-[var(--bg)] border border-[var(--border-subtle)] rounded-lg p-3.5 space-y-2.5">
+      <div className="flex items-center justify-between">
+        <div className="flex items-center gap-2">
+          <GitBranch size={12} className="text-[var(--text-muted)]" />
+          <span className="text-[9px] uppercase tracking-widest text-[var(--text-muted)] font-semibold">Git Sync</span>
+        </div>
+        <button
+          onClick={() => refetch()}
+          disabled={isLoading}
+          className="p-1 rounded text-[var(--text-muted)] hover:text-[var(--text-dim)] hover:bg-[var(--surface-hover)] transition-colors disabled:opacity-40"
+          title="Refresh status"
+        >
+          <RefreshCw size={10} className={isLoading ? 'animate-spin' : ''} />
+        </button>
+      </div>
+
+      {isLoading && !syncStatus && (
+        <div className="flex justify-center py-2"><Spinner /></div>
+      )}
+
+      {syncStatus && (
+        <div className="space-y-2.5">
+          <div className="flex items-center gap-2">
+            {isSynced ? (
+              <Badge variant="green">
+                <span className="flex items-center gap-1"><Check size={8} /> Synced</span>
+              </Badge>
+            ) : (
+              <Badge variant="yellow">
+                <span className="flex items-center gap-1"><AlertTriangle size={8} /> Out of sync</span>
+              </Badge>
+            )}
+          </div>
+
+          <div className="grid grid-cols-[80px_1fr] gap-y-1.5 gap-x-3 text-[10px]">
+            <span className="text-[var(--text-muted)]">Local</span>
+            <span className="text-[var(--text-dim)] font-mono">{syncStatus.local_sha || '\u2014'}</span>
+            <span className="text-[var(--text-muted)]">Remote</span>
+            <span className="text-[var(--text-dim)] font-mono">{syncStatus.remote_sha || '\u2014'}</span>
+            {behind > 0 && (
+              <>
+                <span className="text-[var(--text-muted)]">Behind</span>
+                <span className="text-[var(--yellow)] font-mono">{behind} commit{behind !== 1 ? 's' : ''}</span>
+              </>
+            )}
+            {ahead > 0 && (
+              <>
+                <span className="text-[var(--text-muted)]">Ahead</span>
+                <span className="text-[var(--text-dim)] font-mono">{ahead} commit{ahead !== 1 ? 's' : ''}</span>
+              </>
+            )}
+          </div>
+
+          {pull.error && (
+            <div className="text-[10px] text-[var(--red)] flex items-center gap-1.5">
+              <AlertTriangle size={10} />
+              {pull.error.message}
+            </div>
+          )}
+
+          <button
+            onClick={() => pull.mutate()}
+            disabled={pull.isPending}
+            className="flex items-center gap-1.5 px-3 py-1.5 text-[10px] font-medium bg-[var(--accent)] text-white rounded-md hover:brightness-110 transition-all disabled:opacity-50 w-full justify-center"
+          >
+            {pull.isPending ? (
+              <><RefreshCw size={10} className="animate-spin" /> Pulling...</>
+            ) : (
+              <><ArrowDown size={10} /> Pull Latest</>
+            )}
+          </button>
+        </div>
+      )}
+    </div>
+  )
+}
 
 function StructureTab({ workspace }) {
   const [structure, setStructure] = useState(null)
@@ -36,6 +122,9 @@ function StructureTab({ workspace }) {
 
   return (
     <div className="space-y-4">
+      {/* Git sync & pull */}
+      {workspace.status === 'active' && <GitPullSection workspace={workspace} />}
+
       {/* Workspace info */}
       <div className="bg-[var(--bg)] border border-[var(--border-subtle)] rounded-lg p-3.5 space-y-2.5">
         <div className="flex items-center gap-2">

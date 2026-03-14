@@ -243,6 +243,7 @@ WorkingDirectory=${DIR}
 ExecStart=${DIR}/.venv/bin/python -m orchestrator.main
 EnvironmentFile=${DIR}/.env
 Environment=PATH=${SVC_PATH}
+KillMode=process
 KillSignal=SIGTERM
 TimeoutStopSec=60
 Restart=on-failure

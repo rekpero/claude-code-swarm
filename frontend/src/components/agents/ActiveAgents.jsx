@@ -66,7 +66,7 @@ export function ActiveAgents() {
       ) : (
         <div className="flex flex-col gap-2">
           {agents.map((agent) => (
-            <AgentCard key={agent.agent_id} agent={agent} workspaceName={showWorkspace ? wsMap[agent.workspace_id] : null} />
+            <AgentCard key={agent.agent_id} agent={agent} workspaceName={showWorkspace ? wsMap[agent.workspace_id] : null} onRestarted={() => {}} />
           ))}
         </div>
       )}

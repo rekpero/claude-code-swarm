@@ -6,6 +6,8 @@ const STATUS_MAP = {
   failed: { variant: 'red', label: 'Failed' },
   rate_limited: { variant: 'yellow', label: 'Rate Limited' },
   timed_out: { variant: 'red', label: 'Timed Out' },
+  stopped: { variant: 'yellow', label: 'Stopped' },
+  resumed: { variant: 'dim', label: 'Resumed' },
 }
 
 export function AgentStatusBadge({ status }) {

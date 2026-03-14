@@ -2,6 +2,9 @@
 
 import json
 import logging
+import os
+import signal
+import time
 import uuid
 from pathlib import Path
 
@@ -12,11 +15,21 @@ from pydantic import BaseModel
 
 from orchestrator import db
 from orchestrator import planner
+from orchestrator import worktree
 from orchestrator import workspace_manager as wm
 
 app = FastAPI(title="Claude Code Swarm Dashboard")
 
 STATIC_DIR = Path(__file__).parent / "static"
+
+# Set by main.py after the AgentPool is created so dashboard endpoints can
+# dispatch / restart agents.
+_agent_pool = None
+
+
+def set_agent_pool(pool):
+    global _agent_pool
+    _agent_pool = pool
 
 
 # === Pydantic Models ===
@@ -118,6 +131,39 @@ async def get_workspace_structure(workspace_id: str):
     return {"structure": structure}
 
 
+@app.get("/api/workspaces/{workspace_id}/git-status")
+async def workspace_git_status(workspace_id: str):
+    """Check if the workspace's base branch is in sync with the remote."""
+    workspace = db.get_workspace(workspace_id)
+    if not workspace:
+        return JSONResponse(content={"error": "Workspace not found"}, status_code=404)
+    local_path = workspace.get("local_path")
+    if not local_path or not Path(local_path).exists():
+        return JSONResponse(content={"error": "Workspace repo not cloned yet"}, status_code=400)
+    try:
+        status = worktree.get_sync_status(local_path, workspace.get("base_branch", "main"))
+        return status
+    except Exception as e:
+        return JSONResponse(content={"error": str(e)}, status_code=500)
+
+
+@app.post("/api/workspaces/{workspace_id}/git-pull")
+async def workspace_git_pull(workspace_id: str):
+    """Pull latest changes from the remote for the workspace's base branch."""
+    workspace = db.get_workspace(workspace_id)
+    if not workspace:
+        return JSONResponse(content={"error": "Workspace not found"}, status_code=404)
+    local_path = workspace.get("local_path")
+    if not local_path or not Path(local_path).exists():
+        return JSONResponse(content={"error": "Workspace repo not cloned yet"}, status_code=400)
+    try:
+        worktree.ensure_repo_updated(local_path, workspace.get("base_branch", "main"))
+        status = worktree.get_sync_status(local_path, workspace.get("base_branch", "main"))
+        return {"ok": True, **status}
+    except Exception as e:
+        return JSONResponse(content={"error": str(e)}, status_code=500)
+
+
 @app.put("/api/workspaces/{workspace_id}/env")
 async def save_workspace_env(workspace_id: str, req: SaveEnvRequest):
     """Save env vars for a workspace (writes to DB + disk)."""
@@ -160,8 +206,20 @@ async def get_workspace_env_files(workspace_id: str):
 @app.post("/api/workspaces/{workspace_id}/env-load")
 async def load_env_from_disk(workspace_id: str, env_file: str = Query(".env")):
     """Load env vars from an existing .env file on disk into DB."""
-    env_vars = wm.load_env_from_disk(workspace_id, env_file)
-    return {"vars": env_vars, "env_file": env_file, "count": len(env_vars)}
+    workspace = db.get_workspace(workspace_id)
+    if not workspace:
+        return JSONResponse(content={"error": "Workspace not found"}, status_code=404)
+    local_path = workspace.get("local_path")
+    if not local_path or not Path(local_path).exists():
+        return JSONResponse(content={"error": "Workspace repo not cloned yet"}, status_code=400)
+    file_path = Path(local_path) / env_file
+    if not file_path.exists():
+        return JSONResponse(content={"error": f"File {env_file} not found on disk"}, status_code=404)
+    try:
+        env_vars = wm.load_env_from_disk(workspace_id, env_file)
+        return {"vars": env_vars, "env_file": env_file, "count": len(env_vars)}
+    except Exception as e:
+        return JSONResponse(content={"error": str(e)}, status_code=500)
 
 
 # === Existing Endpoints (now workspace-filterable) ===
@@ -176,7 +234,7 @@ async def list_agents(
     agents = db.get_all_agents(workspace_id=workspace_id, limit=limit, offset=offset)
     total = db.count_agents(workspace_id=workspace_id)
     for agent in agents:
-        if agent["status"] == "running" and not agent.get("turns_used"):
+        if not agent.get("turns_used"):
             agent["turns_used"] = db.get_agent_turn_count(agent["agent_id"])
     return {"agents": agents, "total": total, "limit": limit, "offset": offset}
 
@@ -186,6 +244,69 @@ async def agent_logs(agent_id: str, since: int = Query(0)):
     """Get stream-json events for a specific agent."""
     events = db.get_agent_events(agent_id, since_id=since, limit=200)
     return {"events": events}
+
+
+@app.post("/api/agents/{agent_id}/restart")
+async def restart_agent(agent_id: str):
+    """Kill a running agent and dispatch a fresh one for the same issue/PR."""
+    agent = db.get_agent(agent_id)
+    if not agent:
+        return JSONResponse(content={"error": "Agent not found"}, status_code=404)
+    if agent["status"] != "running":
+        return JSONResponse(content={"error": "Agent is not running"}, status_code=400)
+    if not _agent_pool:
+        return JSONResponse(content={"error": "Agent pool not available"}, status_code=503)
+
+    # Kill the old process and wait for it to die
+    pid = agent.get("pid")
+    if pid:
+        try:
+            os.kill(pid, signal.SIGTERM)
+            # Wait up to 10s for the process to exit
+            for _ in range(20):
+                time.sleep(0.5)
+                try:
+                    os.kill(pid, 0)
+                except (OSError, ProcessLookupError):
+                    break  # Process is dead
+            else:
+                # Force kill if still alive
+                try:
+                    os.kill(pid, signal.SIGKILL)
+                    time.sleep(0.5)
+                except (OSError, ProcessLookupError):
+                    pass
+        except (OSError, ProcessLookupError):
+            pass
+    db.finish_agent(agent_id, status="stopped", error_message="Manually restarted by user")
+
+    # Clean up worktree
+    workspace_id = agent.get("workspace_id")
+    ws = db.get_workspace(workspace_id) if workspace_id else None
+    repo_path = ws["local_path"] if ws else None
+    if agent.get("worktree_path"):
+        try:
+            worktree.cleanup_worktree(agent["worktree_path"], repo_path=repo_path)
+        except Exception:
+            pass
+
+    # Dispatch a new agent
+    new_agent_id = None
+    if ws:
+        if agent.get("agent_type") == "fix_review" and agent.get("pr_number"):
+            from orchestrator.pr_monitor import get_pr_branch, get_unresolved_threads
+            branch = get_pr_branch(agent["pr_number"], github_repo=ws["github_repo"])
+            threads = get_unresolved_threads(agent["pr_number"], github_repo=ws["github_repo"])
+            if branch:
+                new_agent_id = _agent_pool.dispatch_fix_review(
+                    agent["pr_number"], branch, agent["issue_number"], ws, threads,
+                )
+        else:
+            new_agent_id = _agent_pool.dispatch_implement(agent["issue_number"], workspace=ws)
+
+    if new_agent_id:
+        return {"ok": True, "old_agent_id": agent_id, "new_agent_id": new_agent_id}
+    return JSONResponse(content={"error": "Failed to dispatch new agent"}, status_code=500)
 
 
 @app.get("/api/issues")

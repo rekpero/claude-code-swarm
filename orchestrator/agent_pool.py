@@ -22,7 +22,10 @@ from orchestrator.config import (
     MAX_CONCURRENT_AGENTS,
     MAX_RATE_LIMIT_RESUMES,
     SKILLS_ENABLED,
+    WORKSPACES_DIR,
 )
+
+AGENT_LOGS_DIR = WORKSPACES_DIR / ".agent-logs"
 from orchestrator.prompts import (
     build_fix_review_prompt,
     build_implement_prompt,
@@ -62,6 +65,16 @@ def _workspace_config(workspace: dict) -> tuple[str, str, str, str]:
     )
 
 
+def _ensure_log_dir():
+    """Create the agent logs directory if it doesn't exist."""
+    AGENT_LOGS_DIR.mkdir(parents=True, exist_ok=True)
+
+
+def agent_log_path(agent_id: str) -> Path:
+    """Return the path for an agent's stream-json log file."""
+    return AGENT_LOGS_DIR / f"{agent_id}.jsonl"
+
+
 class AgentProcess:
     """Wraps a running claude -p subprocess."""
 
@@ -87,24 +100,39 @@ class AgentProcess:
         self._reader_thread: threading.Thread | None = None
         # Store workspace config for use in completion handlers
         self._workspace: dict | None = None
+        self.log_file = agent_log_path(agent_id)
 
     def start_reader(self):
-        """Start a background thread to read stream-json output."""
+        """Start a background thread to tail the log file for events."""
         self._reader_thread = threading.Thread(
-            target=self._read_stream, daemon=True, name=f"reader-{self.agent_id}"
+            target=self._tail_log, daemon=True, name=f"reader-{self.agent_id}"
         )
         self._reader_thread.start()
 
-    def _read_stream(self):
-        """Read stdout line by line and parse stream-json events."""
+    def _tail_log(self):
+        """Tail the agent's log file and ingest events into the DB."""
         try:
-            for line in self.process.stdout:
-                event = parse_stream_line(line)
-                if event:
-                    self.events.append(event)
-                    db.insert_event(self.agent_id, event.event_type, json.dumps(event.raw))
-                    if event.event_type == "tool_use":
-                        logger.info("[%s] %s", self.agent_id, event.summary)
+            with open(self.log_file) as f:
+                while True:
+                    line = f.readline()
+                    if line:
+                        event = parse_stream_line(line)
+                        if event:
+                            self.events.append(event)
+                            db.insert_event(self.agent_id, event.event_type, json.dumps(event.raw))
+                            if event.event_type == "tool_use":
+                                logger.info("[%s] %s", self.agent_id, event.summary)
+                    else:
+                        # No new data — check if process exited
+                        if self.process.poll() is not None:
+                            # Read any final lines
+                            for remaining in f:
+                                event = parse_stream_line(remaining)
+                                if event:
+                                    self.events.append(event)
+                                    db.insert_event(self.agent_id, event.event_type, json.dumps(event.raw))
+                            break
+                        time.sleep(0.5)
         except Exception as e:
             logger.error("[%s] Stream reader error: %s", self.agent_id, e)
 
@@ -299,11 +327,12 @@ class AgentPool:
         workspace_id: str | None = None,
     ) -> AgentProcess:
         """Spawn a claude -p subprocess."""
-        allowed_tools = "Read,Edit,Bash,Write,Glob,Grep"
+        allowed_tools = "Read,Edit,Bash,Write,Glob,Grep,WebSearch,WebFetch"
         if SKILLS_ENABLED:
             allowed_tools += ",Skill"
 
         cmd = [
+            "stdbuf", "-oL",
             "claude", "-p", prompt,
             "--allowedTools", allowed_tools,
             "--output-format", "stream-json",
@@ -330,16 +359,22 @@ class AgentPool:
             ws_env = db.get_workspace_env(workspace_id)
             env.update(ws_env)
 
+        _ensure_log_dir()
+        log_file = agent_log_path(agent_id)
+        stdout_file = open(log_file, "w")
+
         logger.info("Spawning agent %s in %s (PID will be independent)", agent_id, worktree_path)
         process = subprocess.Popen(
             cmd,
             cwd=worktree_path,
-            stdout=subprocess.PIPE,
+            stdout=stdout_file,
             stderr=subprocess.PIPE,
             text=True,
             env=env,
             start_new_session=True,  # Agent survives orchestrator restart
         )
+        # Close our copy of the file descriptor — the child process keeps its own
+        stdout_file.close()
 
         return AgentProcess(
             agent_id=agent_id,
@@ -628,7 +663,7 @@ class AgentPool:
         new_agent_id = f"agent-resume-{issue_number}-{int(time.time())}"
 
         # Build command
-        cmd = ["claude"]
+        cmd = ["stdbuf", "-oL", "claude"]
         if old_session_id:
             cmd += ["--resume", old_session_id, "-p", prompt]
             logger.info("Resuming session %s for agent %s", old_session_id, old_agent_id)
@@ -636,7 +671,7 @@ class AgentPool:
             cmd += ["--continue", "-p", prompt]
             logger.info("Continuing last session in worktree for agent %s", old_agent_id)
 
-        resume_allowed_tools = "Read,Edit,Bash,Write,Glob,Grep"
+        resume_allowed_tools = "Read,Edit,Bash,Write,Glob,Grep,WebSearch,WebFetch"
         if SKILLS_ENABLED:
             resume_allowed_tools += ",Skill"
 
@@ -665,15 +700,19 @@ class AgentPool:
             env.update(ws_env)
 
         try:
+            _ensure_log_dir()
+            resume_log_file = agent_log_path(new_agent_id)
+            resume_stdout = open(resume_log_file, "w")
             process = subprocess.Popen(
                 cmd,
                 cwd=worktree_path,
-                stdout=subprocess.PIPE,
+                stdout=resume_stdout,
                 stderr=subprocess.PIPE,
                 text=True,
                 env=env,
                 start_new_session=True,
             )
+            resume_stdout.close()
         except Exception as e:
             logger.error("Failed to resume agent %s: %s", old_agent_id, e)
             return None
@@ -689,7 +728,7 @@ class AgentPool:
         )
         agent_proc._workspace = workspace
 
-        # Mark old agent as superseded
+        # Mark old agent as superseded (but keep its log file)
         db.update_agent(old_agent_id, status="resumed")
 
         # Create new agent record
@@ -745,6 +784,187 @@ class AgentPool:
                     ],
                 })
             return results
+
+    # ------------------------------------------------------------------
+    # Reattach surviving agents after orchestrator restart
+    # ------------------------------------------------------------------
+
+    def reattach_agent(self, agent_record: dict, workspace: dict | None = None):
+        """Reattach a monitor thread to an agent that survived a restart.
+
+        Starts a log-file tailer to continue ingesting stream events, and
+        a PID monitor to detect when the agent exits.
+        """
+        agent_id = agent_record["agent_id"]
+        pid = agent_record["pid"]
+        issue_number = agent_record["issue_number"]
+        agent_type = agent_record.get("agent_type", "implement")
+        worktree_path = agent_record.get("worktree_path", "")
+        pr_number = agent_record.get("pr_number")
+        workspace_id = agent_record.get("workspace_id")
+
+        logger.info(
+            "Reattaching monitor for agent %s (PID %d, issue #%s)",
+            agent_id, pid, issue_number,
+        )
+
+        # Start log file tailer to continue ingesting events
+        log_file = agent_log_path(agent_id)
+        if log_file.exists():
+            # Count existing events in DB so we know where to resume from
+            existing_count = db.get_agent_event_count(agent_id)
+            threading.Thread(
+                target=self._tail_log_file,
+                args=(agent_id, log_file, pid, existing_count),
+                daemon=True,
+                name=f"tail-{agent_id}",
+            ).start()
+
+        threading.Thread(
+            target=self._monitor_pid,
+            args=(agent_id, pid, issue_number, agent_type, worktree_path, pr_number, workspace_id, workspace),
+            daemon=True,
+            name=f"monitor-reattach-{agent_id}",
+        ).start()
+
+    def _tail_log_file(self, agent_id: str, log_file: Path, pid: int, skip_lines: int):
+        """Tail an agent's log file and ingest new events into the DB."""
+        logger.info("Tailing log file for agent %s from line %d: %s", agent_id, skip_lines, log_file)
+        try:
+            with open(log_file) as f:
+                # Skip lines we already have in DB
+                for _ in range(skip_lines):
+                    line = f.readline()
+                    if not line:
+                        break
+
+                # Now tail for new lines
+                while True:
+                    line = f.readline()
+                    if line:
+                        event = parse_stream_line(line)
+                        if event:
+                            db.insert_event(agent_id, event.event_type, json.dumps(event.raw))
+                            if event.event_type == "tool_use":
+                                logger.info("[%s] %s", agent_id, event.summary)
+                    else:
+                        # No new data — check if process is still alive
+                        try:
+                            os.kill(pid, 0)
+                        except (OSError, ProcessLookupError):
+                            # Process is dead, read any remaining lines
+                            for remaining in f:
+                                event = parse_stream_line(remaining)
+                                if event:
+                                    db.insert_event(agent_id, event.event_type, json.dumps(event.raw))
+                            break
+                        time.sleep(1)
+        except Exception as e:
+            logger.error("[%s] Log tailer error: %s", agent_id, e)
+
+    def _monitor_pid(
+        self,
+        agent_id: str,
+        pid: int,
+        issue_number: int,
+        agent_type: str,
+        worktree_path: str,
+        pr_number: int | None,
+        workspace_id: str | None,
+        workspace: dict | None,
+    ):
+        """Poll a PID until it exits, then handle agent completion."""
+        started_at = time.time()
+
+        while True:
+            try:
+                os.kill(pid, 0)
+            except (OSError, ProcessLookupError):
+                # Process has exited
+                break
+
+            elapsed = time.time() - started_at
+            if elapsed > AGENT_TIMEOUT_SECONDS:
+                logger.warning(
+                    "Reattached agent %s (PID %d) timed out after %ds, killing",
+                    agent_id, pid, AGENT_TIMEOUT_SECONDS,
+                )
+                try:
+                    os.kill(pid, signal.SIGTERM)
+                    time.sleep(5)
+                    try:
+                        os.kill(pid, signal.SIGKILL)
+                    except (OSError, ProcessLookupError):
+                        pass
+                except (OSError, ProcessLookupError):
+                    pass
+                turns = db.get_agent_turn_count(agent_id)
+                if turns:
+                    db.update_agent(agent_id, turns_used=turns)
+                db.finish_agent(agent_id, status="timeout", error_message="Agent exceeded timeout (reattached)")
+                repo_path = workspace["local_path"] if workspace else None
+                if worktree_path:
+                    cleanup_worktree(worktree_path, repo_path=repo_path)
+                return
+
+            time.sleep(5)
+
+        # PID exited — handle completion
+        logger.info("Reattached agent %s (PID %d) has exited", agent_id, pid)
+
+        # Give the log tailer a moment to finish ingesting remaining events
+        time.sleep(2)
+
+        # Update turns_used from DB events (reattached agents don't track in-memory)
+        turns = db.get_agent_turn_count(agent_id)
+        if turns:
+            db.update_agent(agent_id, turns_used=turns)
+
+        repo_path = workspace["local_path"] if workspace else None
+        github_repo = workspace["github_repo"] if workspace else None
+
+        if agent_type == "implement":
+            # Check if a PR was created
+            branch_name = f"fix/issue-{issue_number}"
+            found_pr = self._find_pr_for_branch(branch_name, github_repo=github_repo) if github_repo else None
+
+            if found_pr:
+                logger.info("Reattached agent %s created PR #%d for issue #%d", agent_id, found_pr, issue_number)
+                db.finish_agent(agent_id, status="completed")
+                db.update_agent(agent_id, pr_number=found_pr)
+                db.update_issue(issue_number, workspace_id=workspace_id, status="pr_created", pr_number=found_pr)
+            elif worktree_path and self._is_branch_pushed(branch_name, worktree_path):
+                logger.warning("Reattached agent %s pushed branch but no PR — creating automatically", agent_id)
+                auto_pr = self._create_pr_for_branch(branch_name, issue_number, github_repo=github_repo)
+                if auto_pr:
+                    db.finish_agent(agent_id, status="completed")
+                    db.update_agent(agent_id, pr_number=auto_pr)
+                    db.update_issue(issue_number, workspace_id=workspace_id, status="pr_created", pr_number=auto_pr)
+                else:
+                    db.finish_agent(agent_id, status="failed", error_message="Agent exited without creating PR (reattached)")
+                    db.update_issue(issue_number, workspace_id=workspace_id, status="pending")
+            else:
+                # Can't tell if it succeeded or failed without stdout — check for unpushed commits
+                base_branch = workspace.get("base_branch", "main") if workspace else "main"
+                if worktree_path and self._has_unpushed_commits(worktree_path, base_branch=base_branch):
+                    logger.warning("Reattached agent %s has unpushed commits — pushing and creating PR", agent_id)
+                    if self._push_branch(branch_name, worktree_path):
+                        auto_pr = self._create_pr_for_branch(branch_name, issue_number, github_repo=github_repo)
+                        if auto_pr:
+                            db.finish_agent(agent_id, status="completed")
+                            db.update_agent(agent_id, pr_number=auto_pr)
+                            db.update_issue(issue_number, workspace_id=workspace_id, status="pr_created", pr_number=auto_pr)
+                            cleanup_worktree(worktree_path, repo_path=repo_path)
+                            return
+
+                db.finish_agent(agent_id, status="failed", error_message="Agent exited without creating PR (reattached)")
+                db.update_issue(issue_number, workspace_id=workspace_id, status="pending")
+        else:
+            # fix_review agent — just mark as completed (can't read stderr to determine status)
+            db.finish_agent(agent_id, status="completed")
+
+        if worktree_path:
+            cleanup_worktree(worktree_path, repo_path=repo_path)
 
     def shutdown(self):
         """Gracefully shut down the pool — let running agents continue independently."""

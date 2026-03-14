@@ -1,8 +1,40 @@
-import { Settings, Plus } from 'lucide-react'
+import { Settings, Plus, Check, AlertTriangle, RefreshCw } from 'lucide-react'
 import { WorkspaceSwitcher } from './WorkspaceSwitcher'
 import { useMetrics } from '../../hooks/useMetrics'
+import { useGitSync } from '../../hooks/useGitSync'
 import { useWorkspaceContext } from '../../context/WorkspaceContext'
 import { formatDistanceToNow } from 'date-fns'
+
+function SyncIndicator({ wsId }) {
+  const { data, isLoading } = useGitSync(wsId)
+
+  if (!wsId || isLoading || !data) return null
+
+  if (data.synced) {
+    return (
+      <span
+        className="flex items-center gap-1 px-2 py-1 rounded-md text-[10px] font-medium text-[var(--green)] bg-[rgba(34,197,94,0.08)] border border-[rgba(34,197,94,0.15)]"
+        title={`Local ${data.local_sha} = Remote ${data.remote_sha}`}
+      >
+        <Check size={9} />
+        Synced
+      </span>
+    )
+  }
+
+  const behind = data.behind || 0
+  const label = behind > 0 ? `${behind} behind` : 'Out of sync'
+
+  return (
+    <span
+      className="flex items-center gap-1 px-2 py-1 rounded-md text-[10px] font-medium text-[var(--yellow)] bg-[rgba(234,179,8,0.08)] border border-[rgba(234,179,8,0.15)]"
+      title={`Local ${data.local_sha} ← Remote ${data.remote_sha}`}
+    >
+      <AlertTriangle size={9} />
+      {label}
+    </span>
+  )
+}
 
 export function Header({ onAddWorkspace, onOpenSettings, onOpenPlanner }) {
   const { selectedWorkspaceId } = useWorkspaceContext()
@@ -20,6 +52,7 @@ export function Header({ onAddWorkspace, onOpenSettings, onOpenPlanner }) {
           <div className="w-1.5 h-1.5 rounded-full bg-[var(--accent)] shadow-[0_0_6px_var(--accent)]" />
           <h1 className="text-[15px] font-semibold tracking-tight">Claude Code Swarm</h1>
         </div>
+        <SyncIndicator wsId={selectedWorkspaceId} />
       </div>
       <div className="flex items-center gap-2.5">
         {lastUpdated && (

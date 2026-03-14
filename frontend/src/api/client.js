@@ -23,6 +23,9 @@ export const getAgents = (wsId, limit = 20, offset = 0) =>
 export const getAgentLogs = (agentId, since = 0) =>
   apiFetch(`/api/agents/${agentId}/logs?since=${since}`)
 
+export const restartAgent = (agentId) =>
+  apiFetch(`/api/agents/${agentId}/restart`, { method: 'POST' })
+
 // Issues
 export const getIssues = (wsId) =>
   apiFetch(`/api/issues${wsId ? `?workspace_id=${wsId}` : ''}`)
@@ -51,6 +54,13 @@ export const deleteWorkspace = (id) =>
 
 export const getWorkspaceStructure = (wsId) =>
   apiFetch(`/api/workspaces/${wsId}/structure`)
+
+// Git sync
+export const getGitStatus = (wsId) =>
+  apiFetch(`/api/workspaces/${wsId}/git-status`)
+
+export const gitPull = (wsId) =>
+  apiFetch(`/api/workspaces/${wsId}/git-pull`, { method: 'POST' })
 
 // Env files
 export const getEnvFiles = (wsId) =>

@@ -41,8 +41,13 @@ def _pid_is_alive(pid: int) -> bool:
         return False
 
 
-def _recover_stale_agents():
-    """On startup, handle agents still marked as 'running' or 'rate_limited' in the DB."""
+def _recover_stale_agents(pool: AgentPool | None = None):
+    """On startup, handle agents still marked as 'running' or 'rate_limited' in the DB.
+
+    If *pool* is provided, surviving agents (PID still alive) get their
+    monitor threads reattached so the orchestrator can detect completion,
+    clean up worktrees, and verify PR creation.
+    """
     stale = db.get_running_agents()
     if not stale:
         return
@@ -55,9 +60,12 @@ def _recover_stale_agents():
 
         if pid and _pid_is_alive(pid):
             logger.info(
-                "Agent %s (PID %d) for issue #%s is still running — leaving it alone",
+                "Agent %s (PID %d) for issue #%s is still running — reattaching monitor",
                 agent_id, pid, issue_num,
             )
+            if pool:
+                ws = db.get_workspace(workspace_id) if workspace_id else None
+                pool.reattach_agent(agent, workspace=ws)
             continue
 
         logger.warning(
@@ -105,11 +113,13 @@ def main():
     db.init_db()
     logger.info("Database initialized")
 
-    # Recover from previous crash
-    _recover_stale_agents()
-
-    # Create agent pool
+    # Create agent pool and expose to dashboard
     pool = AgentPool()
+    from orchestrator.dashboard import set_agent_pool
+    set_agent_pool(pool)
+
+    # Recover from previous crash — reattach monitors to surviving agents
+    _recover_stale_agents(pool=pool)
 
     # Create PR monitor with dispatch callback (now workspace-aware)
     pr_monitor = PRMonitor(

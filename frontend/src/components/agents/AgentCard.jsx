@@ -1,7 +1,8 @@
 import { useState, useEffect } from 'react'
-import { ChevronDown, ChevronUp, Code, MessageSquare } from 'lucide-react'
+import { ChevronDown, ChevronUp, Code, MessageSquare, RotateCw } from 'lucide-react'
 import { AgentStatusBadge } from './AgentStatusBadge'
 import { AgentLogViewer } from './AgentLogViewer'
+import { restartAgent } from '../../api/client'
 import { formatDuration, intervalToDuration } from 'date-fns'
 
 const AGENT_TYPE_META = {
@@ -35,9 +36,10 @@ function ElapsedTime({ startedAt, status }) {
   return <span className="text-[var(--text-muted)] text-[10px] font-mono tabular-nums">{elapsed}</span>
 }
 
-export function AgentCard({ agent, workspaceName }) {
+export function AgentCard({ agent, workspaceName, onRestarted }) {
   const isRunning = agent.status === 'running'
   const [expanded, setExpanded] = useState(isRunning)
+  const [restarting, setRestarting] = useState(false)
 
   return (
     <div
@@ -103,6 +105,25 @@ export function AgentCard({ agent, workspaceName }) {
             {agent.turns_used ?? 0}
             {agent.max_turns ? `/${agent.max_turns}` : ''} turns
           </span>
+          {isRunning && (
+            <button
+              onClick={(e) => {
+                e.stopPropagation()
+                if (restarting) return
+                setRestarting(true)
+                restartAgent(agent.agent_id)
+                  .then(() => onRestarted?.())
+                  .catch(() => {})
+                  .finally(() => setRestarting(false))
+              }}
+              disabled={restarting}
+              className="flex items-center gap-1 px-2 py-1 text-[9px] font-medium text-[var(--yellow)] bg-[rgba(234,179,8,0.08)] border border-[rgba(234,179,8,0.15)] rounded hover:bg-[rgba(234,179,8,0.15)] transition-colors disabled:opacity-40"
+              title="Kill and restart this agent"
+            >
+              <RotateCw size={9} className={restarting ? 'animate-spin' : ''} />
+              {restarting ? 'Restarting...' : 'Restart'}
+            </button>
+          )}
           <div className="text-[var(--text-muted)]">
             {expanded ? <ChevronUp size={12} /> : <ChevronDown size={12} />}
           </div>

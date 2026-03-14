@@ -25,7 +25,52 @@ def ensure_repo_updated(repo_path: Path | str, base_branch: str = "main"):
     branch = base_branch
     logger.info("Updating target repo at %s", target)
     _run_git("fetch", "origin", repo_path=target)
+    # Ensure we're on the base branch (not a stale feature branch)
+    _run_git("checkout", branch, repo_path=target, check=False)
     _run_git("pull", "origin", branch, repo_path=target, check=False)
+
+
+def get_sync_status(repo_path: Path | str, base_branch: str = "main") -> dict:
+    """Check if the local base branch is in sync with origin.
+
+    Returns a dict with:
+      - synced (bool): True if local HEAD matches remote HEAD
+      - local_sha (str): short local commit hash
+      - remote_sha (str): short remote commit hash
+      - behind (int): commits behind remote
+      - ahead (int): commits ahead of remote
+    """
+    target = repo_path
+    # Fetch latest refs from remote (silent, no merge)
+    _run_git("fetch", "origin", repo_path=target, check=False)
+
+    local = _run_git("rev-parse", "--short", base_branch, repo_path=target, check=False)
+    remote = _run_git("rev-parse", "--short", f"origin/{base_branch}", repo_path=target, check=False)
+
+    local_sha = local.stdout.strip() if local.returncode == 0 else ""
+    remote_sha = remote.stdout.strip() if remote.returncode == 0 else ""
+
+    behind = 0
+    ahead = 0
+    if local_sha and remote_sha:
+        rev_list = _run_git(
+            "rev-list", "--left-right", "--count",
+            f"{base_branch}...origin/{base_branch}",
+            repo_path=target, check=False,
+        )
+        if rev_list.returncode == 0:
+            parts = rev_list.stdout.strip().split()
+            if len(parts) == 2:
+                ahead = int(parts[0])
+                behind = int(parts[1])
+
+    return {
+        "synced": local_sha == remote_sha and local_sha != "",
+        "local_sha": local_sha,
+        "remote_sha": remote_sha,
+        "behind": behind,
+        "ahead": ahead,
+    }
 
 
 def create_worktree(
@@ -56,7 +101,7 @@ def create_worktree(
 
     logger.info("Creating worktree: %s (branch: %s)", worktree_path, branch_name)
     _run_git(
-        "worktree", "add", str(worktree_path), "-b", branch_name, base,
+        "worktree", "add", "--force", str(worktree_path), "-b", branch_name, base,
         repo_path=target,
     )
     return str(worktree_path)
@@ -84,7 +129,7 @@ def create_worktree_for_pr(
     _run_git("fetch", "origin", branch_name, repo_path=target, check=False)
 
     logger.info("Creating worktree for PR fix: %s (branch: %s)", worktree_path, branch_name)
-    _run_git("worktree", "add", str(worktree_path), branch_name, repo_path=target)
+    _run_git("worktree", "add", "--force", str(worktree_path), branch_name, repo_path=target)
 
     # Reset to latest remote commit — an external push may have landed since the
     # local branch was last checked out.
@@ -154,9 +199,17 @@ def copy_env_files_to_worktree(
 
 
 def cleanup_worktree(path: str, repo_path: Path | str | None = None):
-    """Remove a git worktree."""
+    """Remove a git worktree, force-deleting the directory if git can't."""
     logger.info("Cleaning up worktree: %s", path)
     _run_git("worktree", "remove", path, "--force", repo_path=repo_path, check=False)
+    # If the directory still exists (locked files, etc.), nuke it
+    wt = Path(path)
+    if wt.exists():
+        logger.warning("Worktree directory still exists after git remove, force-deleting: %s", path)
+        shutil.rmtree(str(wt), ignore_errors=True)
+    # Prune stale worktree references so git doesn't complain
+    if repo_path:
+        _run_git("worktree", "prune", repo_path=repo_path, check=False)
 
 
 def list_worktrees(repo_path: Path | str | None = None) -> list[dict]:
