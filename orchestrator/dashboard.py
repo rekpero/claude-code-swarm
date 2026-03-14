@@ -394,6 +394,8 @@ app.mount("/assets", StaticFiles(directory=str(STATIC_DIR / "assets"), check_dir
 async def spa_fallback(full_path: str):
     if full_path == "api" or full_path.startswith("api/"):
         raise HTTPException(status_code=404, detail="Not found")
+    if full_path.startswith("assets/") or full_path.startswith("static/"):
+        raise HTTPException(status_code=404)
     index = STATIC_DIR / "index.html"
     if not index.exists():
         raise HTTPException(status_code=404, detail="Frontend not built")

@@ -1,4 +1,4 @@
-import { useState } from 'react'
+import { useState, useEffect } from 'react'
 import { Modal } from '../ui/Modal'
 import { Button } from '../ui/Button'
 import { useCreateWorkspace } from '../../hooks/useWorkspaces'
@@ -9,6 +9,13 @@ export function AddWorkspaceModal({ open, onClose }) {
   const { setSelectedWorkspaceId } = useWorkspaceContext()
   const [form, setForm] = useState({ repo_url: '', name: '', base_branch: 'main' })
   const [error, setError] = useState('')
+
+  useEffect(() => {
+    if (!open) {
+      setForm({ repo_url: '', name: '', base_branch: 'main' })
+      setError(null)
+    }
+  }, [open])
 
   const set = (field) => (e) => setForm((f) => ({ ...f, [field]: e.target.value }))
 
