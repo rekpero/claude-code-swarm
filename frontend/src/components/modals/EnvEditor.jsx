@@ -53,7 +53,7 @@ export function EnvEditor({ workspaceId }) {
     setLoading(true)
 
     const toRows = (vars) =>
-      Object.entries(vars || {}).map(([k, v]) => ({ id: k, key: k, value: v }))
+      Object.entries(vars || {}).map(([k, v]) => ({ id: crypto.randomUUID(), key: k, value: v }))
 
     // First try getEnv (which auto-syncs from disk if file changed).
     // If that returns empty, explicitly load from disk as a fallback.
@@ -111,7 +111,7 @@ export function EnvEditor({ workspaceId }) {
 
   const handlePaste = () => {
     const parsed = parseEnvText(pasteText)
-    const newRows = Object.entries(parsed).map(([k, v]) => ({ id: k, key: k, value: v }))
+    const newRows = Object.entries(parsed).map(([k, v]) => ({ id: crypto.randomUUID(), key: k, value: v }))
     setRows((prev) => {
       const existingMap = new Map(prev.filter(r => r.key.trim()).map((r) => [r.key, r]))
       newRows.forEach((r) => {
@@ -134,7 +134,7 @@ export function EnvEditor({ workspaceId }) {
     reader.onload = (ev) => {
       setFileReadError(null)
       const parsed = parseEnvText(ev.target.result)
-      const newRows = Object.entries(parsed).map(([k, v]) => ({ id: k, key: k, value: v }))
+      const newRows = Object.entries(parsed).map(([k, v]) => ({ id: crypto.randomUUID(), key: k, value: v }))
       setRows((prev) => {
         const existingMap = new Map(prev.filter(r => r.key.trim()).map((r) => [r.key, r]))
         newRows.forEach((r) => {
@@ -159,7 +159,7 @@ export function EnvEditor({ workspaceId }) {
     setSyncing(true)
     try {
       const data = await loadEnvFromDisk(workspaceId, activeFile)
-      const entries = Object.entries(data.vars || {}).map(([k, v]) => ({ id: k, key: k, value: v }))
+      const entries = Object.entries(data.vars || {}).map(([k, v]) => ({ id: crypto.randomUUID(), key: k, value: v }))
       setRows(entries)
     } catch (err) {
       setFileReadError(err?.message || 'Failed to sync from disk')

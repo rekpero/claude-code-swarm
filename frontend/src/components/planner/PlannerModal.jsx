@@ -515,7 +515,7 @@ export function PlannerModal({ open, onClose }) {
             )}
 
             {/* Live draft preview while generating */}
-            {planning.generating && <LiveDraft events={planning.streamEvents} />}
+            {planning.generating && planning.streamEvents && <LiveDraft events={planning.streamEvents} />}
           </div>
 
           {/* Status bar */}
