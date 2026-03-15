@@ -314,6 +314,7 @@ async def restart_agent(agent_id: str):
         new_agent_id = None
         if agent.get("agent_type") == "fix_review":
             if not agent.get("pr_number"):
+                _agent_pool.unmark_externally_stopped(agent_id)
                 return JSONResponse(
                     content={"error": "Cannot restart: fix_review agent has no pr_number"},
                     status_code=400,
@@ -327,6 +328,7 @@ async def restart_agent(agent_id: str):
                 )
         else:
             if agent["issue_number"] is None:
+                _agent_pool.unmark_externally_stopped(agent_id)
                 return JSONResponse(
                     content={"error": "Cannot restart: no issue number"},
                     status_code=400,

@@ -931,9 +931,10 @@ class AgentPool:
                             db.insert_event(agent_id, event.event_type, json.dumps(event.raw))
                             if event.event_type == "tool_use":
                                 logger.info("[%s] %s", agent_id, event.summary)
-                            # Persist the offset only when an event is stored to
-                            # avoid one SQLite UPDATE per log line (write amplification).
-                            db.update_agent(agent_id, log_offset=f.tell())
+                        # Persist offset after every readline so non-JSON lines
+                        # also advance the saved position, preventing duplicate
+                        # re-reads after a restart.
+                        db.update_agent(agent_id, log_offset=f.tell())
                     else:
                         # No new data — check if process is still alive
                         try:
@@ -944,7 +945,7 @@ class AgentPool:
                                 event = parse_stream_line(remaining)
                                 if event:
                                     db.insert_event(agent_id, event.event_type, json.dumps(event.raw))
-                                    db.update_agent(agent_id, log_offset=f.tell())
+                                db.update_agent(agent_id, log_offset=f.tell())
                             break
                         time.sleep(1)
         except Exception as e:
