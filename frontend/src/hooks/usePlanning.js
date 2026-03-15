@@ -112,6 +112,8 @@ export function usePlanning(workspaceId) {
           if (pollErrorCountRef.current <= MAX_POLL_ERRORS) {
             const backoff = Math.min(300 * Math.pow(2, pollErrorCountRef.current), 30000)
             pollTimerRef.current = setTimeout(() => poll(), backoff)
+          } else {
+            setGenerating(false)
           }
           return
         }
@@ -149,8 +151,10 @@ export function usePlanning(workspaceId) {
           // Exponential backoff: 600ms, 1.2s, 2.4s, 4.8s, 9.6s
           const backoff = Math.min(300 * Math.pow(2, pollErrorCountRef.current), 30000)
           pollTimerRef.current = setTimeout(() => poll(), backoff)
+        } else {
+          // Stop retrying after MAX_POLL_ERRORS consecutive failures
+          setGenerating(false)
         }
-        // else: stop retrying after MAX_POLL_ERRORS consecutive failures
       } finally {
         pollActiveRef.current = false
       }
@@ -185,7 +189,7 @@ export function usePlanning(workspaceId) {
         getPlanningSession(sid),
         getPlanningEvents(sid, 0),
       ])
-      if (!data || data.error) return
+      if (!data || data.error) { setGenerating(false); return }
 
       setMessages(data.messages || [])
       setSessionStatus(data.session?.status || null)
