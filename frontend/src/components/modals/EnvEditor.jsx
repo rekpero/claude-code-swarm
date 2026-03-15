@@ -80,8 +80,9 @@ export function EnvEditor({ workspaceId }) {
     }).catch(() => setEnvFiles(['.env']))
   }, [workspaceId])
 
-  // Reset dirty flag when switching files
+  // Reset dirty flag and last-saved snapshot when switching files
   useEffect(() => {
+    lastSavedRef.current = null
     setDirty(false)
   }, [activeFile])
 

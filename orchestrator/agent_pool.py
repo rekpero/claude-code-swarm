@@ -738,7 +738,7 @@ class AgentPool:
             prompt = build_resume_fix_review_prompt(pr_number, unresolved_threads, github_repo=github_repo, target_repo_path=local_path)
             max_turns = AGENT_MAX_TURNS_FIX
 
-        new_agent_id = f"agent-resume-{issue_number}-{time.monotonic_ns()}"
+        new_agent_id = f"agent-resume-{issue_number or 'unknown'}-{time.monotonic_ns()}"
 
         # Build command
         cmd = ["stdbuf", "-oL", "claude"]

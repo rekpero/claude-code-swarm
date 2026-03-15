@@ -98,7 +98,19 @@ export function usePlanning(workspaceId) {
           getPlanningEvents(localSid, lastEventIdRef.current),
         ])
         if (sessionIdRef.current !== localSid) return
-        if (!data) { poll(); return }
+        if (!data) {
+          // Apply the same backoff used for errors so a persistent null response
+          // does not hammer the API at a fixed ~3 req/s rate indefinitely.
+          pollErrorCountRef.current += 1
+          const MAX_POLL_ERRORS = 5
+          if (pollErrorCountRef.current <= MAX_POLL_ERRORS) {
+            const backoff = Math.min(300 * Math.pow(2, pollErrorCountRef.current), 30000)
+            pollTimerRef.current = setTimeout(() => poll(), backoff)
+          }
+          return
+        }
+        // Valid response — reset the backoff counter.
+        pollErrorCountRef.current = 0
 
         if (evData?.events?.length) {
           setStreamEvents(prev => [...prev, ...evData.events])
@@ -119,7 +131,6 @@ export function usePlanning(workspaceId) {
           }
         }
 
-        pollErrorCountRef.current = 0
         if (data.generating || data.session?.status === 'generating') {
           poll()
         } else {
