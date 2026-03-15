@@ -112,7 +112,10 @@ export function AgentLogViewer({ agentId, isRunning }) {
     cursorAgentIdRef.current = agentId
     setAllEvents([])
     allEventsRef.current = []
-    cursorRef.current = 0
+    // cursorRef.current is already reset synchronously during render in
+    // useAgentLogs, which ensures the reset happens before TanStack Query's
+    // microtask captures the cursor value. Resetting here (post-paint) would
+    // race with the first fetch and cause unnecessary re-fetching of already-seen events.
   }, [agentId, cursorRef])
 
   useEffect(() => {

@@ -379,9 +379,13 @@ async def restart_agent(agent_id: str):
         # For implement agents, dispatch_implement already updated the issue to
         # "in_progress" with the new agent_id.  For fix_review agents, set the
         # issue back to "pending" so the PR monitor can track state correctly.
-        db.finish_agent(agent_id, status="stopped", error_message="Manually restarted by user")
-        if current_agent["issue_number"] is not None and current_agent.get("agent_type") == "fix_review":
-            db.update_issue(current_agent["issue_number"], workspace_id=workspace_id, status="pending")
+        try:
+            db.finish_agent(agent_id, status="stopped", error_message="Manually restarted by user")
+            if current_agent["issue_number"] is not None and current_agent.get("agent_type") == "fix_review":
+                db.update_issue(current_agent["issue_number"], workspace_id=workspace_id, status="pending")
+        except Exception:
+            _agent_pool.unmark_externally_stopped(agent_id)
+            raise
 
         # Clean up the old worktree now that the new agent has its own.
         # Use current_agent to ensure we target the fresh worktree_path.

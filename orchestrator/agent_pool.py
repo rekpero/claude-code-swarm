@@ -800,13 +800,15 @@ class AgentPool:
                     start_new_session=True,
                 )
             except Exception:
+                resume_stdout.close()
                 try:
                     os.unlink(resume_log_file)
                 except OSError:
                     pass
                 raise
             finally:
-                resume_stdout.close()
+                if not resume_stdout.closed:
+                    resume_stdout.close()
         except Exception as e:
             logger.error("Failed to resume agent %s: %s", old_agent_id, e)
             return None
@@ -974,7 +976,10 @@ class AgentPool:
                         # Persist offset after every readline so non-JSON lines
                         # also advance the saved position, preventing duplicate
                         # re-reads after a restart.
-                        db.update_agent(agent_id, log_offset=f.tell())
+                        try:
+                            db.update_agent(agent_id, log_offset=f.tell())
+                        except Exception as _db_err:
+                            logger.warning("[%s] Failed to update log offset: %s", agent_id, _db_err)
                     else:
                         # No new data — check if process is still alive
                         try:
@@ -985,7 +990,10 @@ class AgentPool:
                                 event = parse_stream_line(remaining)
                                 if event:
                                     db.insert_event(agent_id, event.event_type, json.dumps(event.raw))
-                                db.update_agent(agent_id, log_offset=f.tell())
+                                try:
+                                    db.update_agent(agent_id, log_offset=f.tell())
+                                except Exception as _db_err:
+                                    logger.warning("[%s] Failed to update log offset: %s", agent_id, _db_err)
                             break
                         time.sleep(1)
         except Exception as e:
@@ -1163,7 +1171,7 @@ class AgentPool:
             # Use WNOHANG to avoid blocking the monitor thread if the child
             # has not yet been fully reaped by the OS.
             try:
-                _, wait_status = os.waitpid(pid, os.WNOHANG)
+                _, wait_status = os.waitpid(pid, 0)
                 exit_code = os.WEXITSTATUS(wait_status) if os.WIFEXITED(wait_status) else -1
             except ChildProcessError:
                 exit_code = None
