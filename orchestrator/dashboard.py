@@ -362,20 +362,30 @@ async def restart_agent(agent_id: str):
         # the dispatch call succeeds but a subsequent DB write fails.
         try:
             db.finish_agent(agent_id, status="stopped", error_message="Manually restarted by user")
-            if current_agent["issue_number"] is not None and current_agent.get("agent_type") == "fix_review":
-                db.update_issue(current_agent["issue_number"], workspace_id=workspace_id, status="pending")
         except Exception:
             _agent_pool.unmark_externally_stopped(agent_id)
             raise
 
+        # update_issue failure is non-fatal: the agent is already stopped and we
+        # still want to dispatch a replacement.  Ignore errors and continue.
+        if current_agent["issue_number"] is not None and current_agent.get("agent_type") == "fix_review":
+            try:
+                db.update_issue(current_agent["issue_number"], workspace_id=workspace_id, status="pending")
+            except Exception:
+                pass
+
         # Dispatch preconditions were validated before the kill; proceed to dispatch.
         new_agent_id = None
-        if current_agent.get("agent_type") == "fix_review":
-            new_agent_id = _agent_pool.dispatch_fix_review(
-                current_agent["pr_number"], branch, current_agent["issue_number"], ws, threads,
-            )
-        else:
-            new_agent_id = _agent_pool.dispatch_implement(current_agent["issue_number"], workspace=ws)
+        try:
+            if current_agent.get("agent_type") == "fix_review":
+                new_agent_id = _agent_pool.dispatch_fix_review(
+                    current_agent["pr_number"], branch, current_agent["issue_number"], ws, threads,
+                )
+            else:
+                new_agent_id = _agent_pool.dispatch_implement(current_agent["issue_number"], workspace=ws)
+        except Exception:
+            _agent_pool.unmark_externally_stopped(agent_id)
+            raise
 
         if not new_agent_id:
             # The old agent process is already dead (SIGTERM was sent and

@@ -666,6 +666,7 @@ def create_issue_from_plan(session_id: str, title: str = "", message_index: int 
 
     # Acquire per-session issue-creation lock to prevent duplicate issues from
     # concurrent requests (e.g. user double-clicking "Create GitHub Issue").
+    _reserved_key: tuple | None = None
     with _issue_creating_lock:
         if session_id in _issue_creating:
             raise RuntimeError("Issue creation already in progress for this session")
@@ -679,7 +680,17 @@ def create_issue_from_plan(session_id: str, title: str = "", message_index: int 
                 f"Issue already created for message {message_index} in this session"
             )
         _issue_creating.add(session_id)
+        # Reserve the key immediately (inside the same lock acquisition) to close
+        # the TOCTOU race: without this a second request could pass the membership
+        # check above after the first request removes session_id from _issue_creating
+        # but before the first request re-acquires the lock to insert the key.
+        if message_index is not None:
+            _reserved_key = (session_id, message_index)
+            _issue_created_keys[_reserved_key] = None
+            while len(_issue_created_keys) > _MAX_ISSUE_KEYS:
+                _issue_created_keys.popitem(last=False)
 
+    _issue_created = False
     try:
         session = db.get_planning_session(session_id)
         if not session:
@@ -792,18 +803,15 @@ def create_issue_from_plan(session_id: str, title: str = "", message_index: int 
                 session_id, db_err,
             )
 
-        if message_index is not None:
-            with _issue_creating_lock:
-                key = (session_id, message_index)
-                _issue_created_keys[key] = None
-                # Evict oldest entries when the cap is exceeded.
-                while len(_issue_created_keys) > _MAX_ISSUE_KEYS:
-                    _issue_created_keys.popitem(last=False)
-
+        _issue_created = True
         return {"issue_number": issue_number, "issue_url": issue_url, "title": title}
     finally:
         with _issue_creating_lock:
             _issue_creating.discard(session_id)
+            # If the key was reserved at the start but issue creation ultimately
+            # failed, remove the reservation so the operation can be retried.
+            if _reserved_key is not None and not _issue_created:
+                _issue_created_keys.pop(_reserved_key, None)
 
 
 def cleanup_session_issue_keys(session_id: str):

@@ -195,7 +195,9 @@ export function EnvEditor({ workspaceId }) {
     const parsed = parseEnvText(pasteText)
     const newRows = Object.entries(parsed).map(([k, v]) => ({ id: k, key: k, value: v }))
     setRows((prev) => {
-      const emptyKeyRows = prev.filter(r => !r.key.trim())
+      // Keep at most one blank row to prevent accumulation on repeated paste.
+      const existingBlankRow = prev.find(r => !r.key.trim())
+      const blankRows = existingBlankRow ? [existingBlankRow] : []
       const existingMap = new Map(prev.filter(r => r.key.trim()).map((r) => [r.key, r]))
       newRows.forEach((r) => {
         if (existingMap.has(r.key)) {
@@ -204,7 +206,7 @@ export function EnvEditor({ workspaceId }) {
           existingMap.set(r.key, r)
         }
       })
-      return [...Array.from(existingMap.values()), ...emptyKeyRows]
+      return [...Array.from(existingMap.values()), ...blankRows]
     })
     setDirty(true)
     setPasteText('')
@@ -220,7 +222,9 @@ export function EnvEditor({ workspaceId }) {
       const parsed = parseEnvText(ev.target.result)
       const newRows = Object.entries(parsed).map(([k, v]) => ({ id: k, key: k, value: v }))
       setRows((prev) => {
-        const emptyKeyRows = prev.filter(r => !r.key.trim())
+        // Keep at most one blank row to prevent accumulation on repeated upload.
+        const existingBlankRow = prev.find(r => !r.key.trim())
+        const blankRows = existingBlankRow ? [existingBlankRow] : []
         const existingMap = new Map(prev.filter(r => r.key.trim()).map((r) => [r.key, r]))
         newRows.forEach((r) => {
           if (existingMap.has(r.key)) {
@@ -229,7 +233,7 @@ export function EnvEditor({ workspaceId }) {
             existingMap.set(r.key, r)
           }
         })
-        return [...Array.from(existingMap.values()), ...emptyKeyRows]
+        return [...Array.from(existingMap.values()), ...blankRows]
       })
       setDirty(true)
     }
