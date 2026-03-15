@@ -72,6 +72,7 @@ export function usePlanning(workspaceId) {
   }, [workspaceId])
 
   const stopPolling = useCallback(() => {
+    pollActiveRef.current = false
     if (pollTimerRef.current) {
       clearTimeout(pollTimerRef.current)
       pollTimerRef.current = null
