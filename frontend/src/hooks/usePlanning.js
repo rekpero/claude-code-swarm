@@ -87,11 +87,16 @@ export function usePlanning(workspaceId) {
     if (pollActiveRef.current) return
     stopPolling()
 
+    // Set the guard synchronously so that any second call to poll() within the
+    // 300 ms setTimeout window also sees it as true and returns early.
+    pollActiveRef.current = true
     pollTimerRef.current = setTimeout(async () => {
       const localSid = sessionIdRef.current
-      if (localSid !== sid) return
+      if (localSid !== sid) {
+        pollActiveRef.current = false
+        return
+      }
 
-      pollActiveRef.current = true
       try {
         const [data, evData] = await Promise.all([
           getPlanningSession(localSid),

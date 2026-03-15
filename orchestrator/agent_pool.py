@@ -1139,8 +1139,10 @@ class AgentPool:
             # Try to decode the exit status. For child processes os.waitpid succeeds;
             # for reattached non-child processes it raises ChildProcessError (ECHILD)
             # because the process has already been reaped by init.
+            # Use WNOHANG to avoid blocking the monitor thread if the child
+            # has not yet been fully reaped by the OS.
             try:
-                _, wait_status = os.waitpid(pid, 0)
+                _, wait_status = os.waitpid(pid, os.WNOHANG)
                 exit_code = os.WEXITSTATUS(wait_status) if os.WIFEXITED(wait_status) else -1
             except ChildProcessError:
                 exit_code = None

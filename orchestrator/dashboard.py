@@ -219,7 +219,7 @@ async def load_env_from_disk(workspace_id: str, env_file: str = Query(".env")):
     # local_path when env_file is absolute, and ../ sequences can escape the
     # workspace, so we must check after resolving.
     resolved_workspace = Path(local_path).resolve()
-    if not str(file_path.resolve()).startswith(str(resolved_workspace) + os.sep):
+    if not file_path.resolve().is_relative_to(resolved_workspace):
         return JSONResponse(content={"error": "Access denied: path is outside the workspace"}, status_code=403)
     if not file_path.exists():
         return JSONResponse(content={"error": f"File {env_file} not found on disk"}, status_code=404)
@@ -321,10 +321,17 @@ async def restart_agent(agent_id: str):
     # don't race with the writes below.
     _agent_pool.mark_externally_stopped(agent_id)
 
-    # Kill the old process and wait for it to die
+    # Kill the old process group and wait for it to die.
+    # Agents are spawned with start_new_session=True, so they lead their own
+    # process group.  Signalling only the agent PID leaves any child processes
+    # it spawned (e.g. subprocess claude invocations) as orphans.  Send SIGTERM
+    # to the entire process group instead.
     if pid:
         try:
-            os.kill(pid, signal.SIGTERM)
+            try:
+                os.killpg(os.getpgid(pid), signal.SIGTERM)
+            except ProcessLookupError:
+                pass
             # Wait up to 10s for the process to exit
             for _ in range(20):
                 await asyncio.sleep(0.5)
@@ -335,7 +342,7 @@ async def restart_agent(agent_id: str):
             else:
                 # Force kill if still alive
                 try:
-                    os.kill(pid, signal.SIGKILL)
+                    os.killpg(os.getpgid(pid), signal.SIGKILL)
                     await asyncio.sleep(0.5)
                 except (OSError, ProcessLookupError):
                     pass
