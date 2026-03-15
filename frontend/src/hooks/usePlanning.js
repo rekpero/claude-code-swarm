@@ -196,7 +196,7 @@ export function usePlanning(workspaceId) {
       } else {
         setGenerating(false)
       }
-    } catch { /* ignore */ } finally {
+    } catch { setGenerating(false) } finally {
       setLoadingSession(false)
     }
   }, [stopPolling, poll])

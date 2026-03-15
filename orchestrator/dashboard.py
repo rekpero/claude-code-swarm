@@ -312,7 +312,12 @@ async def restart_agent(agent_id: str):
 
         # Dispatch a new agent only when the old one was still running (not already completed)
         new_agent_id = None
-        if agent.get("agent_type") == "fix_review" and agent.get("pr_number"):
+        if agent.get("agent_type") == "fix_review":
+            if not agent.get("pr_number"):
+                return JSONResponse(
+                    content={"error": "Cannot restart: fix_review agent has no pr_number"},
+                    status_code=400,
+                )
             from orchestrator.pr_monitor import get_pr_branch, get_unresolved_threads
             branch = get_pr_branch(agent["pr_number"], github_repo=ws["github_repo"])
             threads = get_unresolved_threads(agent["pr_number"], github_repo=ws["github_repo"])
@@ -321,6 +326,11 @@ async def restart_agent(agent_id: str):
                     agent["pr_number"], branch, agent["issue_number"], ws, threads,
                 )
         else:
+            if agent["issue_number"] is None:
+                return JSONResponse(
+                    content={"error": "Cannot restart: no issue number"},
+                    status_code=400,
+                )
             new_agent_id = _agent_pool.dispatch_implement(agent["issue_number"], workspace=ws)
 
         if new_agent_id:
