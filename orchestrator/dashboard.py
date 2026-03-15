@@ -299,7 +299,8 @@ async def restart_agent(agent_id: str):
     current_agent = db.get_agent(agent_id)
     if current_agent and current_agent["status"] == "running":
         db.finish_agent(agent_id, status="stopped", error_message="Manually restarted by user")
-        db.update_issue(agent["issue_number"], workspace_id=workspace_id, status="pending")
+        if agent["issue_number"] is not None:
+            db.update_issue(agent["issue_number"], workspace_id=workspace_id, status="pending")
 
         # Clean up worktree only when the agent was still running (not already finished)
         repo_path = ws["local_path"]

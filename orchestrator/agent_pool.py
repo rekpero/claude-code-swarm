@@ -1046,17 +1046,20 @@ class AgentPool:
                 logger.info("Reattached agent %s created PR #%d for issue #%d", agent_id, found_pr, issue_number)
                 db.finish_agent(agent_id, status="completed")
                 db.update_agent(agent_id, pr_number=found_pr)
-                db.update_issue(issue_number, workspace_id=workspace_id, status="pr_created", pr_number=found_pr)
+                if issue_number is not None:
+                    db.update_issue(issue_number, workspace_id=workspace_id, status="pr_created", pr_number=found_pr)
             elif worktree_path and self._is_branch_pushed(branch_name, worktree_path):
                 logger.warning("Reattached agent %s pushed branch but no PR — creating automatically", agent_id)
                 auto_pr = self._create_pr_for_branch(branch_name, issue_number, github_repo=github_repo)
                 if auto_pr:
                     db.finish_agent(agent_id, status="completed")
                     db.update_agent(agent_id, pr_number=auto_pr)
-                    db.update_issue(issue_number, workspace_id=workspace_id, status="pr_created", pr_number=auto_pr)
+                    if issue_number is not None:
+                        db.update_issue(issue_number, workspace_id=workspace_id, status="pr_created", pr_number=auto_pr)
                 else:
                     db.finish_agent(agent_id, status="failed", error_message="Agent exited without creating PR (reattached)")
-                    db.update_issue(issue_number, workspace_id=workspace_id, status="pending")
+                    if issue_number is not None:
+                        db.update_issue(issue_number, workspace_id=workspace_id, status="pending")
             else:
                 # Can't tell if it succeeded or failed without stdout — check for unpushed commits
                 base_branch = workspace.get("base_branch", "main") if workspace else "main"
@@ -1067,7 +1070,8 @@ class AgentPool:
                         if auto_pr:
                             db.finish_agent(agent_id, status="completed")
                             db.update_agent(agent_id, pr_number=auto_pr)
-                            db.update_issue(issue_number, workspace_id=workspace_id, status="pr_created", pr_number=auto_pr)
+                            if issue_number is not None:
+                                db.update_issue(issue_number, workspace_id=workspace_id, status="pr_created", pr_number=auto_pr)
                             if worktree_path and repo_path:
                                 cleanup_worktree(worktree_path, repo_path=repo_path)
                             elif worktree_path:
@@ -1075,7 +1079,8 @@ class AgentPool:
                             return
 
                 db.finish_agent(agent_id, status="failed", error_message="Agent exited without creating PR (reattached)")
-                db.update_issue(issue_number, workspace_id=workspace_id, status="pending")
+                if issue_number is not None:
+                    db.update_issue(issue_number, workspace_id=workspace_id, status="pending")
         else:
             # fix_review agent — determine success from git state.
             # For reattached non-child processes the PID is already reaped by
