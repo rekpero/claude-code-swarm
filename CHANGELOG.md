@@ -8,6 +8,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [1.4.3] - 2026-03-15
 
+### Fixed
+- **EnvEditor crash on "Add Row"** — `crypto.randomUUID()` is unavailable in non-HTTPS contexts (e.g. `http://localhost`), causing a `TypeError` when adding a new env var row; replaced with a `Date.now()` + `Math.random()` ID generator that works in any context
+
 ### Added
 - **Issue status update modal** — clicking an issue's status badge in the dashboard opens a modal to change its status (pending, pr_created, needs_human, resolved) with a transition preview and error handling (`UpdateStatusModal.jsx`)
 - **Agent retry for dead agents** — agents in `failed`, `stopped`, or `timeout` status can now be restarted from the dashboard (previously only `running` agents could be restarted); button label shows "Retry" instead of "Restart" for non-running agents

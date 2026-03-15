@@ -140,7 +140,7 @@ export function EnvEditor({ workspaceId }) {
     }))
   }
 
-  const addRow = () => { setDirty(true); setRows((prev) => [...prev, { id: crypto.randomUUID(), key: '', value: '' }]) }
+  const addRow = () => { setDirty(true); setRows((prev) => [...prev, { id: `row-${Date.now()}-${Math.random().toString(36).slice(2)}`, key: '', value: '' }]) }
   const removeRow = (i) => { setDirty(true); setRows((prev) => prev.filter((_, idx) => idx !== i)) }
 
   const handleSave = async () => {
