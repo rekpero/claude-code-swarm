@@ -1,10 +1,11 @@
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
 import { getIssues, updateIssueStatus } from '../api/client'
 
-export function useIssues(wsId) {
+export function useIssues(wsId, { enabled = true } = {}) {
   return useQuery({
     queryKey: ['issues', wsId],
     queryFn: () => getIssues(wsId),
+    enabled,
     refetchInterval: 5000,
     staleTime: 0,
   })

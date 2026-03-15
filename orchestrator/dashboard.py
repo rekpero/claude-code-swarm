@@ -4,12 +4,14 @@ import asyncio
 import json
 import logging
 import os
+import secrets
 import signal
 import time
 import uuid
+from datetime import datetime, timedelta
 from pathlib import Path
 
-from fastapi import FastAPI, HTTPException, Query
+from fastapi import FastAPI, HTTPException, Query, Request
 from fastapi.responses import FileResponse, HTMLResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
@@ -18,8 +20,31 @@ from orchestrator import db
 from orchestrator import planner
 from orchestrator import worktree
 from orchestrator import workspace_manager as wm
+from orchestrator.config import ADMIN_USERNAME, ADMIN_PASSWORD
 
 app = FastAPI(title="Claude Code Swarm Dashboard")
+
+SESSION_DURATION_DAYS = 30
+
+
+@app.middleware("http")
+async def auth_middleware(request: Request, call_next):
+    path = request.url.path
+    # Allow: login endpoint, static assets, and SPA HTML (non-API paths)
+    if path in ("/api/auth/login",) or not path.startswith("/api/"):
+        return await call_next(request)
+
+    # All other /api/* routes require a valid session token
+    auth_header = request.headers.get("Authorization", "")
+    if not auth_header.startswith("Bearer "):
+        return JSONResponse({"detail": "Not authenticated"}, status_code=401)
+
+    token = auth_header[7:]  # strip "Bearer "
+    session = db.get_session(token)
+    if session is None:
+        return JSONResponse({"detail": "Invalid or expired session"}, status_code=401)
+
+    return await call_next(request)
 
 STATIC_DIR = Path(__file__).parent / "static"
 
@@ -34,6 +59,11 @@ def set_agent_pool(pool):
 
 
 # === Pydantic Models ===
+
+class LoginRequest(BaseModel):
+    username: str
+    password: str
+
 
 class CreateWorkspaceRequest(BaseModel):
     repo_url: str
@@ -60,6 +90,38 @@ async def index():
     if not index.exists():
         raise HTTPException(status_code=404, detail="Frontend not built")
     return FileResponse(str(index))
+
+
+# === Auth Endpoints ===
+
+@app.post("/api/auth/login")
+async def login(req: LoginRequest):
+    """Validate credentials and return a session token."""
+    u_ok = secrets.compare_digest(req.username.encode(), ADMIN_USERNAME.encode())
+    p_ok = secrets.compare_digest(req.password.encode(), ADMIN_PASSWORD.encode())
+    valid = ADMIN_PASSWORD and u_ok and p_ok
+    if not valid:
+        raise HTTPException(status_code=401, detail="Invalid credentials")
+    token = secrets.token_urlsafe(32)
+    expires_at = (datetime.utcnow() + timedelta(days=SESSION_DURATION_DAYS)).isoformat()
+    db.create_session(token, expires_at)
+    db.cleanup_expired_sessions()
+    return {"token": token, "expires_at": expires_at}
+
+
+@app.get("/api/auth/check")
+async def auth_check():
+    """Verify the current session is valid (middleware handles the actual check)."""
+    return {"ok": True}
+
+
+@app.post("/api/auth/logout")
+async def logout(request: Request):
+    """Invalidate the current session token."""
+    auth_header = request.headers.get("Authorization", "")
+    if auth_header.startswith("Bearer "):
+        db.delete_session(auth_header[7:])
+    return {"ok": True}
 
 
 # === Workspace Endpoints ===

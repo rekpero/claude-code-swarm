@@ -13,6 +13,8 @@ import { useAgents } from './hooks/useAgents'
 import { useIssues } from './hooks/useIssues'
 import { usePRs } from './hooks/usePRs'
 import { useWorkspaceContext } from './context/WorkspaceContext'
+import { useAuth } from './context/AuthContext'
+import { LoginPage } from './components/auth/LoginPage'
 
 function ErrorBanner({ error }) {
   if (!error) return null
@@ -24,16 +26,25 @@ function ErrorBanner({ error }) {
 }
 
 export function App() {
+  const { isAuthenticated, isChecking } = useAuth()
   const [activeTab, setActiveTab] = useState('agents')
   const [addWorkspaceOpen, setAddWorkspaceOpen] = useState(false)
   const [settingsOpen, setSettingsOpen] = useState(false)
   const [plannerOpen, setPlannerOpen] = useState(false)
   const { selectedWorkspaceId } = useWorkspaceContext()
+  const queryEnabled = isAuthenticated && !isChecking
+  const { error: metricsError } = useMetrics(selectedWorkspaceId, { enabled: queryEnabled })
+  const { data: agentsData } = useAgents(selectedWorkspaceId, { enabled: queryEnabled })
+  const { data: issuesData } = useIssues(selectedWorkspaceId, { enabled: queryEnabled })
+  const { data: prsData } = usePRs(selectedWorkspaceId, { enabled: queryEnabled })
 
-  const { error: metricsError } = useMetrics(selectedWorkspaceId)
-  const { data: agentsData } = useAgents(selectedWorkspaceId)
-  const { data: issuesData } = useIssues(selectedWorkspaceId)
-  const { data: prsData } = usePRs(selectedWorkspaceId)
+  if (isChecking) {
+    return <div className="min-h-screen bg-[var(--bg)]" />
+  }
+
+  if (!isAuthenticated) {
+    return <LoginPage />
+  }
 
   const counts = {
     agents: agentsData?.total ?? 0,

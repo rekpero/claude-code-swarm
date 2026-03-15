@@ -1,17 +1,41 @@
+export const TOKEN_KEY = 'swarm_auth_token'
+
 const BASE = ''
 
 async function apiFetch(path, options = {}) {
   const { headers: customHeaders, ...rest } = options
+  const token = localStorage.getItem(TOKEN_KEY)
+  const authHeaders = token ? { 'Authorization': `Bearer ${token}` } : {}
+
   const res = await fetch(`${BASE}${path}`, {
-    headers: { 'Content-Type': 'application/json', ...customHeaders },
+    headers: { 'Content-Type': 'application/json', ...authHeaders, ...customHeaders },
     ...rest,
   })
+
+  if (res.status === 401) {
+    if (token) {
+      localStorage.removeItem(TOKEN_KEY)
+      window.dispatchEvent(new CustomEvent('swarm:unauthorized'))
+    }
+    throw new Error('Unauthorized')
+  }
+
   if (!res.ok) {
     const err = await res.json().catch(() => ({ error: res.statusText }))
     throw new Error(err.error || `HTTP ${res.status}`)
   }
   return res.json()
 }
+
+// Auth
+export const login = (username, password) =>
+  apiFetch('/api/auth/login', { method: 'POST', body: JSON.stringify({ username, password }) })
+
+export const logout = () =>
+  apiFetch('/api/auth/logout', { method: 'POST' })
+
+export const checkAuth = () =>
+  apiFetch('/api/auth/check')
 
 // Metrics
 export const getMetrics = (wsId) =>

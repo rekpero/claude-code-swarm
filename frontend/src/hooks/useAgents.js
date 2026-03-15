@@ -2,10 +2,11 @@ import { useRef } from 'react'
 import { useQuery } from '@tanstack/react-query'
 import { getAgents, getAgentLogs } from '../api/client'
 
-export function useAgents(wsId, { limit = 20, offset = 0 } = {}) {
+export function useAgents(wsId, { limit = 20, offset = 0, enabled = true } = {}) {
   return useQuery({
     queryKey: ['agents', wsId, limit, offset],
     queryFn: () => getAgents(wsId, limit, offset),
+    enabled,
     refetchInterval: 3000,
     staleTime: 0,
   })
