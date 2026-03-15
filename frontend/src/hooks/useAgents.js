@@ -26,6 +26,17 @@ export function useAgentLogs(agentId, { since = 0, refetchInterval = 3000 } = {}
   // This also prevents AgentLogViewer's useEffect([data]) — which fires after
   // useEffect([agentId]) and can overwrite a useEffect-based reset with stale
   // cached cursor values — from causing the first fetch to use a wrong cursor.
+  //
+  // NOTE (React concurrent-mode): Mutating refs during the render body violates
+  // the strict render-purity contract. Under concurrent rendering, this block may
+  // execute more than once for the same agentId transition. This is safe here
+  // because: (a) refs are not observable by React's scheduler and cannot cause
+  // re-renders, (b) the prevAgentIdRef guard makes the assignment idempotent —
+  // repeated executions produce the same result (cursor reset to 0), and (c) the
+  // assignment must happen before the TanStack Query microtask to avoid the stale
+  // cursor problem described above.  Any future restructuring should preserve this
+  // ordering guarantee (e.g. by capturing agentId as a closure in queryFn and
+  // resetting cursorRef there when it detects an agentId change).
   if (prevAgentIdRef.current !== agentId) {
     prevAgentIdRef.current = agentId
     cursorRef.current = 0

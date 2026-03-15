@@ -311,13 +311,19 @@ export function usePlanning(workspaceId) {
     // Poll for events during issue creation.
     // Guard against session switches: if the user switches to another session
     // while the issue is being created, stop fetching events for the old session.
+    // `cancelled` is set to true in the finally block before clearInterval so
+    // that any interval tick that fires between promise resolution and
+    // clearInterval does not append events after creation state is cleared.
+    let cancelled = false
     const eventPollInterval = setInterval(async () => {
+      if (cancelled) return
       if (sessionIdRef.current !== sid) {
         clearInterval(eventPollInterval)
         return
       }
       try {
         const evData = await getPlanningEvents(sid, lastEventIdRef.current)
+        if (cancelled) return
         if (sessionIdRef.current !== sid) return
         if (evData?.events?.length) {
           lastEventIdRef.current = evData.events[evData.events.length - 1].id
@@ -348,6 +354,7 @@ export function usePlanning(workspaceId) {
       setCreatingIssue(null)
       return { error: e.message }
     } finally {
+      cancelled = true
       clearInterval(eventPollInterval)
     }
   }, [loadSessions])

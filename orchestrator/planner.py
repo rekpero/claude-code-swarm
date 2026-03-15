@@ -44,7 +44,13 @@ _issue_creating_lock = threading.Lock()
 # status=="completed" guard is intentionally skipped, so this set provides the
 # equivalent deduplication at the (session, message) granularity.
 # Protected by _issue_creating_lock.
-_issue_created_keys: set[tuple[str, int]] = set()
+#
+# Implemented as an OrderedDict (insertion-ordered) capped at _MAX_ISSUE_KEYS
+# entries to prevent unbounded growth in long-running deployments.  When the cap
+# is reached the oldest entry is evicted (LRU-style).  Membership checks remain
+# O(1) because dict lookup is O(1).
+_MAX_ISSUE_KEYS: int = 10_000
+_issue_created_keys: collections.OrderedDict[tuple[str, int], None] = collections.OrderedDict()
 
 
 def is_generating(session_id: str) -> bool:
@@ -788,7 +794,11 @@ def create_issue_from_plan(session_id: str, title: str = "", message_index: int 
 
         if message_index is not None:
             with _issue_creating_lock:
-                _issue_created_keys.add((session_id, message_index))
+                key = (session_id, message_index)
+                _issue_created_keys[key] = None
+                # Evict oldest entries when the cap is exceeded.
+                while len(_issue_created_keys) > _MAX_ISSUE_KEYS:
+                    _issue_created_keys.popitem(last=False)
 
         return {"issue_number": issue_number, "issue_url": issue_url, "title": title}
     finally:
@@ -803,9 +813,9 @@ def cleanup_session_issue_keys(session_id: str):
     not grow without bound in a long-running orchestrator.
     """
     with _issue_creating_lock:
-        _issue_created_keys.difference_update(
-            {k for k in _issue_created_keys if k[0] == session_id}
-        )
+        keys_to_remove = [k for k in _issue_created_keys if k[0] == session_id]
+        for k in keys_to_remove:
+            del _issue_created_keys[k]
 
 
 def cancel_planning(session_id: str):

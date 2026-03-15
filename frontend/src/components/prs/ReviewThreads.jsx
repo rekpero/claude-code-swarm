@@ -23,8 +23,10 @@ const S_STRONG_CLOSE = '\x00/STRONG\x00'
 
 function formatCommentBody(body) {
   if (!body) return ''
-  // Strip leading severity marker like **HIGH**: or **MEDIUM**:
-  let text = body.replace(/^\*\*\w+\*\*[*:]?\s*/i, '')
+  // Strip leading severity marker like **HIGH**: or **MEDIUM**: but only for
+  // known severity keywords so that legitimate bold prefixes such as
+  // **Note**: or **Warning**: are preserved unchanged.
+  let text = body.replace(/^\*\*(HIGH|CRITICAL|MEDIUM|LOW|INFO)\*\*[*:]?\s*/i, '')
 
   // Basic inline formatting using null-byte sentinels
   // Code blocks
