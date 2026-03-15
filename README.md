@@ -1,4 +1,4 @@
-# Claude Code Agent Swarm
+# SwarmOps
 
 A 24/7 autonomous orchestrator that watches a GitHub repository for open issues, dispatches parallel [Claude Code](https://docs.anthropic.com/en/docs/claude-code) agents to implement fixes and features, creates PRs, handles CI review feedback in a loop, and iterates until all issues are resolved.
 
@@ -8,10 +8,11 @@ A 24/7 autonomous orchestrator that watches a GitHub repository for open issues,
 Issue created (labeled "agent")
     │
     ▼
-You write the full plan in the issue body...
+Write the plan directly in the issue body,
+or use the built-in AI Issue Planner in the dashboard
     │
     ▼
-Comment "@claude-swarm start" when ready
+Comment "@swarmops start" when ready
     │
     ▼
 Orchestrator polls GitHub ──▶ Dispatches Claude Code agent
@@ -38,11 +39,12 @@ Orchestrator polls GitHub ──▶ Dispatches Claude Code agent
 Dashboard shows live progress at http://localhost:8420
 ```
 
-Each issue must contain a **full implementation plan** in the body (like Claude Code plan mode output). Agents read this as their spec — no guesswork needed.
+Each issue must contain a **full implementation plan** in the body. Use the built-in AI Planner to generate one from a plain-language description, or write it manually. Agents read this as their spec — no guesswork needed.
 
 ## Prerequisites
 
 - **Python 3.10+**
+- **Node.js 20+** — for building the React dashboard
 - **Claude Code CLI** (`claude`) — authenticated via `claude setup-token` with a Max subscription
 - **GitHub CLI** (`gh`) — installed ([cli.github.com](https://cli.github.com))
 - **Git 2.20+**
@@ -51,33 +53,46 @@ Each issue must contain a **full implementation plan** in the body (like Claude 
 ## Quick Start
 
 ```bash
-# 1. Clone and set up
+# 1. Clone and install Python dependencies
 git clone <this-repo> && cd claude-code-swarm
 python3 -m venv .venv
 source .venv/bin/activate
 pip install -r requirements.txt
 
-# 2. Configure
-cp .env.example .env
-# Edit .env with your tokens and target repo path
+# 2. Build the React dashboard
+./run.sh build-ui
 
-# 3. Install skills (optional but recommended)
+# 3. Configure
+cp .env.example .env
+# Edit .env — at minimum set:
+#   CLAUDE_CODE_OAUTH_TOKEN  (from: claude setup-token)
+#   GH_TOKEN                 (GitHub fine-grained PAT)
+#   ADMIN_USERNAME / ADMIN_PASSWORD  (dashboard login)
+#   GIT_AUTHOR_NAME / GIT_AUTHOR_EMAIL
+
+# 4. Install skills (optional but recommended)
 ./run.sh install-skills
 
-# 4. Run
+# 5. Run
 python -m orchestrator.main
 ```
 
-The dashboard will be available at `http://localhost:8420`.
+The dashboard will be available at `http://localhost:8420`. Log in with the credentials you set in `.env`.
+
+> **Note:** On Ubuntu servers, `sudo ./run.sh install` handles Node.js installation, the UI build, and systemd service setup in one step — see [Production Deployment](#production-deployment-ubuntu).
 
 ## Configuration
 
-All settings are in `.env` (or environment variables):
+All settings live in `.env` (or as environment variables):
 
 | Variable | Default | Description |
 |---|---|---|
 | `CLAUDE_CODE_OAUTH_TOKEN` | *(required)* | From `claude setup-token` (Max plan) |
 | `GH_TOKEN` | *(required)* | GitHub PAT for private repo access |
+| `ADMIN_USERNAME` | `admin` | Dashboard login username |
+| `ADMIN_PASSWORD` | *(required)* | Dashboard login password |
+| `GIT_AUTHOR_NAME` | *(required)* | Git commit author name for agent commits |
+| `GIT_AUTHOR_EMAIL` | *(required)* | Git commit author email for agent commits |
 | `MAX_CONCURRENT_AGENTS` | `3` | Max parallel agents |
 | `AGENT_MAX_TURNS_IMPLEMENT` | `30` | Max Claude turns for new issues |
 | `AGENT_MAX_TURNS_FIX` | `20` | Max Claude turns for fixing review comments |
@@ -85,15 +100,61 @@ All settings are in `.env` (or environment variables):
 | `POLL_INTERVAL_SECONDS` | `300` | How often to check for new issues (5 min) |
 | `PR_POLL_INTERVAL_SECONDS` | `120` | How often to check PRs for comments (2 min) |
 | `ISSUE_LABEL` | `agent` | Only issues with this label are picked up |
-| `TRIGGER_MENTION` | `@claude-swarm` | Agents only start when a comment with this mention exists (set empty to disable) |
+| `TRIGGER_MENTION` | `@swarmops` | Comment trigger to start an agent (set empty to auto-start on label) |
 | `MAX_ISSUE_RETRIES` | `3` | Retry limit per issue before escalation |
 | `MAX_PR_FIX_RETRIES` | `5` | Max review-fix cycles per PR |
 | `SKILLS_ENABLED` | `true` | Enable Claude Code skills for agents |
 | `DASHBOARD_PORT` | `8420` | Dashboard web UI port |
 
+## Dashboard
+
+The React dashboard at `http://localhost:8420` is the control centre for SwarmOps.
+
+### Live Progress
+
+- **Metrics bar** — resolved, pending, in-progress, open PRs, needs-human, avg turns per issue
+- **Active agents** — live log stream with tool calls, issue/PR assignment, turn count, elapsed time
+- **Issue queue** — all tracked issues with status, retry count, and assigned agent
+- **PR tracker** — open PRs with review iteration count and comment totals
+
+The dashboard polls the API every few seconds and updates in real time.
+
+### AI Issue Planner
+
+Generate production-ready implementation plans without leaving the dashboard:
+
+1. Click **+ Plan Issue** in the header
+2. Describe the feature or bug in plain language
+3. SwarmOps runs a planning agent that reads your codebase and produces a detailed, file-by-file implementation plan
+4. Review and edit the plan inline
+5. Click **Create GitHub Issue** — the issue is created with the plan as the body and the `agent` label applied automatically
+6. Comment `@swarmops start` on the issue to dispatch the agent
+
+Previous planning sessions are saved in a sidebar so you can resume, reference, or re-use them at any time.
+
+**What a generated plan includes:**
+- File-by-file breakdown of changes and rationale
+- Function signatures, data structures, and API contracts to implement
+- Test cases and validation steps
+- Edge cases and error-handling requirements
+- References to existing code patterns in the repo
+
+### Environment File Manager
+
+Manage `.env` files for your target repo directly from the dashboard, without needing shell access:
+
+- Upload and edit multiple env files in a tabbed editor
+- Changes sync automatically to disk with modification-time tracking (no stale-read issues)
+- Delete tabs to remove env files from disk
+- Monorepo-aware: detects and manages sub-package env files independently
+
+### Authentication
+
+The dashboard requires login. Credentials are set via `ADMIN_USERNAME` and `ADMIN_PASSWORD` in `.env`. Sessions persist for 30 days via a secure cookie.
+
 ## Skills
 
-Agents can use [Claude Code skills](https://skills.sh) — reusable capabilities that give agents domain expertise for frontend design, testing, security, API design, and more. Skills are sourced from the open [skills.sh](https://skills.sh) ecosystem.
+Agents can use [Claude Code skills](https://skills.sh) — reusable capabilities that give agents domain expertise for frontend design, testing, security, API design, and more.
 
 ### Installing Skills
 
@@ -129,7 +190,7 @@ When `SKILLS_ENABLED=true` (the default) and skills are installed:
 1. The orchestrator discovers installed skills at startup by scanning `.claude/skills/` in the target repo and `~/.claude/skills/` globally.
 2. Agent prompts automatically include a hint listing available skills.
 3. The `Skill` tool is added to each agent's allowed tools.
-4. If an issue body or PR review comment says something like *"use the frontend-design skill"*, the agent will invoke it.
+4. If an issue body or PR review comment references a skill (e.g. *"use the frontend-design skill"*), the agent will invoke it.
 5. Agents can also use skills proactively when the task matches a skill's domain.
 
 ### Default Skill Repos
@@ -147,13 +208,11 @@ Browse all available skills at [skills.sh](https://skills.sh). You can install f
 ./run.sh install-skills --repo microsoft/github-copilot-for-azure
 ```
 
-### Disabling Skills
-
-Set `SKILLS_ENABLED=false` in `.env` to disable skill support entirely. Agents will revert to using only the base tools (`Read`, `Edit`, `Bash`, `Write`, `Glob`, `Grep`).
+Set `SKILLS_ENABLED=false` in `.env` to disable skill support entirely.
 
 ## Production Deployment (Ubuntu)
 
-The `run.sh` script manages the orchestrator as a systemd service:
+The `run.sh` script manages the orchestrator as a systemd service. The `install` command handles everything — Node.js, UI build, Python deps, and service registration:
 
 ```bash
 # Install as a systemd service (auto-start on boot, auto-restart on crash)
@@ -165,8 +224,11 @@ sudo ./run.sh install
 # Day-to-day management
 ./run.sh status      # Check if running
 ./run.sh logs        # Tail live logs (journalctl)
-./run.sh restart     # After config changes
+./run.sh restart     # After config changes, it also build the UI everytime you restart
 ./run.sh stop        # Graceful shutdown
+
+# Rebuild the dashboard UI after frontend changes
+./run.sh build-ui
 
 # Remove the service
 sudo ./run.sh uninstall
@@ -175,8 +237,6 @@ sudo ./run.sh uninstall
 Without systemd (local dev), `start`/`stop` fall back to `nohup` with a PID file.
 
 ## Target Repository Setup
-
-Your target repo needs two things:
 
 **1. `AGENT.md`** at the repo root — coding guidelines for agents (style, conventions, test commands).
 
@@ -196,7 +256,7 @@ Before making ANY changes, read and follow all guidelines in @AGENT.md.
 5. Reference the issue number in every commit message.
 ```
 
-**3. Issues** must be labeled with the configured label (default: `agent`) and contain a detailed implementation plan in the body. When you're done writing the plan, comment **`@claude-swarm start`** on the issue to trigger the agent. Issues without this trigger comment are ignored until activated.
+**3. Issues** must be labeled with the configured label (default: `agent`) and contain a detailed implementation plan in the body. Use the **AI Planner** in the dashboard to generate plans automatically, or write them manually. When ready, comment **`@swarmops start`** on the issue to trigger the agent. Issues without this comment are ignored until activated.
 
 **4. CI reviewer** — optionally set up a PR review action (e.g. `rekpero/claude-bugbot-github-action`) to post review comments that the orchestrator will detect and dispatch fix agents for.
 
@@ -207,38 +267,33 @@ claude-code-swarm/              ← This project (orchestrator)
 ├── orchestrator/
 │   ├── main.py                 # Entry point — starts all subsystems
 │   ├── config.py               # Configuration + environment validation
-│   ├── db.py                   # SQLite (issues, agents, events, PR reviews)
+│   ├── db.py                   # SQLite (issues, agents, events, PR reviews, planner sessions)
 │   ├── issue_poller.py         # Polls GitHub for labeled issues
 │   ├── agent_pool.py           # Manages claude -p subprocess lifecycle
 │   ├── pr_monitor.py           # Watches PRs for review comments / CI status
 │   ├── worktree.py             # Git worktree create/cleanup
 │   ├── stream_parser.py        # Parses claude stream-json output
 │   ├── prompts.py              # Agent prompt templates (with skill discovery)
-│   ├── dashboard.py            # FastAPI server
-│   └── static/index.html       # Dashboard UI
-├── run.sh                      # Service management + skill installation
-└── .env                        # Tokens and config
+│   ├── planner.py              # AI planning agent — codebase analysis + plan generation
+│   ├── dashboard.py            # FastAPI server + REST API
+│   └── static/                 # Built React SPA (output of ./run.sh build-ui)
+├── frontend/                   # React 18 + Vite dashboard source
+│   ├── src/
+│   │   ├── components/         # UI components (Header, Planner, AgentLogs, EnvManager…)
+│   │   ├── hooks/              # Data fetching hooks (React Query)
+│   │   └── context/            # Auth + workspace context
+│   └── public/                 # Static assets (logo, favicon)
+├── run.sh                      # Service management, build, skill installation
+└── .env                        # Tokens and config (copy from .env.example)
 
 ~/my-project/                   ← Target repo (separate directory)
 ├── .claude/skills/             ← Installed skills (via ./run.sh install-skills)
 │   ├── frontend-design/
-│   ├── web-design-guidelines/
 │   └── ...
 ~/my-project-worktrees/         ← Auto-created isolated worktrees for each agent
 ```
 
 Agents run in isolated git worktrees as siblings of the target repo. The orchestrator never touches the target repo's working directory — each agent gets its own copy.
-
-## Dashboard
-
-The web dashboard at `http://localhost:8420` shows:
-
-- **Metrics bar** — resolved, pending, in progress, open PRs, needs human, avg turns
-- **Active agents** — live log stream, issue/PR assignment, turn count, elapsed time
-- **Issue queue** — all tracked issues with status and retry count
-- **PR tracker** — open PRs with review iteration count and comment totals
-
-Auto-refreshes every 3 seconds. No build step — plain HTML + vanilla JS.
 
 ## API Endpoints
 
@@ -249,6 +304,10 @@ Auto-refreshes every 3 seconds. No build step — plain HTML + vanilla JS.
 | `GET /api/agents/{id}/logs?since=N` | Stream-json events for an agent |
 | `GET /api/issues` | All tracked issues |
 | `GET /api/prs` | PR review loop status |
+| `GET /api/planner/sessions` | All planning sessions |
+| `POST /api/planner/start` | Start a new planning session |
+| `GET /api/planner/sessions/{id}/messages` | Messages for a planning session |
+| `POST /api/planner/sessions/{id}/create-issue` | Create a GitHub issue from a plan |
 
 ## Safety Guardrails
 

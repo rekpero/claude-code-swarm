@@ -1,4 +1,4 @@
-import { Settings, Plus, Check, AlertTriangle, RefreshCw, LogOut } from 'lucide-react'
+import { Settings, Plus, Check, AlertTriangle, LogOut } from 'lucide-react'
 import { WorkspaceSwitcher } from './WorkspaceSwitcher'
 import { useMetrics } from '../../hooks/useMetrics'
 import { useGitSync } from '../../hooks/useGitSync'
@@ -50,10 +50,7 @@ export function Header({ onAddWorkspace, onOpenSettings, onOpenPlanner }) {
     <header className="flex items-center justify-between px-6 py-3.5 border-b border-[var(--border)] bg-[var(--surface)]">
       <div className="flex items-center gap-5">
         <WorkspaceSwitcher onAddWorkspace={onAddWorkspace} />
-        <div className="flex items-center gap-2.5">
-          <div className="w-1.5 h-1.5 rounded-full bg-[var(--accent)] shadow-[0_0_6px_var(--accent)]" />
-          <h1 className="text-[15px] font-semibold tracking-tight">Claude Code Swarm</h1>
-        </div>
+        <img src="/logo.svg" alt="SwarmOps" className="h-7 w-auto" />
         <SyncIndicator wsId={selectedWorkspaceId} />
       </div>
       <div className="flex items-center gap-2.5">

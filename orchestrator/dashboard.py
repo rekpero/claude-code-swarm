@@ -22,7 +22,7 @@ from orchestrator import worktree
 from orchestrator import workspace_manager as wm
 from orchestrator.config import ADMIN_USERNAME, ADMIN_PASSWORD
 
-app = FastAPI(title="Claude Code Swarm Dashboard")
+app = FastAPI(title="SwarmOps Dashboard")
 
 SESSION_DURATION_DAYS = 30
 

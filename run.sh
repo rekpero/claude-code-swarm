@@ -208,7 +208,7 @@ cmd_logs() {
 }
 
 cmd_install() {
-  echo "Installing Claude Code Swarm as a systemd service..."
+  echo "Installing SwarmOps as a systemd service..."
   echo ""
 
   # Detect current user (the real user, not root)
@@ -273,7 +273,7 @@ EOF
 }
 
 cmd_uninstall() {
-  echo "Removing Claude Code Swarm systemd service..."
+  echo "Removing SwarmOps systemd service..."
   if [ -f "$SERVICE_FILE" ]; then
     systemctl stop "$SERVICE_NAME" 2>/dev/null || true
     systemctl disable "$SERVICE_NAME" 2>/dev/null || true
@@ -498,7 +498,7 @@ case "${1:-help}" in
   uninstall-skills) cmd_uninstall_skills "$@" ;;
   list-skills)      cmd_list_skills ;;
   *)
-    echo "Claude Code Swarm Orchestrator"
+    echo "SwarmOps Orchestrator"
     echo ""
     echo "Usage: $0 {command}"
     echo ""

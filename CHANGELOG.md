@@ -1,10 +1,43 @@
 # Changelog
 
-All notable changes to Claude Code Agent Swarm will be documented in this file.
+All notable changes to SwarmOps will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+
+## [1.4.2] - 2026-03-15
+
+### Changed
+- **Project renamed to SwarmOps** — all references to "Claude Code Agent Swarm" updated across `README.md`, `CHANGELOG.md`, `orchestrator/dashboard.py` (FastAPI title), `run.sh` (service descriptions), and `frontend/index.html` (page title)
+- **Trigger mention default updated** to `@swarmops` in `.env.example` (was `@claude-swarm`)
+- **README fully rewritten** to reflect the current state of the project: corrected Quick Start (added Node.js prerequisite, `./run.sh build-ui` step, credential setup notes), expanded Configuration table with `ADMIN_USERNAME`, `ADMIN_PASSWORD`, `GIT_AUTHOR_NAME`, `GIT_AUTHOR_EMAIL`, restored and expanded the Dashboard section covering the Live Progress view, AI Issue Planner, Environment File Manager, and Authentication panels, updated Architecture tree with `frontend/` source layout and `planner.py`
+
+### Added
+- **SwarmOps logo** — new brand identity with a three-bar parallel mark (two purple `#8b5cf6` bars + one emerald `#34d399` bar representing parallel agents and the orchestrator) and "SwarmOps" wordmark in InstrumentSans Bold with text converted to SVG paths via fonttools (fully self-contained, no font dependency)
+- `frontend/public/logo.svg` — horizontal logo lockup (480×80 auto-fitted viewBox, no dead space)
+- `frontend/public/logo-icon.svg` — square icon mark with dark rounded-square background
+- `frontend/public/favicon.svg` — vector favicon
+- Logo displayed in `Header.jsx` and `LoginPage.jsx`, replacing the previous animated dot + text
+
+---
+
+## [1.4.1] - 2026-03-15
+
+### Added
+- **Dashboard authentication**: all `/api/*` routes are now protected by session token auth — unauthenticated requests receive a `401` response ([#6](https://github.com/rekpero/claude-code-swarm/pull/6))
+- **`ADMIN_USERNAME` / `ADMIN_PASSWORD` config vars**: credentials for dashboard login; `ADMIN_PASSWORD` is required and validated at startup with a warning if unset; both are displayed redacted in `print_config()`
+- **`/api/auth/login`**, **`/api/auth/check`**, **`/api/auth/logout`** endpoints: stateless Bearer token flow — login returns a token stored in `localStorage`, check validates it, logout deletes the session
+- **`sessions` table** in SQLite: stores session tokens with 30-day expiry; expired sessions are cleaned up on each new login; `create_session`, `get_session`, `delete_session`, `cleanup_expired_sessions` functions added to `db.py`
+- **`AuthContext`** (`frontend/src/context/AuthContext.jsx`): `AuthProvider` + `useAuth` hook manage token state; API client injects `Authorization: Bearer <token>` header on every request and dispatches `swarm:unauthorized` only when a token was present (avoids conflating missing credentials with expired sessions)
+- **`LoginPage`** component (`frontend/src/components/auth/LoginPage.jsx`): dark-theme login form matching the dashboard aesthetic; shows "Invalid username or password" on failure
+- **Logout button** in `Header.jsx` — clears the session token and returns to the login page
+
+### Fixed
+- **Timing-safe credential comparison**: username and password comparisons are now evaluated unconditionally before being combined with `and`, eliminating the short-circuit timing side-channel that would have allowed username enumeration via response time
+- **401 cascade on app load**: `useMetrics`, `useAgents`, `useIssues`, and `usePRs` hooks now accept an `enabled` option; `App.jsx` passes `enabled: isAuthenticated && !isChecking` so no API requests fire before authentication is confirmed, preventing a cascade of 401s on page load
+
+---
 
 ## [1.4.0] - 2026-03-14
 

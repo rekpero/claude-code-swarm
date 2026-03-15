@@ -25,9 +25,8 @@ export function LoginPage() {
     <div className="min-h-screen flex items-center justify-center bg-[var(--bg)]">
       <div className="w-full max-w-sm">
         <div className="mb-8 text-center">
-          <div className="flex items-center justify-center gap-2.5 mb-2">
-            <div className="w-2 h-2 rounded-full bg-[var(--accent)] shadow-[0_0_8px_var(--accent)]" />
-            <h1 className="text-[18px] font-semibold tracking-tight">Claude Code Swarm</h1>
+          <div className="flex items-center justify-center mb-2">
+            <img src="/logo.svg" alt="SwarmOps" className="h-9 w-auto" />
           </div>
           <p className="text-[12px] text-[var(--text-muted)]">Sign in to access the dashboard</p>
         </div>
