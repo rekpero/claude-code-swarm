@@ -28,6 +28,7 @@ export function usePlanning(workspaceId) {
   const pollErrorCountRef = useRef(0)
   const pollActiveRef = useRef(false)
   const pollGenRef = useRef(0)
+  const _pollTickRef = useRef(null)
 
   useEffect(() => {
     sessionIdRef.current = sessionId
@@ -84,22 +85,20 @@ export function usePlanning(workspaceId) {
     }
   }, [])
 
-  const poll = useCallback(() => {
+  // _pollTick: internal single-tick scheduler. Does NOT call stopPolling() on
+  // entry so recursive calls (success path, backoff retries) never cancel an
+  // in-progress backoff timer. Uses _pollTickRef for self-reference to avoid
+  // circular useCallback dependencies.
+  const _pollTick = useCallback(() => {
     const sid = sessionIdRef.current
     if (!sid) return
-    // Guard against concurrent poll invocations: if a tick is already in-flight,
-    // do not start another one (avoids double-loop when cancelGeneration catches
-    // an error and calls poll() while a previous tick is still running).
     if (pollActiveRef.current) return
-    stopPolling()
 
-    // Capture the generation AFTER stopPolling increments it so our finally
-    // block can detect whether a newer poll has taken ownership of the flag.
+    // Capture the generation set by the most recent stopPolling() call so we
+    // can detect when a newer poll() has taken ownership of the active flag.
     const gen = pollGenRef.current
-
-    // Set the guard synchronously so that any second call to poll() within the
-    // 300 ms setTimeout window also sees it as true and returns early.
     pollActiveRef.current = true
+
     pollTimerRef.current = setTimeout(async () => {
       const localSid = sessionIdRef.current
       if (localSid !== sid) {
@@ -112,15 +111,21 @@ export function usePlanning(workspaceId) {
           getPlanningSession(localSid),
           getPlanningEvents(localSid, lastEventIdRef.current),
         ])
-        if (sessionIdRef.current !== localSid) return
+        if (sessionIdRef.current !== localSid) {
+          if (pollGenRef.current === gen) pollActiveRef.current = false
+          return
+        }
         if (!data) {
           // Apply the same backoff used for errors so a persistent null response
           // does not hammer the API at a fixed ~3 req/s rate indefinitely.
           pollErrorCountRef.current += 1
           const MAX_POLL_ERRORS = 5
+          if (pollGenRef.current === gen) pollActiveRef.current = false
           if (pollErrorCountRef.current <= MAX_POLL_ERRORS) {
             const backoff = Math.min(300 * Math.pow(2, pollErrorCountRef.current), 30000)
-            pollTimerRef.current = setTimeout(() => poll(), backoff)
+            pollTimerRef.current = setTimeout(() => {
+              if (pollGenRef.current === gen) _pollTickRef.current?.()
+            }, backoff)
           } else {
             setGenerating(false)
           }
@@ -148,31 +153,42 @@ export function usePlanning(workspaceId) {
           }
         }
 
+        // Clear active flag before scheduling the next tick so _pollTick's
+        // guard sees false and can proceed.
+        if (pollGenRef.current === gen) pollActiveRef.current = false
         if (data.generating || data.session?.status === 'generating') {
-          poll()
+          _pollTickRef.current?.()
         } else {
           setGenerating(false)
         }
       } catch {
         pollErrorCountRef.current += 1
         const MAX_POLL_ERRORS = 5
+        if (pollGenRef.current === gen) pollActiveRef.current = false
         if (pollErrorCountRef.current <= MAX_POLL_ERRORS) {
           // Exponential backoff: 600ms, 1.2s, 2.4s, 4.8s, 9.6s
           const backoff = Math.min(300 * Math.pow(2, pollErrorCountRef.current), 30000)
-          pollTimerRef.current = setTimeout(() => poll(), backoff)
+          pollTimerRef.current = setTimeout(() => {
+            if (pollGenRef.current === gen) _pollTickRef.current?.()
+          }, backoff)
         } else {
           // Stop retrying after MAX_POLL_ERRORS consecutive failures
           setGenerating(false)
         }
-      } finally {
-        // Only clear the flag if we are still the active generation.  A newer
-        // poll() call (e.g. from cancelGeneration's error path) will have
-        // incremented pollGenRef via stopPolling(), so our gen will no longer
-        // match and we must not clobber the flag that the new poll owns.
-        if (pollGenRef.current === gen) pollActiveRef.current = false
       }
     }, 300)
-  }, [stopPolling])
+  }, [])
+  // Keep ref in sync so recursive setTimeout callbacks always call the latest version.
+  _pollTickRef.current = _pollTick
+
+  // poll: public "start fresh" API. Always calls stopPolling() first to cancel
+  // any in-flight tick or pending backoff timer, then starts a new tick.
+  const poll = useCallback(() => {
+    const sid = sessionIdRef.current
+    if (!sid) return
+    stopPolling()
+    _pollTick()
+  }, [stopPolling, _pollTick])
 
   const startNew = useCallback(() => {
     stopPolling()
@@ -239,6 +255,7 @@ export function usePlanning(workspaceId) {
     if (!msg.trim()) return
     if (!workspaceId) return
 
+    stopPolling()
     setStreamEvents([])
     setGenerating(true)
 
@@ -260,7 +277,7 @@ export function usePlanning(workspaceId) {
     } catch {
       setGenerating(false)
     }
-  }, [workspaceId, poll, loadSessions])
+  }, [workspaceId, poll, loadSessions, stopPolling])
 
   const cancelGeneration = useCallback(async () => {
     const sid = sessionIdRef.current

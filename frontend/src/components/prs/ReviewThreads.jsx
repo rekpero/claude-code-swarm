@@ -12,50 +12,65 @@ function parseSeverity(body) {
   return null
 }
 
+// Sentinel delimiters use null bytes (\x00) which cannot appear in GitHub
+// comment text, preventing collisions with user-authored content.
+const S_CODE_BLOCK_OPEN = '\x00CODE_BLOCK\x00'
+const S_CODE_BLOCK_CLOSE = '\x00/CODE_BLOCK\x00'
+const S_INLINE_CODE_OPEN = '\x00INLINE_CODE\x00'
+const S_INLINE_CODE_CLOSE = '\x00/INLINE_CODE\x00'
+const S_STRONG_OPEN = '\x00STRONG\x00'
+const S_STRONG_CLOSE = '\x00/STRONG\x00'
+
 function formatCommentBody(body) {
   if (!body) return ''
   // Strip leading severity marker like **HIGH**: or **MEDIUM**:
   let text = body.replace(/^\*\*\w+\*\*[*:]?\s*/i, '')
 
-  // Basic inline formatting
+  // Basic inline formatting using null-byte sentinels
   // Code blocks
   text = text.replace(/```[\s\S]*?```/g, (match) => {
     const code = match.replace(/```\w*\n?/, '').replace(/```$/, '').trim()
-    return `\n<code-block>${code}</code-block>\n`
+    return `\n${S_CODE_BLOCK_OPEN}${code}${S_CODE_BLOCK_CLOSE}\n`
   })
   // Inline code
-  text = text.replace(/`([^`]+)`/g, '<inline-code>$1</inline-code>')
+  text = text.replace(/`([^`]+)`/g, `${S_INLINE_CODE_OPEN}$1${S_INLINE_CODE_CLOSE}`)
   // Bold
-  text = text.replace(/\*\*(.+?)\*\*/g, '<strong>$1</strong>')
+  text = text.replace(/\*\*(.+?)\*\*/g, `${S_STRONG_OPEN}$1${S_STRONG_CLOSE}`)
 
   return text
 }
 
 function CommentBody({ body }) {
   const formatted = formatCommentBody(body)
-  const parts = formatted.split(/(<code-block>[\s\S]*?<\/code-block>|<inline-code>.*?<\/inline-code>|<strong>.*?<\/strong>)/g)
+  const sentinelPattern = new RegExp(
+    `(${S_CODE_BLOCK_OPEN}[\\s\\S]*?${S_CODE_BLOCK_CLOSE}` +
+    `|${S_INLINE_CODE_OPEN}.*?${S_INLINE_CODE_CLOSE}` +
+    `|${S_STRONG_OPEN}.*?${S_STRONG_CLOSE})`,
+    'g'
+  )
+  const parts = formatted.split(sentinelPattern)
 
   return (
     <div className="text-[10px] text-[var(--text-dim)] leading-relaxed whitespace-pre-wrap">
       {parts.map((part, i) => {
-        if (part.startsWith('<code-block>')) {
-          const code = part.replace(/<\/?code-block>/g, '')
+        if (part.startsWith(S_CODE_BLOCK_OPEN)) {
+          const code = part.slice(S_CODE_BLOCK_OPEN.length, -S_CODE_BLOCK_CLOSE.length)
           return (
             <pre key={i} className="my-1.5 p-2 bg-[var(--surface)] border border-[var(--border-subtle)] rounded text-[9px] font-mono overflow-x-auto text-[var(--text-dim)]">
               {code}
             </pre>
           )
         }
-        if (part.startsWith('<inline-code>')) {
-          const code = part.replace(/<\/?inline-code>/g, '')
+        if (part.startsWith(S_INLINE_CODE_OPEN)) {
+          const code = part.slice(S_INLINE_CODE_OPEN.length, -S_INLINE_CODE_CLOSE.length)
           return (
             <code key={i} className="px-1 py-px bg-[var(--surface)] border border-[var(--border-subtle)] rounded text-[9px] font-mono text-[var(--accent)]">
               {code}
             </code>
           )
         }
-        if (part.startsWith('<strong>')) {
-          const text = part.replace(/<\/?strong>/g, '')
+        if (part.startsWith(S_STRONG_OPEN)) {
+          const text = part.slice(S_STRONG_OPEN.length, -S_STRONG_CLOSE.length)
           return <strong key={i} className="font-semibold text-[var(--text)]">{text}</strong>
         }
         // Handle newlines as separate lines for plain text
