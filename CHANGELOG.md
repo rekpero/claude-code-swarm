@@ -6,6 +6,47 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 
+## [1.4.0] - 2026-03-14
+
+### Added
+- **React 18 + Vite 5 frontend**: full SPA in `frontend/` replacing the inline HTML dashboard — uses Tailwind CSS 3, React Query v5, Lucide React icons, and date-fns
+- **Complete component tree** preserving the existing dark color palette via CSS custom properties (`tokens.css`):
+  - Layout: `Header`, `WorkspaceSwitcher`, `TabNav`
+  - Metrics: `MetricsBar`, `MetricCard` (7-card grid)
+  - Agents: `ActiveAgents`, `AgentCard`, `AgentLogViewer`, `AgentStatusBadge`
+  - Issues: `IssueQueue`, `IssueStatusBadge` with per-row Retry button for `needs_human`
+  - PRs: `PRTracker`, `ReviewThreads`
+  - Modals: `AddWorkspaceModal`, `WorkspaceSettingsModal`, `EnvEditor`
+  - Planner: `PlannerModal` with support for creating GitHub issues from specific assistant messages
+  - UI primitives: `Card`, `Badge`, `Button` (polymorphic `as` prop), `Modal`, `Spinner`, `EmptyState`
+- **Custom React hooks**: `useAgents`, `useIssues`, `useMetrics`, `usePRs`, `useWorkspaces`, `usePlanning`, `useGitSync` — encapsulate all API polling and mutation logic
+- **WorkspaceContext** persists `selectedWorkspaceId` to `localStorage`
+- **SPA catch-all route** in `dashboard.py` (registered after all `/api/*` routes) so React client-side navigation works on direct URL loads; guards against serving `index.html` for `api/*` paths (returns 404 instead)
+- **`build-ui` command** in `run.sh` (`cd frontend && npm install && npm run build`), integrated into the `install` flow; UI is also rebuilt on orchestrator restart
+- **Rich tool-use logging**: `WebSearch`, `WebFetch`, `Grep`, `Glob`, and `Agent` tool uses now display their key parameters (query, URL, pattern, description) in both the backend stream parser and frontend log viewer
+- **`buildGitHubUrl` helper** with `owner/repo` validation and `encodeURIComponent` sanitization in `PRTracker` and `IssueQueue` to prevent URL injection
+
+### Changed
+- **Dashboard fully migrated from inline HTML + vanilla JS to React SPA** — Vite builds output directly to `orchestrator/static/` via `vite.config.js` `outDir` setting
+- **PR statuses enriched from issue state** (merged/needs_human) and PRs sorted by status priority
+- **Issues sorted by status priority** in the dashboard
+- **Agents sorted with running instances first** in the dashboard
+- **Reattached agents** (surviving an orchestrator restart) now compute `turns_used` from the `agent_events` table on completion; dashboard fallback dynamically calculates turns for any agent with `turns_used=0`
+- **`/assets` static mount** is conditional — server logs a warning instead of crashing when the frontend hasn't been built yet
+- `.gitignore` updated with `frontend/node_modules/` and `frontend/dist/`
+
+### Fixed
+- **AgentLogViewer**: accumulate events with ID-based deduplication instead of replacing on each poll; synchronous cursor reset with `cursorAgentIdRef` guard to prevent stale cached data from overwriting cursor on agent switch
+- **EnvEditor**: merge-overwrite semantics for paste and file upload (existing keys are updated, not dropped); stable row IDs derived from variable names instead of `Math.random()`; separate `fileReadError` state so file-read errors aren't silently cleared by save actions; cancellation flag in `useEffect` to prevent race conditions on rapid file switches
+- **WorkspaceSettingsModal**: error handlers on update and delete mutations; form fields reinitialise when workspace fields change while modal is open; `confirmDelete` resets when modal closes; form resets when workspace becomes null after deletion
+- **PRTracker**: composite key `${github_repo}-${pr_number}` to prevent duplicate React keys across repos
+- **IssueQueue**: per-row `retryingIssue` state so a single retry doesn't disable all Retry buttons
+- **PlannerModal**: optional chaining guard on `streamEvents?.length`; `setTimeout` cleanup on rapid open/close; stable `loadSessions` reference in `useEffect` dependency array
+- **API client**: fix header merging by destructuring `headers` from options before spread, preventing `options.headers` from overwriting the merged `Content-Type` header
+- **EnvEditor `.env` parsing**: balanced quote matching regex instead of independent quote stripping
+
+---
+
 ## [1.3.1] - 2026-03-13
 
 ### Changed

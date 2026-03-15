@@ -6,12 +6,12 @@ from pathlib import Path
 logger = logging.getLogger(__name__)
 
 
-def _run_git(*args: str, repo_path: Path | str | None = None, check: bool = True) -> subprocess.CompletedProcess:
+def _run_git(*args: str, repo_path: Path | str | None = None, check: bool = True, timeout: int = 60) -> subprocess.CompletedProcess:
     """Run a git command against a repo."""
     target = str(repo_path)
     cmd = ["git", "-C", target] + list(args)
     logger.debug("Running: %s", " ".join(cmd))
-    result = subprocess.run(cmd, capture_output=True, text=True, timeout=60)
+    result = subprocess.run(cmd, capture_output=True, text=True, timeout=timeout)
     if check and result.returncode != 0:
         raise RuntimeError(
             f"git command failed: {' '.join(cmd)}\nstderr: {result.stderr}"
@@ -25,7 +25,62 @@ def ensure_repo_updated(repo_path: Path | str, base_branch: str = "main"):
     branch = base_branch
     logger.info("Updating target repo at %s", target)
     _run_git("fetch", "origin", repo_path=target)
+    # Ensure we're on the base branch (not a stale feature branch).
+    # Use check=False so that a dirty working tree (e.g. from an interrupted
+    # prior operation) does not raise an exception and break the git-pull
+    # endpoint; log a warning instead so operators can investigate.
+    result = _run_git("checkout", branch, repo_path=target, check=False)
+    if result.returncode != 0:
+        logger.warning(
+            "git checkout %s failed for repo %s (repo may have uncommitted changes): %s",
+            branch, target, result.stderr.strip(),
+        )
     _run_git("pull", "origin", branch, repo_path=target, check=False)
+
+
+def get_sync_status(repo_path: Path | str, base_branch: str = "main") -> dict:
+    """Check if the local base branch is in sync with origin.
+
+    Returns a dict with:
+      - synced (bool): True if local HEAD matches remote HEAD
+      - local_sha (str): short local commit hash
+      - remote_sha (str): short remote commit hash
+      - behind (int): commits behind remote
+      - ahead (int): commits ahead of remote
+    """
+    target = repo_path
+    # Fetch latest refs from remote (silent, no merge).
+    # Use a short timeout so an unreachable remote yields a fast error
+    # rather than blocking the HTTP endpoint for minutes.
+    _run_git("fetch", "origin", repo_path=target, check=False, timeout=15)
+
+    local = _run_git("rev-parse", "--short", base_branch, repo_path=target, check=False)
+    remote = _run_git("rev-parse", "--short", f"origin/{base_branch}", repo_path=target, check=False)
+
+    local_sha = local.stdout.strip() if local.returncode == 0 else ""
+    remote_sha = remote.stdout.strip() if remote.returncode == 0 else ""
+
+    behind = 0
+    ahead = 0
+    if local_sha and remote_sha:
+        rev_list = _run_git(
+            "rev-list", "--left-right", "--count",
+            f"{base_branch}...origin/{base_branch}",
+            repo_path=target, check=False,
+        )
+        if rev_list.returncode == 0:
+            parts = rev_list.stdout.strip().split()
+            if len(parts) == 2:
+                ahead = int(parts[0])
+                behind = int(parts[1])
+
+    return {
+        "synced": local_sha == remote_sha and local_sha != "",
+        "local_sha": local_sha,
+        "remote_sha": remote_sha,
+        "behind": behind,
+        "ahead": ahead,
+    }
 
 
 def create_worktree(
@@ -154,9 +209,17 @@ def copy_env_files_to_worktree(
 
 
 def cleanup_worktree(path: str, repo_path: Path | str | None = None):
-    """Remove a git worktree."""
+    """Remove a git worktree, force-deleting the directory if git can't."""
     logger.info("Cleaning up worktree: %s", path)
     _run_git("worktree", "remove", path, "--force", repo_path=repo_path, check=False)
+    # If the directory still exists (locked files, etc.), nuke it
+    wt = Path(path)
+    if wt.exists():
+        logger.warning("Worktree directory still exists after git remove, force-deleting: %s", path)
+        shutil.rmtree(str(wt), ignore_errors=True)
+    # Prune stale worktree references so git doesn't complain
+    if repo_path:
+        _run_git("worktree", "prune", repo_path=repo_path, check=False)
 
 
 def list_worktrees(repo_path: Path | str | None = None) -> list[dict]:

@@ -1,21 +1,36 @@
 """FastAPI dashboard server for the swarm orchestrator."""
 
+import asyncio
 import json
+import logging
+import os
+import signal
+import time
 import uuid
 from pathlib import Path
 
-from fastapi import FastAPI, Query
-from fastapi.responses import HTMLResponse, JSONResponse
+from fastapi import FastAPI, HTTPException, Query
+from fastapi.responses import FileResponse, HTMLResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 
 from orchestrator import db
 from orchestrator import planner
+from orchestrator import worktree
 from orchestrator import workspace_manager as wm
 
 app = FastAPI(title="Claude Code Swarm Dashboard")
 
 STATIC_DIR = Path(__file__).parent / "static"
+
+# Set by main.py after the AgentPool is created so dashboard endpoints can
+# dispatch / restart agents.
+_agent_pool = None
+
+
+def set_agent_pool(pool):
+    global _agent_pool
+    _agent_pool = pool
 
 
 # === Pydantic Models ===
@@ -39,10 +54,12 @@ class SaveEnvRequest(BaseModel):
 
 # === Dashboard HTML ===
 
-@app.get("/", response_class=HTMLResponse)
+@app.get("/", response_class=FileResponse)
 async def index():
-    index_file = STATIC_DIR / "index.html"
-    return index_file.read_text()
+    index = STATIC_DIR / "index.html"
+    if not index.exists():
+        raise HTTPException(status_code=404, detail="Frontend not built")
+    return FileResponse(str(index))
 
 
 # === Workspace Endpoints ===
@@ -115,6 +132,39 @@ async def get_workspace_structure(workspace_id: str):
     return {"structure": structure}
 
 
+@app.get("/api/workspaces/{workspace_id}/git-status")
+async def workspace_git_status(workspace_id: str):
+    """Check if the workspace's base branch is in sync with the remote."""
+    workspace = db.get_workspace(workspace_id)
+    if not workspace:
+        return JSONResponse(content={"error": "Workspace not found"}, status_code=404)
+    local_path = workspace.get("local_path")
+    if not local_path or not Path(local_path).exists():
+        return JSONResponse(content={"error": "Workspace repo not cloned yet"}, status_code=400)
+    try:
+        status = await asyncio.to_thread(worktree.get_sync_status, local_path, workspace.get("base_branch", "main"))
+        return status
+    except Exception as e:
+        return JSONResponse(content={"error": str(e)}, status_code=500)
+
+
+@app.post("/api/workspaces/{workspace_id}/git-pull")
+async def workspace_git_pull(workspace_id: str):
+    """Pull latest changes from the remote for the workspace's base branch."""
+    workspace = db.get_workspace(workspace_id)
+    if not workspace:
+        return JSONResponse(content={"error": "Workspace not found"}, status_code=404)
+    local_path = workspace.get("local_path")
+    if not local_path or not Path(local_path).exists():
+        return JSONResponse(content={"error": "Workspace repo not cloned yet"}, status_code=400)
+    try:
+        await asyncio.to_thread(worktree.ensure_repo_updated, local_path, workspace.get("base_branch", "main"))
+        status = await asyncio.to_thread(worktree.get_sync_status, local_path, workspace.get("base_branch", "main"))
+        return {"ok": True, **status}
+    except Exception as e:
+        return JSONResponse(content={"error": str(e)}, status_code=500)
+
+
 @app.put("/api/workspaces/{workspace_id}/env")
 async def save_workspace_env(workspace_id: str, req: SaveEnvRequest):
     """Save env vars for a workspace (writes to DB + disk)."""
@@ -157,8 +207,27 @@ async def get_workspace_env_files(workspace_id: str):
 @app.post("/api/workspaces/{workspace_id}/env-load")
 async def load_env_from_disk(workspace_id: str, env_file: str = Query(".env")):
     """Load env vars from an existing .env file on disk into DB."""
-    env_vars = wm.load_env_from_disk(workspace_id, env_file)
-    return {"vars": env_vars, "env_file": env_file, "count": len(env_vars)}
+    workspace = db.get_workspace(workspace_id)
+    if not workspace:
+        return JSONResponse(content={"error": "Workspace not found"}, status_code=404)
+    local_path = workspace.get("local_path")
+    if not local_path or not Path(local_path).exists():
+        return JSONResponse(content={"error": "Workspace repo not cloned yet"}, status_code=400)
+    file_path = Path(local_path) / env_file
+    # Guard against path traversal: resolve both paths and ensure the file is
+    # contained within the workspace directory.  pathlib silently discards
+    # local_path when env_file is absolute, and ../ sequences can escape the
+    # workspace, so we must check after resolving.
+    resolved_workspace = Path(local_path).resolve()
+    if not file_path.resolve().is_relative_to(resolved_workspace):
+        return JSONResponse(content={"error": "Access denied: path is outside the workspace"}, status_code=403)
+    if not file_path.exists():
+        return JSONResponse(content={"error": f"File {env_file} not found on disk"}, status_code=404)
+    try:
+        env_vars = wm.load_env_from_disk(workspace_id, env_file)
+        return {"vars": env_vars, "env_file": env_file, "count": len(env_vars)}
+    except Exception as e:
+        return JSONResponse(content={"error": str(e)}, status_code=500)
 
 
 # === Existing Endpoints (now workspace-filterable) ===
@@ -185,6 +254,162 @@ async def agent_logs(agent_id: str, since: int = Query(0)):
     return {"events": events}
 
 
+@app.post("/api/agents/{agent_id}/restart")
+async def restart_agent(agent_id: str):
+    """Kill a running agent and dispatch a fresh one for the same issue/PR."""
+    agent = db.get_agent(agent_id)
+    if not agent:
+        return JSONResponse(content={"error": "Agent not found"}, status_code=404)
+    if agent["status"] != "running":
+        return JSONResponse(content={"error": "Agent is not running"}, status_code=400)
+    if not _agent_pool:
+        return JSONResponse(content={"error": "Agent pool not available"}, status_code=503)
+
+    # Validate workspace before any destructive operations so we never kill
+    # the agent and mutate the DB only to discover we cannot redispatch.
+    workspace_id = agent.get("workspace_id")
+    ws = db.get_workspace(workspace_id) if workspace_id else None
+    if not ws:
+        return JSONResponse(content={"error": "Workspace not found"}, status_code=404)
+
+    # Validate dispatch preconditions BEFORE sending SIGTERM so that if they
+    # fail the old agent is left alive and the issue is never stranded in a
+    # stopped state with no replacement agent.
+    branch = None
+    threads = None
+    if agent.get("agent_type") == "fix_review":
+        if not agent.get("pr_number"):
+            return JSONResponse(
+                content={"error": "Cannot restart: fix_review agent has no pr_number"},
+                status_code=400,
+            )
+        from orchestrator.pr_monitor import get_pr_branch, get_unresolved_threads
+        github_repo = ws.get("github_repo")
+        if not github_repo:
+            return JSONResponse(
+                content={"error": "Workspace has no github_repo configured"},
+                status_code=409,
+            )
+        branch = get_pr_branch(agent["pr_number"], github_repo=github_repo)
+        threads = get_unresolved_threads(agent["pr_number"], github_repo=github_repo)
+        if not branch:
+            return JSONResponse(
+                content={"error": "Cannot restart: could not resolve PR branch"},
+                status_code=400,
+            )
+    else:
+        if agent["issue_number"] is None:
+            return JSONResponse(
+                content={"error": "Cannot restart: no issue number"},
+                status_code=400,
+            )
+
+    # Validate PID before marking externally stopped. If a 'running' agent has
+    # no PID (e.g. the PID write raced with a DB failure), we must not flag it
+    # as stopped without sending SIGTERM — the original process would keep
+    # running alongside any replacement, and _monitor_agent/_monitor_pid would
+    # skip their completion DB writes when it eventually exits.
+    pid = agent.get("pid")
+    if not pid:
+        return JSONResponse(
+            content={"error": "Cannot restart: running agent has no PID recorded"},
+            status_code=409,
+        )
+
+    # Mark the agent as externally stopped *before* sending SIGTERM so that
+    # _monitor_agent / _monitor_pid skip their own completion DB writes and
+    # don't race with the writes below.
+    _agent_pool.mark_externally_stopped(agent_id)
+
+    # Kill the old process group and wait for it to die.
+    # Agents are spawned with start_new_session=True, so they lead their own
+    # process group.  Signalling only the agent PID leaves any child processes
+    # it spawned (e.g. subprocess claude invocations) as orphans.  Send SIGTERM
+    # to the entire process group instead.
+    if pid:
+        try:
+            try:
+                os.killpg(os.getpgid(pid), signal.SIGTERM)
+            except ProcessLookupError:
+                pass
+            # Wait up to 10s for the process to exit
+            for _ in range(20):
+                await asyncio.sleep(0.5)
+                try:
+                    os.kill(pid, 0)
+                except (OSError, ProcessLookupError):
+                    break  # Process is dead
+            else:
+                # Force kill if still alive
+                try:
+                    os.killpg(os.getpgid(pid), signal.SIGKILL)
+                    await asyncio.sleep(0.5)
+                except (OSError, ProcessLookupError):
+                    pass
+        except (OSError, ProcessLookupError):
+            pass
+    # Re-fetch the agent record after the kill to check whether it had already
+    # completed naturally (e.g. just created a PR) before we sent SIGTERM.
+    # Use this single snapshot for both status decisions and cleanup operations
+    # to avoid acting on a stale worktree_path while using a fresh status.
+    current_agent = db.get_agent(agent_id)
+    if current_agent and current_agent["status"] == "running":
+        # Mark the old agent finished BEFORE dispatching the new one.  The
+        # _monitor_agent/_monitor_pid thread was told to skip its own DB
+        # completion writes (via mark_externally_stopped) and may have already
+        # exited by now.  Writing finish_agent here — before dispatch — ensures
+        # the old record is never left permanently in 'running' state even if
+        # the dispatch call succeeds but a subsequent DB write fails.
+        try:
+            db.finish_agent(agent_id, status="stopped", error_message="Manually restarted by user")
+        except Exception:
+            _agent_pool.unmark_externally_stopped(agent_id)
+            raise
+
+        # update_issue failure is non-fatal: the agent is already stopped and we
+        # still want to dispatch a replacement.  Ignore errors and continue.
+        if current_agent["issue_number"] is not None and current_agent.get("agent_type") == "fix_review":
+            try:
+                db.update_issue(current_agent["issue_number"], workspace_id=workspace_id, status="pending")
+            except Exception:
+                pass
+
+        # Dispatch preconditions were validated before the kill; proceed to dispatch.
+        new_agent_id = None
+        try:
+            if current_agent.get("agent_type") == "fix_review":
+                new_agent_id = _agent_pool.dispatch_fix_review(
+                    current_agent["pr_number"], branch, current_agent["issue_number"], ws, threads,
+                )
+            else:
+                new_agent_id = _agent_pool.dispatch_implement(current_agent["issue_number"], workspace=ws)
+        except Exception:
+            _agent_pool.unmark_externally_stopped(agent_id)
+            raise
+
+        if not new_agent_id:
+            # The old agent process is already dead (SIGTERM was sent and
+            # waited on above).  finish_agent was already called above.
+            _agent_pool.unmark_externally_stopped(agent_id)
+            return JSONResponse(content={"error": "Failed to dispatch new agent"}, status_code=500)
+
+        # Clean up the old worktree now that the new agent has its own.
+        # Use current_agent to ensure we target the fresh worktree_path.
+        repo_path = ws["local_path"]
+        if current_agent.get("worktree_path"):
+            try:
+                worktree.cleanup_worktree(current_agent["worktree_path"], repo_path=repo_path)
+            except Exception:
+                pass
+
+        return {"ok": True, "old_agent_id": agent_id, "new_agent_id": new_agent_id}
+
+    # The agent had already completed naturally before we could restart it.
+    # Remove agent_id from _stopped_agent_ids so it doesn't leak in the set.
+    _agent_pool.unmark_externally_stopped(agent_id)
+    return JSONResponse(content={"error": "Agent completed before restart could dispatch a new one"}, status_code=409)
+
+
 @app.get("/api/issues")
 async def list_issues(workspace_id: str | None = Query(None)):
     """List all tracked issues and their state."""
@@ -196,29 +421,56 @@ async def list_issues(workspace_id: str | None = Query(None)):
 async def list_prs(workspace_id: str | None = Query(None)):
     """List all tracked PRs and their review loop count."""
     reviews = db.get_all_pr_reviews(workspace_id=workspace_id)
-    pr_map: dict[int, dict] = {}
+
+    # Build a lookup of (workspace_id, pr_number) -> issue status so we can
+    # mark merged PRs.  Using a composite key prevents PRs with the same
+    # number in different workspaces from overwriting each other.
+    all_issues = db.get_all_issues(workspace_id=workspace_id)
+    pr_issue_status: dict[tuple, str] = {}
+    for issue in all_issues:
+        if issue.get("pr_number"):
+            key = (issue.get("workspace_id"), issue["pr_number"])
+            pr_issue_status[key] = issue["status"]
+
+    pr_map: dict[tuple, dict] = {}
     for review in reviews:
         pr_num = review["pr_number"]
-        if pr_num not in pr_map:
-            pr_map[pr_num] = {
+        ws_id = review.get("workspace_id")
+        key = (ws_id, pr_num)
+        if key not in pr_map:
+            pr_map[key] = {
                 "pr_number": pr_num,
                 "iterations": 0,
                 "latest_status": review["status"],
                 "total_comments": 0,
                 "review_threads": [],
+                "workspace_id": ws_id,
             }
-        pr_map[pr_num]["iterations"] = max(pr_map[pr_num]["iterations"], review["iteration"])
-        pr_map[pr_num]["latest_status"] = review["status"]
-        pr_map[pr_num]["total_comments"] += review.get("comments_count", 0)
+        pr_map[key]["iterations"] = max(pr_map[key]["iterations"], review["iteration"])
+        pr_map[key]["latest_status"] = review["status"]
+        pr_map[key]["total_comments"] += review.get("comments_count", 0)
 
         comments_json = review.get("comments_json")
         if comments_json:
             try:
-                pr_map[pr_num]["review_threads"] = json.loads(comments_json)
+                pr_map[key]["review_threads"] = json.loads(comments_json)
             except (json.JSONDecodeError, TypeError):
                 pass
 
-    return {"prs": list(pr_map.values())}
+    # Enrich PR statuses from issue state:
+    # - issue "resolved" → PR was merged
+    # - issue "needs_human" → PR needs human intervention
+    for (ws_id, pr_num), pr_data in pr_map.items():
+        issue_status = pr_issue_status.get((ws_id, pr_num))
+        if issue_status == "resolved":
+            pr_data["latest_status"] = "merged"
+        elif issue_status == "needs_human":
+            pr_data["latest_status"] = "needs_human"
+
+    # Sort: active statuses first, resolved/merged last
+    pr_status_order = {"pending_fix": 0, "pending": 1, "open": 2, "needs_human": 3, "closed": 4, "merged": 5}
+    sorted_prs = sorted(pr_map.values(), key=lambda p: pr_status_order.get(p["latest_status"], 3))
+    return {"prs": sorted_prs}
 
 
 class StartPlanningRequest(BaseModel):
@@ -232,6 +484,7 @@ class RefinePlanRequest(BaseModel):
 
 class CreateIssueRequest(BaseModel):
     title: str = ""
+    message_index: int | None = None
 
 
 # === Planning Endpoints ===
@@ -253,6 +506,7 @@ def delete_planning_session(session_id: str):
     if not session:
         return JSONResponse(content={"error": "Session not found"}, status_code=404)
     planner.cancel_planning(session_id)
+    planner.cleanup_session_issue_keys(session_id)
     db.delete_planning_session(session_id)
     return {"ok": True}
 
@@ -334,7 +588,7 @@ def create_issue_from_plan(session_id: str, req: CreateIssueRequest):
         return JSONResponse(content={"error": "Session not found"}, status_code=404)
 
     try:
-        result = planner.create_issue_from_plan(session_id, req.title)
+        result = planner.create_issue_from_plan(session_id, req.title, message_index=req.message_index)
         return result
     except RuntimeError as e:
         status_code = 409 if "in progress" in str(e) else 400
@@ -380,3 +634,29 @@ async def get_metrics(workspace_id: str | None = Query(None)):
 
 # Serve static files
 app.mount("/static", StaticFiles(directory=str(STATIC_DIR)), name="static")
+
+# Serve Vite-built assets at /assets/ (index.html references them with root-relative /assets/... paths)
+# Only mount if the directory exists; otherwise log a warning and let the spa_fallback return 404.
+_assets_dir = STATIC_DIR / "assets"
+if _assets_dir.exists():
+    app.mount("/assets", StaticFiles(directory=str(_assets_dir)), name="assets")
+else:
+    logging.getLogger(__name__).warning(
+        "Assets directory '%s' not found — frontend build may be missing. "
+        "Requests to /assets/... will return 404.",
+        _assets_dir,
+    )
+
+
+# SPA catch-all — must be registered LAST, after all /api/* routes and static mount.
+# Returns index.html for any non-API, non-static path so React Router handles navigation.
+@app.get("/{full_path:path}")
+async def spa_fallback(full_path: str):
+    if full_path == "api" or full_path.startswith("api/"):
+        raise HTTPException(status_code=404, detail="Not found")
+    if full_path.startswith("assets/") or full_path.startswith("static/"):
+        raise HTTPException(status_code=404)
+    index = STATIC_DIR / "index.html"
+    if not index.exists():
+        raise HTTPException(status_code=404, detail="Frontend not built")
+    return FileResponse(str(index))

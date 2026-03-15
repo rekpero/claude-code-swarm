@@ -9,3 +9,6 @@ venv/
 *.egg-info/
 dist/
 build/
+frontend/node_modules/
+frontend/dist/
+orchestrator/static

@@ -26,6 +26,8 @@ def _run_gh(*args: str) -> subprocess.CompletedProcess:
 
 def get_pr_comments(pr_number: int, github_repo: str | None = None) -> list[dict]:
     """Fetch all review comments on a PR (REST API — no resolution status)."""
+    if not github_repo:
+        return []
     repo = github_repo
     owner, repo_name = repo.split("/", 1)
     result = _run_gh(
@@ -43,19 +45,27 @@ def get_pr_comments(pr_number: int, github_repo: str | None = None) -> list[dict
 
 
 def get_unresolved_threads(pr_number: int, github_repo: str | None = None) -> list[dict] | None:
-    """Fetch unresolved review threads with full details using the GraphQL API."""
+    """Fetch unresolved review threads with full details using the GraphQL API.
+
+    Paginates through all review threads to ensure none are missed when a PR
+    has more than 100 threads.  Comments per thread are fetched up to 100
+    (plenty for review context).
+    """
+    if not github_repo:
+        return None
     repo = github_repo
     owner, repo_name = repo.split("/", 1)
     query = """
-    query($owner: String!, $repo: String!, $pr: Int!) {
+    query($owner: String!, $repo: String!, $pr: Int!, $cursor: String) {
       repository(owner: $owner, name: $repo) {
         pullRequest(number: $pr) {
-          reviewThreads(first: 100) {
+          reviewThreads(first: 100, after: $cursor) {
+            pageInfo { hasNextPage endCursor }
             nodes {
               isResolved
               path
               line
-              comments(first: 10) {
+              comments(first: 100) {
                 nodes {
                   body
                   author { login }
@@ -67,34 +77,56 @@ def get_unresolved_threads(pr_number: int, github_repo: str | None = None) -> li
       }
     }
     """
-    result = _run_gh(
-        "api", "graphql",
-        "-f", f"query={query}",
-        "-f", f"owner={owner}",
-        "-f", f"repo={repo_name}",
-        "-F", f"pr={pr_number}",
-    )
-    if result.returncode != 0:
-        logger.warning("GraphQL query failed for PR #%d: %s", pr_number, result.stderr)
-        return None
-    try:
-        data = json.loads(result.stdout)
-        threads = data["data"]["repository"]["pullRequest"]["reviewThreads"]["nodes"]
-        unresolved = []
-        for t in threads:
-            if not t["isResolved"]:
-                unresolved.append({
-                    "path": t.get("path", "unknown"),
-                    "line": t.get("line"),
-                    "comments": [
-                        {"body": c["body"], "author": c.get("author", {}).get("login", "unknown")}
-                        for c in t.get("comments", {}).get("nodes", [])
-                    ],
-                })
-        return unresolved
-    except (json.JSONDecodeError, KeyError, TypeError) as e:
-        logger.warning("Failed to parse GraphQL response for PR #%d: %s", pr_number, e)
-        return None
+
+    unresolved = []
+    cursor = None
+
+    while True:
+        args = [
+            "api", "graphql",
+            "-f", f"query={query}",
+            "-f", f"owner={owner}",
+            "-f", f"repo={repo_name}",
+            "-F", f"pr={pr_number}",
+        ]
+        if cursor:
+            args += ["-f", f"cursor={cursor}"]
+
+        result = _run_gh(*args)
+        if result.returncode != 0:
+            logger.warning("GraphQL query failed for PR #%d: %s", pr_number, result.stderr)
+            return None
+        try:
+            data = json.loads(result.stdout)
+            if data.get("errors"):
+                logger.warning("GraphQL response contained errors for PR #%d: %s", pr_number, data["errors"])
+                return None
+            review_threads = data["data"]["repository"]["pullRequest"]["reviewThreads"]
+            threads = review_threads["nodes"]
+            page_info = review_threads["pageInfo"]
+
+            for t in threads:
+                if not t["isResolved"]:
+                    unresolved.append({
+                        "path": t.get("path", "unknown"),
+                        "line": t.get("line"),
+                        "comments": [
+                            {"body": c["body"], "author": c.get("author", {}).get("login", "unknown")}
+                            for c in t.get("comments", {}).get("nodes", [])
+                        ],
+                    })
+
+            if not page_info.get("hasNextPage"):
+                break
+            cursor = page_info.get("endCursor")
+            if not cursor:
+                break
+
+        except (json.JSONDecodeError, KeyError, TypeError) as e:
+            logger.warning("Failed to parse GraphQL response for PR #%d: %s", pr_number, e)
+            return None
+
+    return unresolved
 
 
 def get_pr_checks(pr_number: int, github_repo: str | None = None) -> list[dict]:

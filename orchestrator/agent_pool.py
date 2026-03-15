@@ -7,6 +7,7 @@ import signal
 import subprocess
 import threading
 import time
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Callable
 
@@ -22,7 +23,10 @@ from orchestrator.config import (
     MAX_CONCURRENT_AGENTS,
     MAX_RATE_LIMIT_RESUMES,
     SKILLS_ENABLED,
+    WORKSPACES_DIR,
 )
+
+AGENT_LOGS_DIR = WORKSPACES_DIR / ".agent-logs"
 from orchestrator.prompts import (
     build_fix_review_prompt,
     build_implement_prompt,
@@ -62,6 +66,16 @@ def _workspace_config(workspace: dict) -> tuple[str, str, str, str]:
     )
 
 
+def _ensure_log_dir():
+    """Create the agent logs directory if it doesn't exist."""
+    AGENT_LOGS_DIR.mkdir(parents=True, exist_ok=True)
+
+
+def agent_log_path(agent_id: str) -> Path:
+    """Return the path for an agent's stream-json log file."""
+    return AGENT_LOGS_DIR / f"{agent_id}.jsonl"
+
+
 class AgentProcess:
     """Wraps a running claude -p subprocess."""
 
@@ -85,28 +99,75 @@ class AgentProcess:
         self.events: list[AgentEvent] = []
         self.started_at = time.time()
         self._reader_thread: threading.Thread | None = None
+        self._tailer_done: threading.Event = threading.Event()
         # Store workspace config for use in completion handlers
         self._workspace: dict | None = None
+        self.log_file = agent_log_path(agent_id)
+        # Set to True by AgentPool.mark_externally_stopped() so _monitor_agent
+        # knows to skip completion DB writes when restart_agent kills this process.
+        self.stopped_externally: bool = False
 
     def start_reader(self):
-        """Start a background thread to read stream-json output."""
+        """Start a background thread to tail the log file for events."""
         self._reader_thread = threading.Thread(
-            target=self._read_stream, daemon=True, name=f"reader-{self.agent_id}"
+            target=self._tail_log, daemon=True, name=f"reader-{self.agent_id}"
         )
         self._reader_thread.start()
 
-    def _read_stream(self):
-        """Read stdout line by line and parse stream-json events."""
+    def _tail_log(self):
+        """Tail the agent's log file and ingest events into the DB."""
         try:
-            for line in self.process.stdout:
-                event = parse_stream_line(line)
-                if event:
-                    self.events.append(event)
-                    db.insert_event(self.agent_id, event.event_type, json.dumps(event.raw))
-                    if event.event_type == "tool_use":
-                        logger.info("[%s] %s", self.agent_id, event.summary)
+            # The log file is created by _spawn_agent just before Popen.
+            # In rare cases start_reader() may race ahead of that 'open(..., "a")'
+            # call, so poll briefly before giving up.
+            _deadline = time.time() + 1.0
+            while not os.path.exists(self.log_file):
+                if time.time() >= _deadline:
+                    logger.warning("[%s] Log file not found after 1s: %s", self.agent_id, self.log_file)
+                    return
+                time.sleep(0.05)
+            with open(self.log_file) as f:
+                while True:
+                    line = f.readline()
+                    if line:
+                        event = parse_stream_line(line)
+                        if event:
+                            self.events.append(event)
+                            try:
+                                db.insert_event(self.agent_id, event.event_type, json.dumps(event.raw))
+                            except Exception as _db_err:
+                                logger.warning("[%s] Failed to insert event: %s", self.agent_id, _db_err)
+                            if event.event_type == "tool_use":
+                                logger.info("[%s] %s", self.agent_id, event.summary)
+                        # Persist offset after every readline so non-JSON lines
+                        # also advance the saved position, preventing duplicate
+                        # re-reads after a restart.
+                        try:
+                            db.update_agent(self.agent_id, log_offset=f.tell())
+                        except Exception as _db_err:
+                            logger.warning("[%s] Failed to update log offset: %s", self.agent_id, _db_err)
+                    else:
+                        # No new data — check if process exited
+                        if self.process.poll() is not None:
+                            # Read any final lines
+                            for remaining in f:
+                                event = parse_stream_line(remaining)
+                                if event:
+                                    self.events.append(event)
+                                    try:
+                                        db.insert_event(self.agent_id, event.event_type, json.dumps(event.raw))
+                                    except Exception as _db_err:
+                                        logger.warning("[%s] Failed to insert event: %s", self.agent_id, _db_err)
+                                try:
+                                    db.update_agent(self.agent_id, log_offset=f.tell())
+                                except Exception as _db_err:
+                                    logger.warning("[%s] Failed to update log offset: %s", self.agent_id, _db_err)
+                            break
+                        time.sleep(0.5)
         except Exception as e:
             logger.error("[%s] Stream reader error: %s", self.agent_id, e)
+        finally:
+            self._tailer_done.set()
 
     @property
     def is_running(self) -> bool:
@@ -137,6 +198,12 @@ class AgentPool:
         self._agents: dict[str, AgentProcess] = {}
         self._lock = threading.Lock()
         self._on_agent_complete: Callable[[AgentProcess], None] | None = None
+        # Callback for reattached-agent completion (no AgentProcess object available).
+        # Signature: (agent_id, agent_type, pr_number, workspace)
+        self._on_reattach_complete: Callable[[str, str, int | None, dict | None], None] | None = None
+        # Agent IDs that were stopped externally (via restart_agent) so that
+        # _monitor_agent / _monitor_pid skip their completion DB writes.
+        self._stopped_agent_ids: set[str] = set()
 
     @property
     def active_count(self) -> int:
@@ -150,6 +217,45 @@ class AgentPool:
     def set_completion_callback(self, callback: Callable[[AgentProcess], None]):
         """Set a callback to be called when an agent completes."""
         self._on_agent_complete = callback
+
+    def set_reattach_completion_callback(
+        self, callback: Callable[[str, str, int | None, dict | None], None]
+    ) -> None:
+        """Set a callback invoked when a reattached agent completes.
+
+        The callback receives ``(agent_id, agent_type, pr_number, workspace)``
+        so the same downstream automation that fires for freshly-spawned agents
+        via ``_on_agent_complete`` can also fire for reattached agents handled
+        by ``_monitor_pid`` (which has no ``AgentProcess`` object).
+        """
+        self._on_reattach_complete = callback
+
+    def mark_externally_stopped(self, agent_id: str) -> None:
+        """Signal that an agent is being stopped externally (e.g. via restart_agent).
+
+        Must be called *before* sending SIGTERM so that _monitor_agent and
+        _monitor_pid see the flag before they process the process exit and
+        skip their own DB completion writes, preventing a race where the
+        monitor thread overwrites the 'stopped' status set by restart_agent.
+        """
+        with self._lock:
+            self._stopped_agent_ids.add(agent_id)
+            agent = self._agents.get(agent_id)
+            if agent:
+                agent.stopped_externally = True
+
+    def unmark_externally_stopped(self, agent_id: str) -> None:
+        """Remove agent_id from the externally-stopped set.
+
+        Call this when a restart is aborted (e.g. the agent already completed
+        naturally) so the set does not leak entries for the lifetime of the
+        orchestrator process.
+        """
+        with self._lock:
+            self._stopped_agent_ids.discard(agent_id)
+            agent = self._agents.get(agent_id)
+            if agent:
+                agent.stopped_externally = False
 
     def dispatch_implement(self, issue_number: int, workspace: dict | None = None) -> str | None:
         """Dispatch an agent to implement an issue. Returns agent_id or None if pool is full."""
@@ -304,6 +410,7 @@ class AgentPool:
             allowed_tools += ",Skill"
 
         cmd = [
+            "stdbuf", "-oL",
             "claude", "-p", prompt,
             "--allowedTools", allowed_tools,
             "--output-format", "stream-json",
@@ -330,16 +437,29 @@ class AgentPool:
             ws_env = db.get_workspace_env(workspace_id)
             env.update(ws_env)
 
-        logger.info("Spawning agent %s in %s (PID will be independent)", agent_id, worktree_path)
-        process = subprocess.Popen(
-            cmd,
-            cwd=worktree_path,
-            stdout=subprocess.PIPE,
-            stderr=subprocess.PIPE,
-            text=True,
-            env=env,
-            start_new_session=True,  # Agent survives orchestrator restart
-        )
+        _ensure_log_dir()
+        log_file = agent_log_path(agent_id)
+        stdout_file = open(log_file, "a")
+        try:
+            logger.info("Spawning agent %s in %s (PID will be independent)", agent_id, worktree_path)
+            process = subprocess.Popen(
+                cmd,
+                cwd=worktree_path,
+                stdout=stdout_file,
+                stderr=subprocess.PIPE,
+                text=True,
+                env=env,
+                start_new_session=True,  # Agent survives orchestrator restart
+            )
+        except Exception:
+            try:
+                os.unlink(log_file)
+            except OSError:
+                pass
+            raise
+        finally:
+            # Close our copy of the file descriptor — the child process keeps its own
+            stdout_file.close()
 
         return AgentProcess(
             agent_id=agent_id,
@@ -385,7 +505,20 @@ class AgentPool:
                 return
             time.sleep(5)
 
-        # Agent finished
+        # Agent finished — skip completion logic if externally stopped to avoid
+        # racing with restart_agent's own DB writes.
+        if agent.stopped_externally:
+            logger.info("Agent %s was externally stopped — skipping completion logic", agent_id)
+            with self._lock:
+                self._stopped_agent_ids.discard(agent_id)
+            return
+
+        # Wait for the tailer thread to finish draining the log before reading
+        # turn count, mirroring the reattached-agent pattern (_tail_log_file /
+        # tailer_done.wait).  This prevents _monitor_agent from seeing a partial
+        # event list when the process exits quickly.
+        agent._tailer_done.wait(timeout=30)
+
         return_code = agent.process.returncode
         stderr_output = agent.process.stderr.read() if agent.process.stderr else ""
         turns = len([e for e in agent.events if e.event_type == "assistant"])
@@ -625,10 +758,10 @@ class AgentPool:
             prompt = build_resume_fix_review_prompt(pr_number, unresolved_threads, github_repo=github_repo, target_repo_path=local_path)
             max_turns = AGENT_MAX_TURNS_FIX
 
-        new_agent_id = f"agent-resume-{issue_number}-{int(time.time())}"
+        new_agent_id = f"agent-resume-{issue_number or 'unknown'}-{time.monotonic_ns()}"
 
         # Build command
-        cmd = ["claude"]
+        cmd = ["stdbuf", "-oL", "claude"]
         if old_session_id:
             cmd += ["--resume", old_session_id, "-p", prompt]
             logger.info("Resuming session %s for agent %s", old_session_id, old_agent_id)
@@ -665,15 +798,29 @@ class AgentPool:
             env.update(ws_env)
 
         try:
-            process = subprocess.Popen(
-                cmd,
-                cwd=worktree_path,
-                stdout=subprocess.PIPE,
-                stderr=subprocess.PIPE,
-                text=True,
-                env=env,
-                start_new_session=True,
-            )
+            _ensure_log_dir()
+            resume_log_file = agent_log_path(new_agent_id)
+            resume_stdout = open(resume_log_file, "a")
+            try:
+                process = subprocess.Popen(
+                    cmd,
+                    cwd=worktree_path,
+                    stdout=resume_stdout,
+                    stderr=subprocess.PIPE,
+                    text=True,
+                    env=env,
+                    start_new_session=True,
+                )
+            except Exception:
+                resume_stdout.close()
+                try:
+                    os.unlink(resume_log_file)
+                except OSError:
+                    pass
+                raise
+            finally:
+                if not resume_stdout.closed:
+                    resume_stdout.close()
         except Exception as e:
             logger.error("Failed to resume agent %s: %s", old_agent_id, e)
             return None
@@ -689,7 +836,7 @@ class AgentPool:
         )
         agent_proc._workspace = workspace
 
-        # Mark old agent as superseded
+        # Mark old agent as superseded (but keep its log file)
         db.update_agent(old_agent_id, status="resumed")
 
         # Create new agent record
@@ -745,6 +892,349 @@ class AgentPool:
                     ],
                 })
             return results
+
+    # ------------------------------------------------------------------
+    # Reattach surviving agents after orchestrator restart
+    # ------------------------------------------------------------------
+
+    def reattach_agent(self, agent_record: dict, workspace: dict | None = None):
+        """Reattach a monitor thread to an agent that survived a restart.
+
+        Starts a log-file tailer to continue ingesting stream events, and
+        a PID monitor to detect when the agent exits.
+        """
+        agent_id = agent_record["agent_id"]
+        pid = agent_record["pid"]
+        issue_number = agent_record["issue_number"]
+        agent_type = agent_record.get("agent_type", "implement")
+        worktree_path = agent_record.get("worktree_path", "")
+        pr_number = agent_record.get("pr_number")
+        workspace_id = agent_record.get("workspace_id")
+
+        if pid is None:
+            logger.warning(
+                "Skipping reattach for agent %s: PID is None (agent may not have started successfully)",
+                agent_id,
+            )
+            return
+
+        logger.info(
+            "Reattaching monitor for agent %s (PID %d, issue #%s)",
+            agent_id, pid, issue_number,
+        )
+
+        # Start log file tailer to continue ingesting events
+        log_file = agent_log_path(agent_id)
+        tailer_done = threading.Event()
+        if log_file.exists():
+            # Use the persisted byte offset so the tailer resumes from the exact
+            # position it last reached.  Falling back to 0 makes the tailer
+            # re-read the whole file (safe, though slower) when no offset has
+            # been stored yet (e.g. for agents started before this migration).
+            log_offset = agent_record.get("log_offset") or 0
+            threading.Thread(
+                target=self._tail_log_file,
+                args=(agent_id, log_file, pid, log_offset, tailer_done),
+                daemon=True,
+                name=f"tail-{agent_id}",
+            ).start()
+        else:
+            # No log file — signal immediately so the monitor doesn't wait
+            tailer_done.set()
+
+        # Parse the agent's original start time from the DB record so that
+        # _monitor_pid uses the true elapsed time rather than resetting the
+        # timeout clock to the moment of reattachment.
+        started_at_str = agent_record.get("started_at")
+        try:
+            agent_started_at = datetime.fromisoformat(
+                started_at_str.replace(" ", "T")
+            ).replace(tzinfo=timezone.utc).timestamp()
+        except (ValueError, AttributeError, TypeError):
+            agent_started_at = time.time()
+
+        threading.Thread(
+            target=self._monitor_pid,
+            args=(agent_id, pid, issue_number, agent_type, worktree_path, pr_number, workspace_id, workspace, tailer_done, agent_started_at),
+            daemon=True,
+            name=f"monitor-reattach-{agent_id}",
+        ).start()
+
+    def _tail_log_file(self, agent_id: str, log_file: Path, pid: int, log_offset: int = 0, done_event: threading.Event | None = None):
+        """Tail an agent's log file and ingest new events into the DB.
+
+        Uses a byte offset (not a line count) to resume from the correct position
+        after an orchestrator restart.  Tracking total bytes consumed rather than
+        only successfully-stored events avoids re-processing lines that were read
+        but not stored (e.g. non-JSON output or lines parse_stream_line ignores).
+        """
+        logger.info("Tailing log file for agent %s from offset %d: %s", agent_id, log_offset, log_file)
+        try:
+            with open(log_file) as f:
+                # Seek to the last processed byte offset so we skip lines that
+                # have already been consumed (both stored and non-stored).
+                if log_offset > 0:
+                    f.seek(log_offset)
+
+                # Now tail for new lines
+                while True:
+                    line = f.readline()
+                    if line:
+                        event = parse_stream_line(line)
+                        if event:
+                            try:
+                                db.insert_event(agent_id, event.event_type, json.dumps(event.raw))
+                            except Exception as _db_err:
+                                logger.warning("[%s] Failed to insert event: %s", agent_id, _db_err)
+                            if event.event_type == "tool_use":
+                                logger.info("[%s] %s", agent_id, event.summary)
+                        # Persist offset after every readline so non-JSON lines
+                        # also advance the saved position, preventing duplicate
+                        # re-reads after a restart.
+                        try:
+                            db.update_agent(agent_id, log_offset=f.tell())
+                        except Exception as _db_err:
+                            logger.warning("[%s] Failed to update log offset: %s", agent_id, _db_err)
+                    else:
+                        # No new data — check if process is still alive
+                        try:
+                            os.kill(pid, 0)
+                        except (OSError, ProcessLookupError):
+                            # Process is dead, read any remaining lines
+                            for remaining in f:
+                                event = parse_stream_line(remaining)
+                                if event:
+                                    try:
+                                        db.insert_event(agent_id, event.event_type, json.dumps(event.raw))
+                                    except Exception as _db_err:
+                                        logger.warning("[%s] Failed to insert event: %s", agent_id, _db_err)
+                                try:
+                                    db.update_agent(agent_id, log_offset=f.tell())
+                                except Exception as _db_err:
+                                    logger.warning("[%s] Failed to update log offset: %s", agent_id, _db_err)
+                            break
+                        time.sleep(1)
+        except Exception as e:
+            logger.error("[%s] Log tailer error: %s", agent_id, e)
+        finally:
+            if done_event is not None:
+                done_event.set()
+
+    def _monitor_pid(
+        self,
+        agent_id: str,
+        pid: int,
+        issue_number: int,
+        agent_type: str,
+        worktree_path: str,
+        pr_number: int | None,
+        workspace_id: str | None,
+        workspace: dict | None,
+        tailer_done: threading.Event | None = None,
+        started_at: float | None = None,
+    ):
+        """Poll a PID until it exits, then handle agent completion."""
+        if started_at is None:
+            started_at = time.time()
+
+        while True:
+            try:
+                os.kill(pid, 0)
+            except (OSError, ProcessLookupError):
+                # Process has exited
+                break
+
+            elapsed = time.time() - started_at
+            if elapsed > AGENT_TIMEOUT_SECONDS:
+                logger.warning(
+                    "Reattached agent %s (PID %d) timed out after %ds, killing",
+                    agent_id, pid, AGENT_TIMEOUT_SECONDS,
+                )
+                try:
+                    os.killpg(os.getpgid(pid), signal.SIGTERM)
+                    time.sleep(5)
+                    try:
+                        os.killpg(os.getpgid(pid), signal.SIGKILL)
+                    except (OSError, ProcessLookupError):
+                        pass
+                except (OSError, ProcessLookupError):
+                    pass
+                # Wait for the log tailer to finish draining before reading
+                # turn counts, mirroring the normal completion path.
+                if tailer_done is not None:
+                    tailer_done.wait(timeout=30)
+                turns = db.get_agent_turn_count(agent_id)
+                if turns:
+                    db.update_agent(agent_id, turns_used=turns)
+                db.finish_agent(agent_id, status="timeout", error_message="Agent exceeded timeout (reattached)")
+                if issue_number is not None:
+                    db.update_issue(issue_number, workspace_id=workspace_id, status="pending")
+                repo_path = workspace.get("local_path") if workspace else None
+                if worktree_path and repo_path:
+                    cleanup_worktree(worktree_path, repo_path=repo_path)
+                elif worktree_path and not repo_path:
+                    logger.warning(
+                        "Skipping git worktree deregistration for agent %s: workspace is None, "
+                        "worktree_path=%s may be orphaned",
+                        agent_id,
+                        worktree_path,
+                    )
+                with self._lock:
+                    self._stopped_agent_ids.discard(agent_id)
+                return
+
+            time.sleep(5)
+
+        # PID exited — handle completion
+        logger.info("Reattached agent %s (PID %d) has exited", agent_id, pid)
+
+        # Skip completion logic if this agent was externally stopped (e.g. via
+        # restart_agent) to avoid overwriting the DB state set by the caller.
+        with self._lock:
+            externally_stopped = agent_id in self._stopped_agent_ids
+            self._stopped_agent_ids.discard(agent_id)
+        if externally_stopped:
+            logger.info("Reattached agent %s was externally stopped — skipping completion logic", agent_id)
+            # Wait for the log tailer to finish draining before returning so
+            # that in-flight DB writes (event/turn counts) complete cleanly.
+            if tailer_done is not None:
+                tailer_done.wait(timeout=30)
+            return
+
+        # Wait for the log tailer to finish ingesting remaining events before
+        # reading the turn count so we get a complete picture.
+        if tailer_done is not None:
+            tailer_done.wait(timeout=30)
+
+        # Update turns_used from DB events (reattached agents don't track in-memory)
+        turns = db.get_agent_turn_count(agent_id)
+        if turns:
+            db.update_agent(agent_id, turns_used=turns)
+
+        repo_path = workspace.get("local_path") if workspace else None
+        github_repo = workspace.get("github_repo") if workspace else None
+
+        # Track the effective pr_number so the completion callback receives the
+        # latest value even when it is discovered during this function (e.g. an
+        # auto-created PR or one found via the GitHub API).
+        effective_pr_number: int | None = pr_number
+
+        if agent_type == "implement":
+            if issue_number is None:
+                db.finish_agent(agent_id, status="completed")
+                if worktree_path and repo_path:
+                    cleanup_worktree(worktree_path, repo_path=repo_path)
+                elif worktree_path:
+                    logger.warning(
+                        "repo_path is None for agent %s — skipping git worktree deregistration",
+                        agent_id,
+                    )
+                return
+            # Check if a PR was created
+            branch_name = f"fix/issue-{issue_number}"
+            found_pr = self._find_pr_for_branch(branch_name, github_repo=github_repo) if github_repo else None
+
+            if found_pr:
+                logger.info("Reattached agent %s created PR #%d for issue #%d", agent_id, found_pr, issue_number)
+                db.finish_agent(agent_id, status="completed")
+                db.update_agent(agent_id, pr_number=found_pr)
+                if issue_number is not None:
+                    db.update_issue(issue_number, workspace_id=workspace_id, status="pr_created", pr_number=found_pr)
+                effective_pr_number = found_pr
+            elif worktree_path and self._is_branch_pushed(branch_name, worktree_path):
+                logger.warning("Reattached agent %s pushed branch but no PR — creating automatically", agent_id)
+                auto_pr = self._create_pr_for_branch(branch_name, issue_number, github_repo=github_repo)
+                if auto_pr:
+                    db.finish_agent(agent_id, status="completed")
+                    db.update_agent(agent_id, pr_number=auto_pr)
+                    if issue_number is not None:
+                        db.update_issue(issue_number, workspace_id=workspace_id, status="pr_created", pr_number=auto_pr)
+                    effective_pr_number = auto_pr
+                else:
+                    db.finish_agent(agent_id, status="failed", error_message="Agent exited without creating PR (reattached)")
+                    if issue_number is not None:
+                        db.update_issue(issue_number, workspace_id=workspace_id, status="pending")
+            else:
+                # Can't tell if it succeeded or failed without stdout — check for unpushed commits
+                base_branch = workspace.get("base_branch", "main") if workspace else "main"
+                if worktree_path and self._has_unpushed_commits(worktree_path, base_branch=base_branch):
+                    logger.warning("Reattached agent %s has unpushed commits — pushing and creating PR", agent_id)
+                    if self._push_branch(branch_name, worktree_path):
+                        auto_pr = self._create_pr_for_branch(branch_name, issue_number, github_repo=github_repo)
+                        if auto_pr:
+                            db.finish_agent(agent_id, status="completed")
+                            db.update_agent(agent_id, pr_number=auto_pr)
+                            if issue_number is not None:
+                                db.update_issue(issue_number, workspace_id=workspace_id, status="pr_created", pr_number=auto_pr)
+                            effective_pr_number = auto_pr
+                            if worktree_path and repo_path:
+                                cleanup_worktree(worktree_path, repo_path=repo_path)
+                            elif worktree_path:
+                                logger.warning("repo_path is None for agent %s — skipping git worktree deregistration", agent_id)
+                            if self._on_reattach_complete:
+                                try:
+                                    self._on_reattach_complete(agent_id, agent_type, effective_pr_number, workspace)
+                                except Exception as e:
+                                    logger.error("Reattach completion callback error: %s", e)
+                            return
+
+                db.finish_agent(agent_id, status="failed", error_message="Agent exited without creating PR (reattached)")
+                if issue_number is not None:
+                    db.update_issue(issue_number, workspace_id=workspace_id, status="pending")
+        else:
+            # fix_review agent — determine success from git state.
+            # Try to decode the exit status. For child processes os.waitpid succeeds;
+            # for reattached non-child processes it raises ChildProcessError (ECHILD)
+            # because the process has already been reaped by init.
+            # Use WNOHANG to avoid blocking the monitor thread if the child
+            # has not yet been fully reaped by the OS.
+            try:
+                waited_pid, wait_status = os.waitpid(pid, os.WNOHANG)
+                if waited_pid == 0:
+                    # Not yet fully reaped by the OS; exit code unavailable.
+                    exit_code = None
+                else:
+                    exit_code = os.WEXITSTATUS(wait_status) if os.WIFEXITED(wait_status) else -1
+            except ChildProcessError:
+                exit_code = None
+            agent_succeeded = False
+            if worktree_path and os.path.exists(worktree_path) and started_at:
+                try:
+                    result = subprocess.run(
+                        ["git", "log", "--oneline", f"--after={datetime.fromtimestamp(started_at, tz=timezone.utc).strftime('%Y-%m-%dT%H:%M:%SZ')}"],
+                        capture_output=True, text=True, cwd=worktree_path, timeout=10,
+                    )
+                    agent_succeeded = result.returncode == 0 and bool(result.stdout.strip())
+                except Exception as e:
+                    logger.warning(
+                        "Could not check git state for reattached fix_review agent %s: %s",
+                        agent_id, e,
+                    )
+
+            if agent_succeeded:
+                logger.info("Reattached fix_review agent %s succeeded — marking completed", agent_id)
+                db.finish_agent(agent_id, status="completed")
+                if issue_number is not None:
+                    db.update_issue(issue_number, workspace_id=workspace_id, status="pr_created")
+            else:
+                logger.warning(
+                    "Reattached fix_review agent %s did not succeed (exit_code=%s) — marking failed",
+                    agent_id, exit_code,
+                )
+                db.finish_agent(agent_id, status="failed", error_message="Fix review agent exited unsuccessfully (reattached)")
+                if issue_number is not None:
+                    db.update_issue(issue_number, workspace_id=workspace_id, status="needs_human")
+
+        if worktree_path and repo_path:
+            cleanup_worktree(worktree_path, repo_path=repo_path)
+        elif worktree_path:
+            logger.warning("repo_path is None for agent %s — skipping git worktree deregistration", agent_id)
+
+        if self._on_reattach_complete:
+            try:
+                self._on_reattach_complete(agent_id, agent_type, effective_pr_number, workspace)
+            except Exception as e:
+                logger.error("Reattach completion callback error: %s", e)
 
     def shutdown(self):
         """Gracefully shut down the pool — let running agents continue independently."""
