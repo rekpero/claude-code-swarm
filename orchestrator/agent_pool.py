@@ -1136,12 +1136,14 @@ class AgentPool:
                     db.update_issue(issue_number, workspace_id=workspace_id, status="pending")
         else:
             # fix_review agent — determine success from git state.
-            # For reattached non-child processes the PID is already reaped by
-            # the time we reach here (os.kill(pid, 0) raised ProcessLookupError
-            # above), so psutil.Process(pid).wait() would raise NoSuchProcess
-            # and cannot provide the exit code.  We fall back to checking for
-            # new branch commits as a proxy for success instead.
-            exit_code = None
+            # Try to decode the exit status. For child processes os.waitpid succeeds;
+            # for reattached non-child processes it raises ChildProcessError (ECHILD)
+            # because the process has already been reaped by init.
+            try:
+                _, wait_status = os.waitpid(pid, 0)
+                exit_code = os.WEXITSTATUS(wait_status) if os.WIFEXITED(wait_status) else -1
+            except ChildProcessError:
+                exit_code = None
             agent_succeeded = False
             if worktree_path and os.path.exists(worktree_path) and started_at:
                 try:

@@ -59,6 +59,10 @@ export function EnvEditor({ workspaceId }) {
   // without including it in the dependency array (dirty is a guard, not a trigger).
   const dirtyRef = useRef(false)
   dirtyRef.current = dirty
+  // Stores the vars from the last successful save so that a Discard action can
+  // revert to the confirmed server state even if the post-save re-fetch was
+  // suppressed by the dirty guard (user typed before the re-fetch fired).
+  const lastSavedRef = useRef(null)
 
   useEffect(() => {
     setActiveFile('.env')
@@ -158,12 +162,24 @@ export function EnvEditor({ workspaceId }) {
     }
     try {
       await saveEnv(workspaceId, activeFile, vars)
+      lastSavedRef.current = vars
       setDirty(false)
       setFetchCounter(c => c + 1)
     } catch (err) {
       setSaveError(err?.message || 'Failed to save')
     } finally {
       setSaving(false)
+    }
+  }
+
+  const handleDiscard = () => {
+    if (lastSavedRef.current !== null) {
+      const saved = lastSavedRef.current
+      setRows(Object.entries(saved).map(([k, v]) => ({ id: k, key: k, value: v })))
+      setDirty(false)
+    } else {
+      setFetchCounter(c => c + 1)
+      setDirty(false)
     }
   }
 
@@ -317,7 +333,12 @@ export function EnvEditor({ workspaceId }) {
         <Button size="sm" variant="ghost" loading={syncing} onClick={handleSyncFromDisk} title="Re-read from disk">
           <RefreshCw size={10} /> Sync from disk
         </Button>
-        <div className="ml-auto">
+        <div className="ml-auto flex gap-2">
+          {dirty && (
+            <Button size="sm" variant="ghost" onClick={handleDiscard}>
+              Discard
+            </Button>
+          )}
           <Button size="sm" variant="primary" loading={saving} onClick={handleSave}>
             <Save size={10} /> Save
           </Button>

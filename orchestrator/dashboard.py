@@ -284,8 +284,14 @@ async def restart_agent(agent_id: str):
                 status_code=400,
             )
         from orchestrator.pr_monitor import get_pr_branch, get_unresolved_threads
-        branch = get_pr_branch(agent["pr_number"], github_repo=ws["github_repo"])
-        threads = get_unresolved_threads(agent["pr_number"], github_repo=ws["github_repo"])
+        github_repo = ws.get("github_repo")
+        if not github_repo:
+            return JSONResponse(
+                content={"error": "Workspace has no github_repo configured"},
+                status_code=409,
+            )
+        branch = get_pr_branch(agent["pr_number"], github_repo=github_repo)
+        threads = get_unresolved_threads(agent["pr_number"], github_repo=github_repo)
         if not branch:
             return JSONResponse(
                 content={"error": "Cannot restart: could not resolve PR branch"},
