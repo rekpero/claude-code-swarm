@@ -425,7 +425,6 @@ class AgentPool:
                 start_new_session=True,  # Agent survives orchestrator restart
             )
         except Exception:
-            stdout_file.close()
             try:
                 os.unlink(log_file)
             except OSError:
@@ -483,6 +482,8 @@ class AgentPool:
         # racing with restart_agent's own DB writes.
         if agent.stopped_externally:
             logger.info("Agent %s was externally stopped — skipping completion logic", agent_id)
+            if hasattr(agent, '_tailer_done') and agent._tailer_done is not None:
+                agent._tailer_done.wait(timeout=30)
             if self._on_agent_complete:
                 try:
                     self._on_agent_complete(agent)
@@ -791,7 +792,6 @@ class AgentPool:
                     start_new_session=True,
                 )
             except Exception:
-                resume_stdout.close()
                 try:
                     os.unlink(resume_log_file)
                 except OSError:
@@ -1045,6 +1045,8 @@ class AgentPool:
                         agent_id,
                         worktree_path,
                     )
+                with self._lock:
+                    self._stopped_agent_ids.discard(agent_id)
                 return
 
             time.sleep(5)

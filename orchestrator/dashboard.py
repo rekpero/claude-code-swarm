@@ -219,8 +219,7 @@ async def load_env_from_disk(workspace_id: str, env_file: str = Query(".env")):
     # local_path when env_file is absolute, and ../ sequences can escape the
     # workspace, so we must check after resolving.
     resolved_workspace = Path(local_path).resolve()
-    if not str(file_path.resolve()).startswith(str(resolved_workspace) + os.sep) and \
-            file_path.resolve() != resolved_workspace:
+    if not str(file_path.resolve()).startswith(str(resolved_workspace) + os.sep):
         return JSONResponse(content={"error": "Access denied: path is outside the workspace"}, status_code=403)
     if not file_path.exists():
         return JSONResponse(content={"error": f"File {env_file} not found on disk"}, status_code=404)
