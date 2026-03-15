@@ -424,6 +424,13 @@ class AgentPool:
                 env=env,
                 start_new_session=True,  # Agent survives orchestrator restart
             )
+        except Exception:
+            stdout_file.close()
+            try:
+                os.unlink(log_file)
+            except OSError:
+                pass
+            raise
         finally:
             # Close our copy of the file descriptor — the child process keeps its own
             stdout_file.close()
@@ -783,6 +790,13 @@ class AgentPool:
                     env=env,
                     start_new_session=True,
                 )
+            except Exception:
+                resume_stdout.close()
+                try:
+                    os.unlink(resume_log_file)
+                except OSError:
+                    pass
+                raise
             finally:
                 resume_stdout.close()
         except Exception as e:
@@ -1045,6 +1059,10 @@ class AgentPool:
             self._stopped_agent_ids.discard(agent_id)
         if externally_stopped:
             logger.info("Reattached agent %s was externally stopped — skipping completion logic", agent_id)
+            # Wait for the log tailer to finish draining before returning so
+            # that in-flight DB writes (event/turn counts) complete cleanly.
+            if tailer_done is not None:
+                tailer_done.wait(timeout=30)
             return
 
         # Wait for the log tailer to finish ingesting remaining events before

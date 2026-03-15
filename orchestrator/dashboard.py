@@ -273,6 +273,32 @@ async def restart_agent(agent_id: str):
     if not ws:
         return JSONResponse(content={"error": "Workspace not found"}, status_code=404)
 
+    # Validate dispatch preconditions BEFORE sending SIGTERM so that if they
+    # fail the old agent is left alive and the issue is never stranded in a
+    # stopped state with no replacement agent.
+    branch = None
+    threads = None
+    if agent.get("agent_type") == "fix_review":
+        if not agent.get("pr_number"):
+            return JSONResponse(
+                content={"error": "Cannot restart: fix_review agent has no pr_number"},
+                status_code=400,
+            )
+        from orchestrator.pr_monitor import get_pr_branch, get_unresolved_threads
+        branch = get_pr_branch(agent["pr_number"], github_repo=ws["github_repo"])
+        threads = get_unresolved_threads(agent["pr_number"], github_repo=ws["github_repo"])
+        if not branch:
+            return JSONResponse(
+                content={"error": "Cannot restart: could not resolve PR branch"},
+                status_code=400,
+            )
+    else:
+        if agent["issue_number"] is None:
+            return JSONResponse(
+                content={"error": "Cannot restart: no issue number"},
+                status_code=400,
+            )
+
     # Mark the agent as externally stopped *before* sending SIGTERM so that
     # _monitor_agent / _monitor_pid skip their own completion DB writes and
     # don't race with the writes below.
@@ -305,31 +331,13 @@ async def restart_agent(agent_id: str):
     # to avoid acting on a stale worktree_path while using a fresh status.
     current_agent = db.get_agent(agent_id)
     if current_agent and current_agent["status"] == "running":
-        # Validate dispatch inputs and attempt dispatch BEFORE mutating DB or
-        # filesystem so that any failure leaves the old state intact and avoids
-        # stranding the issue in an unrecoverable state.
+        # Dispatch preconditions were validated before the kill; proceed to dispatch.
         new_agent_id = None
         if current_agent.get("agent_type") == "fix_review":
-            if not current_agent.get("pr_number"):
-                _agent_pool.unmark_externally_stopped(agent_id)
-                return JSONResponse(
-                    content={"error": "Cannot restart: fix_review agent has no pr_number"},
-                    status_code=400,
-                )
-            from orchestrator.pr_monitor import get_pr_branch, get_unresolved_threads
-            branch = get_pr_branch(current_agent["pr_number"], github_repo=ws["github_repo"])
-            threads = get_unresolved_threads(current_agent["pr_number"], github_repo=ws["github_repo"])
-            if branch:
-                new_agent_id = _agent_pool.dispatch_fix_review(
-                    current_agent["pr_number"], branch, current_agent["issue_number"], ws, threads,
-                )
+            new_agent_id = _agent_pool.dispatch_fix_review(
+                current_agent["pr_number"], branch, current_agent["issue_number"], ws, threads,
+            )
         else:
-            if current_agent["issue_number"] is None:
-                _agent_pool.unmark_externally_stopped(agent_id)
-                return JSONResponse(
-                    content={"error": "Cannot restart: no issue number"},
-                    status_code=400,
-                )
             new_agent_id = _agent_pool.dispatch_implement(current_agent["issue_number"], workspace=ws)
 
         if not new_agent_id:
@@ -339,7 +347,7 @@ async def restart_agent(agent_id: str):
             db.finish_agent(
                 agent_id,
                 status="stopped",
-                error_message="Restart failed: could not resolve PR branch or dispatch new agent",
+                error_message="Restart failed: could not dispatch new agent",
             )
             _agent_pool.unmark_externally_stopped(agent_id)
             return JSONResponse(content={"error": "Failed to dispatch new agent"}, status_code=500)
