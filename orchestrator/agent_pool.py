@@ -1038,6 +1038,16 @@ class AgentPool:
         github_repo = workspace.get("github_repo") if workspace else None
 
         if agent_type == "implement":
+            if issue_number is None:
+                db.finish_agent(agent_id, status="completed")
+                if worktree_path and repo_path:
+                    cleanup_worktree(worktree_path, repo_path=repo_path)
+                elif worktree_path:
+                    logger.warning(
+                        "repo_path is None for agent %s — skipping git worktree deregistration",
+                        agent_id,
+                    )
+                return
             # Check if a PR was created
             branch_name = f"fix/issue-{issue_number}"
             found_pr = self._find_pr_for_branch(branch_name, github_repo=github_repo) if github_repo else None
@@ -1106,14 +1116,16 @@ class AgentPool:
             if agent_succeeded:
                 logger.info("Reattached fix_review agent %s succeeded — marking completed", agent_id)
                 db.finish_agent(agent_id, status="completed")
-                db.update_issue(issue_number, workspace_id=workspace_id, status="pr_created")
+                if issue_number is not None:
+                    db.update_issue(issue_number, workspace_id=workspace_id, status="pr_created")
             else:
                 logger.warning(
                     "Reattached fix_review agent %s did not succeed (exit_code=%s) — marking failed",
                     agent_id, exit_code,
                 )
                 db.finish_agent(agent_id, status="failed", error_message="Fix review agent exited unsuccessfully (reattached)")
-                db.update_issue(issue_number, workspace_id=workspace_id, status="in_progress")
+                if issue_number is not None:
+                    db.update_issue(issue_number, workspace_id=workspace_id, status="in_progress")
 
         if worktree_path and repo_path:
             cleanup_worktree(worktree_path, repo_path=repo_path)
