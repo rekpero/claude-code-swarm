@@ -133,7 +133,10 @@ class AgentProcess:
                         event = parse_stream_line(line)
                         if event:
                             self.events.append(event)
-                            db.insert_event(self.agent_id, event.event_type, json.dumps(event.raw))
+                            try:
+                                db.insert_event(self.agent_id, event.event_type, json.dumps(event.raw))
+                            except Exception as _db_err:
+                                logger.warning("[%s] Failed to insert event: %s", self.agent_id, _db_err)
                             if event.event_type == "tool_use":
                                 logger.info("[%s] %s", self.agent_id, event.summary)
                         # Persist offset after every readline so non-JSON lines
@@ -151,7 +154,10 @@ class AgentProcess:
                                 event = parse_stream_line(remaining)
                                 if event:
                                     self.events.append(event)
-                                    db.insert_event(self.agent_id, event.event_type, json.dumps(event.raw))
+                                    try:
+                                        db.insert_event(self.agent_id, event.event_type, json.dumps(event.raw))
+                                    except Exception as _db_err:
+                                        logger.warning("[%s] Failed to insert event: %s", self.agent_id, _db_err)
                                 try:
                                     db.update_agent(self.agent_id, log_offset=f.tell())
                                 except Exception as _db_err:
@@ -976,7 +982,10 @@ class AgentPool:
                     if line:
                         event = parse_stream_line(line)
                         if event:
-                            db.insert_event(agent_id, event.event_type, json.dumps(event.raw))
+                            try:
+                                db.insert_event(agent_id, event.event_type, json.dumps(event.raw))
+                            except Exception as _db_err:
+                                logger.warning("[%s] Failed to insert event: %s", agent_id, _db_err)
                             if event.event_type == "tool_use":
                                 logger.info("[%s] %s", agent_id, event.summary)
                         # Persist offset after every readline so non-JSON lines
@@ -995,7 +1004,10 @@ class AgentPool:
                             for remaining in f:
                                 event = parse_stream_line(remaining)
                                 if event:
-                                    db.insert_event(agent_id, event.event_type, json.dumps(event.raw))
+                                    try:
+                                        db.insert_event(agent_id, event.event_type, json.dumps(event.raw))
+                                    except Exception as _db_err:
+                                        logger.warning("[%s] Failed to insert event: %s", agent_id, _db_err)
                                 try:
                                     db.update_agent(agent_id, log_offset=f.tell())
                                 except Exception as _db_err:
@@ -1177,8 +1189,12 @@ class AgentPool:
             # Use WNOHANG to avoid blocking the monitor thread if the child
             # has not yet been fully reaped by the OS.
             try:
-                _, wait_status = os.waitpid(pid, 0)
-                exit_code = os.WEXITSTATUS(wait_status) if os.WIFEXITED(wait_status) else -1
+                waited_pid, wait_status = os.waitpid(pid, os.WNOHANG)
+                if waited_pid == 0:
+                    # Not yet fully reaped by the OS; exit code unavailable.
+                    exit_code = None
+                else:
+                    exit_code = os.WEXITSTATUS(wait_status) if os.WIFEXITED(wait_status) else -1
             except ChildProcessError:
                 exit_code = None
             agent_succeeded = False

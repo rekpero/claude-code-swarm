@@ -354,6 +354,20 @@ async def restart_agent(agent_id: str):
     # to avoid acting on a stale worktree_path while using a fresh status.
     current_agent = db.get_agent(agent_id)
     if current_agent and current_agent["status"] == "running":
+        # Mark the old agent finished BEFORE dispatching the new one.  The
+        # _monitor_agent/_monitor_pid thread was told to skip its own DB
+        # completion writes (via mark_externally_stopped) and may have already
+        # exited by now.  Writing finish_agent here — before dispatch — ensures
+        # the old record is never left permanently in 'running' state even if
+        # the dispatch call succeeds but a subsequent DB write fails.
+        try:
+            db.finish_agent(agent_id, status="stopped", error_message="Manually restarted by user")
+            if current_agent["issue_number"] is not None and current_agent.get("agent_type") == "fix_review":
+                db.update_issue(current_agent["issue_number"], workspace_id=workspace_id, status="pending")
+        except Exception:
+            _agent_pool.unmark_externally_stopped(agent_id)
+            raise
+
         # Dispatch preconditions were validated before the kill; proceed to dispatch.
         new_agent_id = None
         if current_agent.get("agent_type") == "fix_review":
@@ -365,27 +379,9 @@ async def restart_agent(agent_id: str):
 
         if not new_agent_id:
             # The old agent process is already dead (SIGTERM was sent and
-            # waited on above).  Mark it finished in the DB so the issue
-            # is never left permanently stuck in 'running' state.
-            db.finish_agent(
-                agent_id,
-                status="stopped",
-                error_message="Restart failed: could not dispatch new agent",
-            )
+            # waited on above).  finish_agent was already called above.
             _agent_pool.unmark_externally_stopped(agent_id)
             return JSONResponse(content={"error": "Failed to dispatch new agent"}, status_code=500)
-
-        # New agent successfully dispatched — now mark the old one finished.
-        # For implement agents, dispatch_implement already updated the issue to
-        # "in_progress" with the new agent_id.  For fix_review agents, set the
-        # issue back to "pending" so the PR monitor can track state correctly.
-        try:
-            db.finish_agent(agent_id, status="stopped", error_message="Manually restarted by user")
-            if current_agent["issue_number"] is not None and current_agent.get("agent_type") == "fix_review":
-                db.update_issue(current_agent["issue_number"], workspace_id=workspace_id, status="pending")
-        except Exception:
-            _agent_pool.unmark_externally_stopped(agent_id)
-            raise
 
         # Clean up the old worktree now that the new agent has its own.
         # Use current_agent to ensure we target the fresh worktree_path.
