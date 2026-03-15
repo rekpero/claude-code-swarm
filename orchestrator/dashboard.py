@@ -97,11 +97,9 @@ async def index():
 @app.post("/api/auth/login")
 async def login(req: LoginRequest):
     """Validate credentials and return a session token."""
-    valid = (
-        ADMIN_PASSWORD  # reject if password not configured
-        and secrets.compare_digest(req.username.encode(), ADMIN_USERNAME.encode())
-        and secrets.compare_digest(req.password.encode(), ADMIN_PASSWORD.encode())
-    )
+    u_ok = secrets.compare_digest(req.username.encode(), ADMIN_USERNAME.encode())
+    p_ok = secrets.compare_digest(req.password.encode(), ADMIN_PASSWORD.encode())
+    valid = ADMIN_PASSWORD and u_ok and p_ok
     if not valid:
         raise HTTPException(status_code=401, detail="Invalid credentials")
     token = secrets.token_urlsafe(32)

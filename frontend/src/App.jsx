@@ -32,10 +32,11 @@ export function App() {
   const [settingsOpen, setSettingsOpen] = useState(false)
   const [plannerOpen, setPlannerOpen] = useState(false)
   const { selectedWorkspaceId } = useWorkspaceContext()
-  const { error: metricsError } = useMetrics(selectedWorkspaceId)
-  const { data: agentsData } = useAgents(selectedWorkspaceId)
-  const { data: issuesData } = useIssues(selectedWorkspaceId)
-  const { data: prsData } = usePRs(selectedWorkspaceId)
+  const queryEnabled = isAuthenticated && !isChecking
+  const { error: metricsError } = useMetrics(selectedWorkspaceId, { enabled: queryEnabled })
+  const { data: agentsData } = useAgents(selectedWorkspaceId, { enabled: queryEnabled })
+  const { data: issuesData } = useIssues(selectedWorkspaceId, { enabled: queryEnabled })
+  const { data: prsData } = usePRs(selectedWorkspaceId, { enabled: queryEnabled })
 
   if (isChecking) {
     return <div className="min-h-screen bg-[var(--bg)]" />

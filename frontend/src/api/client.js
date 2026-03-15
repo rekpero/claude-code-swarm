@@ -13,8 +13,10 @@ async function apiFetch(path, options = {}) {
   })
 
   if (res.status === 401) {
-    localStorage.removeItem(TOKEN_KEY)
-    window.dispatchEvent(new CustomEvent('swarm:unauthorized'))
+    if (token) {
+      localStorage.removeItem(TOKEN_KEY)
+      window.dispatchEvent(new CustomEvent('swarm:unauthorized'))
+    }
     throw new Error('Unauthorized')
   }
 
