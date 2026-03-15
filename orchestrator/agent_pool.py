@@ -472,6 +472,8 @@ class AgentPool:
                     self._on_agent_complete(agent)
                 except Exception as e:
                     logger.error("Completion callback error: %s", e)
+            with self._lock:
+                self._stopped_agent_ids.discard(agent_id)
             return
 
         # Wait for the tailer thread to finish draining the log before reading

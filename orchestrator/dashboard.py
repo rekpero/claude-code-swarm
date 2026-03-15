@@ -298,19 +298,9 @@ async def restart_agent(agent_id: str):
     # untouched to avoid re-queuing the issue and triggering a duplicate PR.
     current_agent = db.get_agent(agent_id)
     if current_agent and current_agent["status"] == "running":
-        db.finish_agent(agent_id, status="stopped", error_message="Manually restarted by user")
-        if agent["issue_number"] is not None:
-            db.update_issue(agent["issue_number"], workspace_id=workspace_id, status="pending")
-
-        # Clean up worktree only when the agent was still running (not already finished)
-        repo_path = ws["local_path"]
-        if agent.get("worktree_path"):
-            try:
-                worktree.cleanup_worktree(agent["worktree_path"], repo_path=repo_path)
-            except Exception:
-                pass
-
-        # Dispatch a new agent only when the old one was still running (not already completed)
+        # Validate dispatch inputs and attempt dispatch BEFORE mutating DB or
+        # filesystem so that any failure leaves the old state intact and avoids
+        # stranding the issue in an unrecoverable state.
         new_agent_id = None
         if agent.get("agent_type") == "fix_review":
             if not agent.get("pr_number"):
@@ -335,10 +325,27 @@ async def restart_agent(agent_id: str):
                 )
             new_agent_id = _agent_pool.dispatch_implement(agent["issue_number"], workspace=ws)
 
-        if new_agent_id:
-            return {"ok": True, "old_agent_id": agent_id, "new_agent_id": new_agent_id}
-        _agent_pool.unmark_externally_stopped(agent_id)
-        return JSONResponse(content={"error": "Failed to dispatch new agent"}, status_code=500)
+        if not new_agent_id:
+            _agent_pool.unmark_externally_stopped(agent_id)
+            return JSONResponse(content={"error": "Failed to dispatch new agent"}, status_code=500)
+
+        # New agent successfully dispatched — now mark the old one finished.
+        # For implement agents, dispatch_implement already updated the issue to
+        # "in_progress" with the new agent_id.  For fix_review agents, set the
+        # issue back to "pending" so the PR monitor can track state correctly.
+        db.finish_agent(agent_id, status="stopped", error_message="Manually restarted by user")
+        if agent["issue_number"] is not None and agent.get("agent_type") == "fix_review":
+            db.update_issue(agent["issue_number"], workspace_id=workspace_id, status="pending")
+
+        # Clean up the old worktree now that the new agent has its own.
+        repo_path = ws["local_path"]
+        if agent.get("worktree_path"):
+            try:
+                worktree.cleanup_worktree(agent["worktree_path"], repo_path=repo_path)
+            except Exception:
+                pass
+
+        return {"ok": True, "old_agent_id": agent_id, "new_agent_id": new_agent_id}
 
     # The agent had already completed naturally before we could restart it.
     # Remove agent_id from _stopped_agent_ids so it doesn't leak in the set.
