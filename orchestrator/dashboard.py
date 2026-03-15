@@ -334,6 +334,14 @@ async def restart_agent(agent_id: str):
             new_agent_id = _agent_pool.dispatch_implement(agent["issue_number"], workspace=ws)
 
         if not new_agent_id:
+            # The old agent process is already dead (SIGTERM was sent and
+            # waited on above).  Mark it finished in the DB so the issue
+            # is never left permanently stuck in 'running' state.
+            db.finish_agent(
+                agent_id,
+                status="stopped",
+                error_message="Restart failed: could not resolve PR branch or dispatch new agent",
+            )
             _agent_pool.unmark_externally_stopped(agent_id)
             return JSONResponse(content={"error": "Failed to dispatch new agent"}, status_code=500)
 

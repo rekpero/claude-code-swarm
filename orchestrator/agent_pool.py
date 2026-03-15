@@ -117,6 +117,15 @@ class AgentProcess:
     def _tail_log(self):
         """Tail the agent's log file and ingest events into the DB."""
         try:
+            # The log file is created by _spawn_agent just before Popen.
+            # In rare cases start_reader() may race ahead of that 'open(..., "a")'
+            # call, so poll briefly before giving up.
+            _deadline = time.time() + 1.0
+            while not os.path.exists(self.log_file):
+                if time.time() >= _deadline:
+                    logger.warning("[%s] Log file not found after 1s: %s", self.agent_id, self.log_file)
+                    break
+                time.sleep(0.05)
             with open(self.log_file) as f:
                 while True:
                     line = f.readline()

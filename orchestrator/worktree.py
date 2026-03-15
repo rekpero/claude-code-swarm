@@ -6,12 +6,12 @@ from pathlib import Path
 logger = logging.getLogger(__name__)
 
 
-def _run_git(*args: str, repo_path: Path | str | None = None, check: bool = True) -> subprocess.CompletedProcess:
+def _run_git(*args: str, repo_path: Path | str | None = None, check: bool = True, timeout: int = 60) -> subprocess.CompletedProcess:
     """Run a git command against a repo."""
     target = str(repo_path)
     cmd = ["git", "-C", target] + list(args)
     logger.debug("Running: %s", " ".join(cmd))
-    result = subprocess.run(cmd, capture_output=True, text=True, timeout=60)
+    result = subprocess.run(cmd, capture_output=True, text=True, timeout=timeout)
     if check and result.returncode != 0:
         raise RuntimeError(
             f"git command failed: {' '.join(cmd)}\nstderr: {result.stderr}"
@@ -49,8 +49,10 @@ def get_sync_status(repo_path: Path | str, base_branch: str = "main") -> dict:
       - ahead (int): commits ahead of remote
     """
     target = repo_path
-    # Fetch latest refs from remote (silent, no merge)
-    _run_git("fetch", "origin", repo_path=target, check=False)
+    # Fetch latest refs from remote (silent, no merge).
+    # Use a short timeout so an unreachable remote yields a fast error
+    # rather than blocking the HTTP endpoint for minutes.
+    _run_git("fetch", "origin", repo_path=target, check=False, timeout=15)
 
     local = _run_git("rev-parse", "--short", base_branch, repo_path=target, check=False)
     remote = _run_git("rev-parse", "--short", f"origin/{base_branch}", repo_path=target, check=False)
