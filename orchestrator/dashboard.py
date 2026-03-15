@@ -298,13 +298,24 @@ async def restart_agent(agent_id: str):
                 status_code=400,
             )
 
+    # Validate PID before marking externally stopped. If a 'running' agent has
+    # no PID (e.g. the PID write raced with a DB failure), we must not flag it
+    # as stopped without sending SIGTERM — the original process would keep
+    # running alongside any replacement, and _monitor_agent/_monitor_pid would
+    # skip their completion DB writes when it eventually exits.
+    pid = agent.get("pid")
+    if not pid:
+        return JSONResponse(
+            content={"error": "Cannot restart: running agent has no PID recorded"},
+            status_code=409,
+        )
+
     # Mark the agent as externally stopped *before* sending SIGTERM so that
     # _monitor_agent / _monitor_pid skip their own completion DB writes and
     # don't race with the writes below.
     _agent_pool.mark_externally_stopped(agent_id)
 
     # Kill the old process and wait for it to die
-    pid = agent.get("pid")
     if pid:
         try:
             os.kill(pid, signal.SIGTERM)
