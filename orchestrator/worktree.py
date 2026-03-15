@@ -109,7 +109,7 @@ def create_worktree(
 
     logger.info("Creating worktree: %s (branch: %s)", worktree_path, branch_name)
     _run_git(
-        "worktree", "add", "--force", str(worktree_path), "-b", branch_name, base,
+        "worktree", "add", str(worktree_path), "-b", branch_name, base,
         repo_path=target,
     )
     return str(worktree_path)
@@ -137,7 +137,7 @@ def create_worktree_for_pr(
     _run_git("fetch", "origin", branch_name, repo_path=target, check=False)
 
     logger.info("Creating worktree for PR fix: %s (branch: %s)", worktree_path, branch_name)
-    _run_git("worktree", "add", "--force", str(worktree_path), branch_name, repo_path=target)
+    _run_git("worktree", "add", str(worktree_path), branch_name, repo_path=target)
 
     # Reset to latest remote commit — an external push may have landed since the
     # local branch was last checked out.
