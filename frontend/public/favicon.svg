@@ -1,4 +1,5 @@
 <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 120 120" role="img" aria-label="SwarmOps icon">
+  <rect width="120" height="120" rx="22" fill="#050507"/>
   <rect x="31.00" y="39.00" width="13.00" height="42.00" rx="6.50" fill="#8b5cf6"/>
   <rect x="54.00" y="31.00" width="13.00" height="58.00" rx="6.50" fill="#8b5cf6"/>
   <rect x="77.00" y="48.00" width="13.00" height="38.00" rx="6.50" fill="#34d399"/>
