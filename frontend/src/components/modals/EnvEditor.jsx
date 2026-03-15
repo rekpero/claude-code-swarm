@@ -130,7 +130,14 @@ export function EnvEditor({ workspaceId }) {
 
   const setRow = (i, field, val) => {
     setDirty(true)
-    setRows((prev) => prev.map((r, idx) => idx === i ? { ...r, [field]: val } : r))
+    setRows((prev) => prev.map((r, idx) => {
+      if (idx !== i) return r
+      // Keep the row's id in sync with the key name so that after save + reload
+      // (where the server rebuilds rows as { id: keyName, key: keyName, value })
+      // React's key prop remains stable and avoids unmounting/remounting inputs.
+      if (field === 'key') return { ...r, key: val, id: val || r.id }
+      return { ...r, [field]: val }
+    }))
   }
 
   const addRow = () => { setDirty(true); setRows((prev) => [...prev, { id: crypto.randomUUID(), key: '', value: '' }]) }

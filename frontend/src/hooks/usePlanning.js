@@ -27,6 +27,7 @@ export function usePlanning(workspaceId) {
   const sessionIdRef = useRef(null)
   const pollErrorCountRef = useRef(0)
   const pollActiveRef = useRef(false)
+  const pollGenRef = useRef(0)
 
   useEffect(() => {
     sessionIdRef.current = sessionId
@@ -72,6 +73,10 @@ export function usePlanning(workspaceId) {
   }, [workspaceId])
 
   const stopPolling = useCallback(() => {
+    // Bump the generation so any in-flight tick's finally block can detect it
+    // is stale and skip resetting pollActiveRef (which may already belong to a
+    // newer poll invocation).
+    pollGenRef.current++
     pollActiveRef.current = false
     if (pollTimerRef.current) {
       clearTimeout(pollTimerRef.current)
@@ -88,13 +93,17 @@ export function usePlanning(workspaceId) {
     if (pollActiveRef.current) return
     stopPolling()
 
+    // Capture the generation AFTER stopPolling increments it so our finally
+    // block can detect whether a newer poll has taken ownership of the flag.
+    const gen = pollGenRef.current
+
     // Set the guard synchronously so that any second call to poll() within the
     // 300 ms setTimeout window also sees it as true and returns early.
     pollActiveRef.current = true
     pollTimerRef.current = setTimeout(async () => {
       const localSid = sessionIdRef.current
       if (localSid !== sid) {
-        pollActiveRef.current = false
+        if (pollGenRef.current === gen) pollActiveRef.current = false
         return
       }
 
@@ -156,7 +165,11 @@ export function usePlanning(workspaceId) {
           setGenerating(false)
         }
       } finally {
-        pollActiveRef.current = false
+        // Only clear the flag if we are still the active generation.  A newer
+        // poll() call (e.g. from cancelGeneration's error path) will have
+        // incremented pollGenRef via stopPolling(), so our gen will no longer
+        // match and we must not clobber the flag that the new poll owns.
+        if (pollGenRef.current === gen) pollActiveRef.current = false
       }
     }, 300)
   }, [stopPolling])

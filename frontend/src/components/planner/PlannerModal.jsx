@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from 'react'
+import { useCallback, useEffect, useRef, useState } from 'react'
 import { createPortal } from 'react-dom'
 import {
   X, Plus, ChevronRight, ChevronDown,
@@ -448,7 +448,11 @@ export function PlannerModal({ open, onClose }) {
 
   const planning = usePlanning(effectiveWsId)
   const { loadSessions } = planning
-  const chatRef = useRef(null)
+  // Use a callback ref so the scroll-listener effect can attach even when the
+  // portal hasn't committed the DOM node yet at the time open transitions to
+  // true.  setChatEl triggers a re-render → effect re-runs with the real node.
+  const [chatEl, setChatEl] = useState(null)
+  const chatRef = useCallback((node) => setChatEl(node), [])
   const inputRef = useRef(null)
   const chatUserScrolledUpRef = useRef(false)
   const [inputValue, setInputValue] = useState('')
@@ -463,9 +467,11 @@ export function PlannerModal({ open, onClose }) {
     }
   }, [open, effectiveWsId, loadSessions])
 
-  // Track whether user has scrolled up in chat area
+  // Track whether user has scrolled up in chat area.
+  // chatEl is in the dependency array so the effect re-runs once the portal
+  // commits the DOM node (chatEl state updates → effect retries with real el).
   useEffect(() => {
-    const el = chatRef.current
+    const el = chatEl
     if (!el) return
     const handleScroll = () => {
       const threshold = 50
@@ -474,14 +480,14 @@ export function PlannerModal({ open, onClose }) {
     }
     el.addEventListener('scroll', handleScroll)
     return () => el.removeEventListener('scroll', handleScroll)
-  }, [open])
+  }, [open, chatEl])
 
   // Auto-scroll chat only if user hasn't scrolled up
   useEffect(() => {
-    if (chatRef.current && !chatUserScrolledUpRef.current) {
-      chatRef.current.scrollTop = chatRef.current.scrollHeight
+    if (chatEl && !chatUserScrolledUpRef.current) {
+      chatEl.scrollTop = chatEl.scrollHeight
     }
-  }, [planning.messages, planning.streamEvents])
+  }, [planning.messages, planning.streamEvents, chatEl])
 
   const handleSend = () => {
     if (!inputValue.trim() || planning.generating) return
