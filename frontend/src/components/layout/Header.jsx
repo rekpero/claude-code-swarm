@@ -1,8 +1,9 @@
-import { Settings, Plus, Check, AlertTriangle, RefreshCw } from 'lucide-react'
+import { Settings, Plus, Check, AlertTriangle, RefreshCw, LogOut } from 'lucide-react'
 import { WorkspaceSwitcher } from './WorkspaceSwitcher'
 import { useMetrics } from '../../hooks/useMetrics'
 import { useGitSync } from '../../hooks/useGitSync'
 import { useWorkspaceContext } from '../../context/WorkspaceContext'
+import { useAuth } from '../../context/AuthContext'
 import { formatDistanceToNow } from 'date-fns'
 
 function SyncIndicator({ wsId }) {
@@ -38,6 +39,7 @@ function SyncIndicator({ wsId }) {
 
 export function Header({ onAddWorkspace, onOpenSettings, onOpenPlanner }) {
   const { selectedWorkspaceId } = useWorkspaceContext()
+  const { logout } = useAuth()
   const { dataUpdatedAt } = useMetrics(selectedWorkspaceId)
 
   const lastUpdated = dataUpdatedAt
@@ -82,6 +84,13 @@ export function Header({ onAddWorkspace, onOpenSettings, onOpenPlanner }) {
             <Settings size={14} />
           </button>
         )}
+        <button
+          onClick={logout}
+          className="p-1.5 rounded-md text-[var(--text-muted)] hover:text-[var(--red)] hover:bg-[var(--surface-hover)] transition-colors"
+          title="Sign out"
+        >
+          <LogOut size={14} />
+        </button>
       </div>
     </header>
   )

@@ -126,6 +126,12 @@ CREATE TABLE IF NOT EXISTS planning_events (
     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
     FOREIGN KEY (session_id) REFERENCES planning_sessions(id)
 );
+
+CREATE TABLE IF NOT EXISTS sessions (
+    token TEXT PRIMARY KEY,
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    expires_at TIMESTAMP NOT NULL
+);
 """
 
 
@@ -752,6 +758,39 @@ def get_planning_events(session_id: str, since_id: int = 0, limit: int = 200) ->
         (session_id, since_id, limit),
     ).fetchall()
     return [dict(r) for r in rows]
+
+
+# === Sessions ===
+
+
+def create_session(token: str, expires_at: str) -> None:
+    conn = _get_connection()
+    conn.execute(
+        "INSERT INTO sessions (token, created_at, expires_at) VALUES (?, ?, ?)",
+        (token, _now(), expires_at),
+    )
+    conn.commit()
+
+
+def get_session(token: str) -> dict | None:
+    conn = _get_connection()
+    row = conn.execute(
+        "SELECT * FROM sessions WHERE token = ? AND expires_at > ?",
+        (token, _now()),
+    ).fetchone()
+    return dict(row) if row else None
+
+
+def delete_session(token: str) -> None:
+    conn = _get_connection()
+    conn.execute("DELETE FROM sessions WHERE token = ?", (token,))
+    conn.commit()
+
+
+def cleanup_expired_sessions() -> None:
+    conn = _get_connection()
+    conn.execute("DELETE FROM sessions WHERE expires_at <= ?", (_now(),))
+    conn.commit()
 
 
 # === Metrics ===

@@ -51,6 +51,10 @@ SKILLS_ENABLED = os.environ.get("SKILLS_ENABLED", "true").lower() in ("true", "1
 # === Dashboard ===
 DASHBOARD_PORT = int(os.environ.get("DASHBOARD_PORT", "8420"))
 
+# === Dashboard Admin Auth ===
+ADMIN_USERNAME = os.environ.get("ADMIN_USERNAME", "admin")
+ADMIN_PASSWORD = os.environ.get("ADMIN_PASSWORD", "")
+
 # === Workspaces ===
 WORKSPACES_DIR = Path(os.environ.get("WORKSPACES_DIR", "/root/workspaces"))
 
@@ -74,6 +78,8 @@ def validate_environment() -> list[str]:
         errors.append("CLAUDE_CODE_OAUTH_TOKEN is not set")
     if not GH_TOKEN:
         errors.append("GH_TOKEN is not set")
+    if not ADMIN_PASSWORD:
+        errors.append("ADMIN_PASSWORD is not set — the dashboard is unprotected")
 
     # Check claude CLI
     if not shutil.which("claude"):
@@ -121,6 +127,8 @@ def print_config():
     print(f"  MAX_RATE_RESUMES:      {MAX_RATE_LIMIT_RESUMES}")
     print(f"  SKILLS_ENABLED:        {SKILLS_ENABLED}")
     print(f"  DASHBOARD_PORT:        {DASHBOARD_PORT}")
+    print(f"  ADMIN_USERNAME:        {ADMIN_USERNAME}")
+    print(f"  ADMIN_PASSWORD:        {'(set)' if ADMIN_PASSWORD else '(NOT SET — unprotected!)'}")
     print(f"  GIT_AUTHOR_NAME:       {GIT_AUTHOR_NAME or '(not set — agent default)'}")
     print(f"  GIT_AUTHOR_EMAIL:      {GIT_AUTHOR_EMAIL or '(not set — agent default)'}")
     token_preview = CLAUDE_CODE_OAUTH_TOKEN[:12] + "..." if CLAUDE_CODE_OAUTH_TOKEN else "(not set)"
