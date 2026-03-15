@@ -186,6 +186,9 @@ class AgentPool:
         self._agents: dict[str, AgentProcess] = {}
         self._lock = threading.Lock()
         self._on_agent_complete: Callable[[AgentProcess], None] | None = None
+        # Callback for reattached-agent completion (no AgentProcess object available).
+        # Signature: (agent_id, agent_type, pr_number, workspace)
+        self._on_reattach_complete: Callable[[str, str, int | None, dict | None], None] | None = None
         # Agent IDs that were stopped externally (via restart_agent) so that
         # _monitor_agent / _monitor_pid skip their completion DB writes.
         self._stopped_agent_ids: set[str] = set()
@@ -202,6 +205,18 @@ class AgentPool:
     def set_completion_callback(self, callback: Callable[[AgentProcess], None]):
         """Set a callback to be called when an agent completes."""
         self._on_agent_complete = callback
+
+    def set_reattach_completion_callback(
+        self, callback: Callable[[str, str, int | None, dict | None], None]
+    ) -> None:
+        """Set a callback invoked when a reattached agent completes.
+
+        The callback receives ``(agent_id, agent_type, pr_number, workspace)``
+        so the same downstream automation that fires for freshly-spawned agents
+        via ``_on_agent_complete`` can also fire for reattached agents handled
+        by ``_monitor_pid`` (which has no ``AgentProcess`` object).
+        """
+        self._on_reattach_complete = callback
 
     def mark_externally_stopped(self, agent_id: str) -> None:
         """Signal that an agent is being stopped externally (e.g. via restart_agent).
@@ -1073,6 +1088,11 @@ class AgentPool:
         repo_path = workspace.get("local_path") if workspace else None
         github_repo = workspace.get("github_repo") if workspace else None
 
+        # Track the effective pr_number so the completion callback receives the
+        # latest value even when it is discovered during this function (e.g. an
+        # auto-created PR or one found via the GitHub API).
+        effective_pr_number: int | None = pr_number
+
         if agent_type == "implement":
             if issue_number is None:
                 db.finish_agent(agent_id, status="completed")
@@ -1094,6 +1114,7 @@ class AgentPool:
                 db.update_agent(agent_id, pr_number=found_pr)
                 if issue_number is not None:
                     db.update_issue(issue_number, workspace_id=workspace_id, status="pr_created", pr_number=found_pr)
+                effective_pr_number = found_pr
             elif worktree_path and self._is_branch_pushed(branch_name, worktree_path):
                 logger.warning("Reattached agent %s pushed branch but no PR — creating automatically", agent_id)
                 auto_pr = self._create_pr_for_branch(branch_name, issue_number, github_repo=github_repo)
@@ -1102,6 +1123,7 @@ class AgentPool:
                     db.update_agent(agent_id, pr_number=auto_pr)
                     if issue_number is not None:
                         db.update_issue(issue_number, workspace_id=workspace_id, status="pr_created", pr_number=auto_pr)
+                    effective_pr_number = auto_pr
                 else:
                     db.finish_agent(agent_id, status="failed", error_message="Agent exited without creating PR (reattached)")
                     if issue_number is not None:
@@ -1118,10 +1140,16 @@ class AgentPool:
                             db.update_agent(agent_id, pr_number=auto_pr)
                             if issue_number is not None:
                                 db.update_issue(issue_number, workspace_id=workspace_id, status="pr_created", pr_number=auto_pr)
+                            effective_pr_number = auto_pr
                             if worktree_path and repo_path:
                                 cleanup_worktree(worktree_path, repo_path=repo_path)
                             elif worktree_path:
                                 logger.warning("repo_path is None for agent %s — skipping git worktree deregistration", agent_id)
+                            if self._on_reattach_complete:
+                                try:
+                                    self._on_reattach_complete(agent_id, agent_type, effective_pr_number, workspace)
+                                except Exception as e:
+                                    logger.error("Reattach completion callback error: %s", e)
                             return
 
                 db.finish_agent(agent_id, status="failed", error_message="Agent exited without creating PR (reattached)")
@@ -1171,6 +1199,12 @@ class AgentPool:
             cleanup_worktree(worktree_path, repo_path=repo_path)
         elif worktree_path:
             logger.warning("repo_path is None for agent %s — skipping git worktree deregistration", agent_id)
+
+        if self._on_reattach_complete:
+            try:
+                self._on_reattach_complete(agent_id, agent_type, effective_pr_number, workspace)
+            except Exception as e:
+                logger.error("Reattach completion callback error: %s", e)
 
     def shutdown(self):
         """Gracefully shut down the pool — let running agents continue independently."""
