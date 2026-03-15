@@ -301,37 +301,36 @@ async def restart_agent(agent_id: str):
             pass
     # Re-fetch the agent record after the kill to check whether it had already
     # completed naturally (e.g. just created a PR) before we sent SIGTERM.
-    # Only overwrite the DB state when the agent is still recorded as "running";
-    # if it already reached "completed"/"pr_created"/etc. leave those states
-    # untouched to avoid re-queuing the issue and triggering a duplicate PR.
+    # Use this single snapshot for both status decisions and cleanup operations
+    # to avoid acting on a stale worktree_path while using a fresh status.
     current_agent = db.get_agent(agent_id)
     if current_agent and current_agent["status"] == "running":
         # Validate dispatch inputs and attempt dispatch BEFORE mutating DB or
         # filesystem so that any failure leaves the old state intact and avoids
         # stranding the issue in an unrecoverable state.
         new_agent_id = None
-        if agent.get("agent_type") == "fix_review":
-            if not agent.get("pr_number"):
+        if current_agent.get("agent_type") == "fix_review":
+            if not current_agent.get("pr_number"):
                 _agent_pool.unmark_externally_stopped(agent_id)
                 return JSONResponse(
                     content={"error": "Cannot restart: fix_review agent has no pr_number"},
                     status_code=400,
                 )
             from orchestrator.pr_monitor import get_pr_branch, get_unresolved_threads
-            branch = get_pr_branch(agent["pr_number"], github_repo=ws["github_repo"])
-            threads = get_unresolved_threads(agent["pr_number"], github_repo=ws["github_repo"])
+            branch = get_pr_branch(current_agent["pr_number"], github_repo=ws["github_repo"])
+            threads = get_unresolved_threads(current_agent["pr_number"], github_repo=ws["github_repo"])
             if branch:
                 new_agent_id = _agent_pool.dispatch_fix_review(
-                    agent["pr_number"], branch, agent["issue_number"], ws, threads,
+                    current_agent["pr_number"], branch, current_agent["issue_number"], ws, threads,
                 )
         else:
-            if agent["issue_number"] is None:
+            if current_agent["issue_number"] is None:
                 _agent_pool.unmark_externally_stopped(agent_id)
                 return JSONResponse(
                     content={"error": "Cannot restart: no issue number"},
                     status_code=400,
                 )
-            new_agent_id = _agent_pool.dispatch_implement(agent["issue_number"], workspace=ws)
+            new_agent_id = _agent_pool.dispatch_implement(current_agent["issue_number"], workspace=ws)
 
         if not new_agent_id:
             # The old agent process is already dead (SIGTERM was sent and
@@ -350,14 +349,15 @@ async def restart_agent(agent_id: str):
         # "in_progress" with the new agent_id.  For fix_review agents, set the
         # issue back to "pending" so the PR monitor can track state correctly.
         db.finish_agent(agent_id, status="stopped", error_message="Manually restarted by user")
-        if agent["issue_number"] is not None and agent.get("agent_type") == "fix_review":
-            db.update_issue(agent["issue_number"], workspace_id=workspace_id, status="pending")
+        if current_agent["issue_number"] is not None and current_agent.get("agent_type") == "fix_review":
+            db.update_issue(current_agent["issue_number"], workspace_id=workspace_id, status="pending")
 
         # Clean up the old worktree now that the new agent has its own.
+        # Use current_agent to ensure we target the fresh worktree_path.
         repo_path = ws["local_path"]
-        if agent.get("worktree_path"):
+        if current_agent.get("worktree_path"):
             try:
-                worktree.cleanup_worktree(agent["worktree_path"], repo_path=repo_path)
+                worktree.cleanup_worktree(current_agent["worktree_path"], repo_path=repo_path)
             except Exception:
                 pass
 

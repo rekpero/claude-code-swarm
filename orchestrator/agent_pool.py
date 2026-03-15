@@ -875,6 +875,13 @@ class AgentPool:
         pr_number = agent_record.get("pr_number")
         workspace_id = agent_record.get("workspace_id")
 
+        if pid is None:
+            logger.warning(
+                "Skipping reattach for agent %s: PID is None (agent may not have started successfully)",
+                agent_id,
+            )
+            return
+
         logger.info(
             "Reattaching monitor for agent %s (PID %d, issue #%s)",
             agent_id, pid, issue_number,
@@ -1004,6 +1011,10 @@ class AgentPool:
                         pass
                 except (OSError, ProcessLookupError):
                     pass
+                # Wait for the log tailer to finish draining before reading
+                # turn counts, mirroring the normal completion path.
+                if tailer_done is not None:
+                    tailer_done.wait(timeout=30)
                 turns = db.get_agent_turn_count(agent_id)
                 if turns:
                     db.update_agent(agent_id, turns_used=turns)
