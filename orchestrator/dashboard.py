@@ -214,6 +214,14 @@ async def load_env_from_disk(workspace_id: str, env_file: str = Query(".env")):
     if not local_path or not Path(local_path).exists():
         return JSONResponse(content={"error": "Workspace repo not cloned yet"}, status_code=400)
     file_path = Path(local_path) / env_file
+    # Guard against path traversal: resolve both paths and ensure the file is
+    # contained within the workspace directory.  pathlib silently discards
+    # local_path when env_file is absolute, and ../ sequences can escape the
+    # workspace, so we must check after resolving.
+    resolved_workspace = Path(local_path).resolve()
+    if not str(file_path.resolve()).startswith(str(resolved_workspace) + os.sep) and \
+            file_path.resolve() != resolved_workspace:
+        return JSONResponse(content={"error": "Access denied: path is outside the workspace"}, status_code=403)
     if not file_path.exists():
         return JSONResponse(content={"error": f"File {env_file} not found on disk"}, status_code=404)
     try:
