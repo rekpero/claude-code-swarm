@@ -26,7 +26,7 @@ export function IssueQueue() {
   const wsMap = Object.fromEntries(workspaces.map(w => [w.id, w.name || w.repo_url]))
   const wsRepoMap = Object.fromEntries(workspaces.map(w => [w.id, w.github_repo]))
   const showWorkspace = !selectedWorkspaceId
-  const [retryingIssue, setRetryingIssue] = useState(null)
+  const [retryingIssues, setRetryingIssues] = useState(new Set())
 
   const issues = data?.issues || []
 
@@ -119,12 +119,13 @@ export function IssueQueue() {
                       <Button
                         size="sm"
                         variant="ghost"
-                        loading={retryingIssue === `${issue.workspace_id}-${issue.issue_number}`}
+                        loading={retryingIssues.has(`${issue.workspace_id}-${issue.issue_number}`)}
                         onClick={() => {
-                          setRetryingIssue(`${issue.workspace_id}-${issue.issue_number}`)
+                          const key = `${issue.workspace_id}-${issue.issue_number}`
+                          setRetryingIssues(prev => new Set(prev).add(key))
                           updateStatus(
                             { issueNumber: issue.issue_number, status: 'pending', workspaceId: issue.workspace_id },
-                            { onSettled: () => setRetryingIssue(null) }
+                            { onSettled: () => setRetryingIssues(prev => { const next = new Set(prev); next.delete(key); return next }) }
                           )
                         }}
                         title="Retry this issue"

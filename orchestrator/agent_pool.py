@@ -1193,7 +1193,7 @@ class AgentPool:
                 )
                 db.finish_agent(agent_id, status="failed", error_message="Fix review agent exited unsuccessfully (reattached)")
                 if issue_number is not None:
-                    db.update_issue(issue_number, workspace_id=workspace_id, status="in_progress")
+                    db.update_issue(issue_number, workspace_id=workspace_id, status="needs_human")
 
         if worktree_path and repo_path:
             cleanup_worktree(worktree_path, repo_path=repo_path)
