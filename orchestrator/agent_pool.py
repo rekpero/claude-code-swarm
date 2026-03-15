@@ -139,7 +139,10 @@ class AgentProcess:
                         # Persist offset after every readline so non-JSON lines
                         # also advance the saved position, preventing duplicate
                         # re-reads after a restart.
-                        db.update_agent(self.agent_id, log_offset=f.tell())
+                        try:
+                            db.update_agent(self.agent_id, log_offset=f.tell())
+                        except Exception as _db_err:
+                            logger.warning("[%s] Failed to update log offset: %s", self.agent_id, _db_err)
                     else:
                         # No new data — check if process exited
                         if self.process.poll() is not None:
@@ -149,7 +152,10 @@ class AgentProcess:
                                 if event:
                                     self.events.append(event)
                                     db.insert_event(self.agent_id, event.event_type, json.dumps(event.raw))
-                                db.update_agent(self.agent_id, log_offset=f.tell())
+                                try:
+                                    db.update_agent(self.agent_id, log_offset=f.tell())
+                                except Exception as _db_err:
+                                    logger.warning("[%s] Failed to update log offset: %s", self.agent_id, _db_err)
                             break
                         time.sleep(0.5)
         except Exception as e:
