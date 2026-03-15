@@ -718,6 +718,11 @@ async def spa_fallback(full_path: str):
         raise HTTPException(status_code=404, detail="Not found")
     if full_path.startswith("assets/") or full_path.startswith("static/"):
         raise HTTPException(status_code=404)
+    # Serve static files (logo.svg, favicon.svg, etc.) from STATIC_DIR
+    if full_path:
+        static_file = STATIC_DIR / full_path
+        if static_file.is_file() and static_file.resolve().is_relative_to(STATIC_DIR.resolve()):
+            return FileResponse(str(static_file))
     index = STATIC_DIR / "index.html"
     if not index.exists():
         raise HTTPException(status_code=404, detail="Frontend not built")
