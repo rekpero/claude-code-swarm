@@ -1,6 +1,7 @@
 import { useState } from 'react'
 import { ExternalLink, RefreshCw, Inbox } from 'lucide-react'
 import { IssueStatusBadge } from './IssueStatusBadge'
+import { UpdateStatusModal } from './UpdateStatusModal'
 import { EmptyState } from '../ui/EmptyState'
 import { Button } from '../ui/Button'
 import { Spinner } from '../ui/Spinner'
@@ -27,6 +28,7 @@ export function IssueQueue() {
   const wsRepoMap = Object.fromEntries(workspaces.map(w => [w.id, w.github_repo]))
   const showWorkspace = !selectedWorkspaceId
   const [retryingIssues, setRetryingIssues] = useState(new Set())
+  const [statusModalIssue, setStatusModalIssue] = useState(null)
 
   const issues = data?.issues || []
 
@@ -90,7 +92,13 @@ export function IssueQueue() {
                     </td>
                   )}
                   <td className="py-2.5 px-4">
-                    <IssueStatusBadge status={issue.status} />
+                    <button
+                      onClick={() => setStatusModalIssue(issue)}
+                      className="cursor-pointer hover:opacity-80 transition-opacity"
+                      title="Click to change status"
+                    >
+                      <IssueStatusBadge status={issue.status} />
+                    </button>
                   </td>
                   <td className="py-2.5 px-4 text-[var(--text-muted)] font-mono">
                     {issue.attempts ?? 0}
@@ -141,6 +149,13 @@ export function IssueQueue() {
           </table>
         </div>
       )}
+
+      <UpdateStatusModal
+        open={!!statusModalIssue}
+        onClose={() => setStatusModalIssue(null)}
+        issue={statusModalIssue}
+        onUpdate={(params, callbacks) => updateStatus(params, callbacks)}
+      />
     </div>
   )
 }

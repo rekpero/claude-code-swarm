@@ -38,6 +38,7 @@ function ElapsedTime({ startedAt, status }) {
 
 export function AgentCard({ agent, workspaceName, onRestarted }) {
   const isRunning = agent.status === 'running'
+  const canRestart = ['running', 'failed', 'stopped', 'timeout'].includes(agent.status)
   const [expanded, setExpanded] = useState(isRunning)
   const [restarting, setRestarting] = useState(false)
   const [restartError, setRestartError] = useState(null)
@@ -117,7 +118,7 @@ export function AgentCard({ agent, workspaceName, onRestarted }) {
             {agent.turns_used ?? 0}
             {agent.max_turns ? `/${agent.max_turns}` : ''} turns
           </span>
-          {isRunning && (
+          {canRestart && (
             <div className="flex flex-col items-end gap-0.5">
               <button
                 onClick={(e) => {
@@ -132,10 +133,10 @@ export function AgentCard({ agent, workspaceName, onRestarted }) {
                 }}
                 disabled={restarting}
                 className="flex items-center gap-1 px-2 py-1 text-[9px] font-medium text-[var(--yellow)] bg-[rgba(234,179,8,0.08)] border border-[rgba(234,179,8,0.15)] rounded hover:bg-[rgba(234,179,8,0.15)] transition-colors disabled:opacity-40"
-                title="Kill and restart this agent"
+                title={isRunning ? 'Kill and restart this agent' : 'Restart this agent'}
               >
                 <RotateCw size={9} className={restarting ? 'animate-spin' : ''} />
-                {restarting ? 'Restarting...' : 'Restart'}
+                {restarting ? 'Restarting...' : isRunning ? 'Restart' : 'Retry'}
               </button>
               {restartError && (
                 <span className="text-[8px] text-[var(--red)]">{restartError}</span>

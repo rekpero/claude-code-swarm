@@ -322,8 +322,8 @@ async def restart_agent(agent_id: str):
     agent = db.get_agent(agent_id)
     if not agent:
         return JSONResponse(content={"error": "Agent not found"}, status_code=404)
-    if agent["status"] != "running":
-        return JSONResponse(content={"error": "Agent is not running"}, status_code=400)
+    if agent["status"] not in ("running", "failed", "stopped", "timeout"):
+        return JSONResponse(content={"error": f"Agent cannot be restarted (status: {agent['status']})"}, status_code=400)
     if not _agent_pool:
         return JSONResponse(content={"error": "Agent pool not available"}, status_code=503)
 
@@ -366,29 +366,27 @@ async def restart_agent(agent_id: str):
                 status_code=400,
             )
 
-    # Validate PID before marking externally stopped. If a 'running' agent has
-    # no PID (e.g. the PID write raced with a DB failure), we must not flag it
-    # as stopped without sending SIGTERM — the original process would keep
-    # running alongside any replacement, and _monitor_agent/_monitor_pid would
-    # skip their completion DB writes when it eventually exits.
-    pid = agent.get("pid")
-    if not pid:
-        return JSONResponse(
-            content={"error": "Cannot restart: running agent has no PID recorded"},
-            status_code=409,
-        )
+    is_running = agent["status"] == "running"
 
-    # Mark the agent as externally stopped *before* sending SIGTERM so that
-    # _monitor_agent / _monitor_pid skip their own completion DB writes and
-    # don't race with the writes below.
-    _agent_pool.mark_externally_stopped(agent_id)
+    if is_running:
+        # Validate PID before marking externally stopped. If a 'running' agent has
+        # no PID (e.g. the PID write raced with a DB failure), we must not flag it
+        # as stopped without sending SIGTERM — the original process would keep
+        # running alongside any replacement, and _monitor_agent/_monitor_pid would
+        # skip their completion DB writes when it eventually exits.
+        pid = agent.get("pid")
+        if not pid:
+            return JSONResponse(
+                content={"error": "Cannot restart: running agent has no PID recorded"},
+                status_code=409,
+            )
 
-    # Kill the old process group and wait for it to die.
-    # Agents are spawned with start_new_session=True, so they lead their own
-    # process group.  Signalling only the agent PID leaves any child processes
-    # it spawned (e.g. subprocess claude invocations) as orphans.  Send SIGTERM
-    # to the entire process group instead.
-    if pid:
+        # Mark the agent as externally stopped *before* sending SIGTERM so that
+        # _monitor_agent / _monitor_pid skip their own completion DB writes and
+        # don't race with the writes below.
+        _agent_pool.mark_externally_stopped(agent_id)
+
+        # Kill the old process group and wait for it to die.
         try:
             try:
                 os.killpg(os.getpgid(pid), signal.SIGTERM)
@@ -410,66 +408,68 @@ async def restart_agent(agent_id: str):
                     pass
         except (OSError, ProcessLookupError):
             pass
-    # Re-fetch the agent record after the kill to check whether it had already
-    # completed naturally (e.g. just created a PR) before we sent SIGTERM.
-    # Use this single snapshot for both status decisions and cleanup operations
-    # to avoid acting on a stale worktree_path while using a fresh status.
-    current_agent = db.get_agent(agent_id)
-    if current_agent and current_agent["status"] == "running":
-        # Mark the old agent finished BEFORE dispatching the new one.  The
-        # _monitor_agent/_monitor_pid thread was told to skip its own DB
-        # completion writes (via mark_externally_stopped) and may have already
-        # exited by now.  Writing finish_agent here — before dispatch — ensures
-        # the old record is never left permanently in 'running' state even if
-        # the dispatch call succeeds but a subsequent DB write fails.
+
+        # Re-fetch the agent record after the kill to check whether it had already
+        # completed naturally (e.g. just created a PR) before we sent SIGTERM.
+        current_agent = db.get_agent(agent_id)
+        if not current_agent or current_agent["status"] != "running":
+            # The agent completed naturally before we could restart it.
+            _agent_pool.unmark_externally_stopped(agent_id)
+            return JSONResponse(content={"error": "Agent completed before restart could dispatch a new one"}, status_code=409)
+
+        # Mark the old agent finished BEFORE dispatching the new one.
         try:
             db.finish_agent(agent_id, status="stopped", error_message="Manually restarted by user")
         except Exception:
             _agent_pool.unmark_externally_stopped(agent_id)
             raise
+    else:
+        # Agent is already dead (failed/stopped/timeout) — no process to kill.
+        current_agent = agent
 
-        # update_issue failure is non-fatal: the agent is already stopped and we
-        # still want to dispatch a replacement.  Ignore errors and continue.
-        if current_agent["issue_number"] is not None and current_agent.get("agent_type") == "fix_review":
-            try:
-                db.update_issue(current_agent["issue_number"], workspace_id=workspace_id, status="pending")
-            except Exception:
-                pass
-
-        # Dispatch preconditions were validated before the kill; proceed to dispatch.
-        new_agent_id = None
+    # For running fix_review agents, reset the issue to "pending" so the
+    # monitor knows the fix work needs to be redone.  Do NOT reset for
+    # already-dead agents — the issue status (e.g. "pr_created") is still
+    # correct and resetting it to "pending" would make it look unworked and
+    # could cause the issue watcher to dispatch a duplicate implement agent.
+    if is_running and current_agent["issue_number"] is not None and current_agent.get("agent_type") == "fix_review":
         try:
-            if current_agent.get("agent_type") == "fix_review":
-                new_agent_id = _agent_pool.dispatch_fix_review(
-                    current_agent["pr_number"], branch, current_agent["issue_number"], ws, threads,
-                )
-            else:
-                new_agent_id = _agent_pool.dispatch_implement(current_agent["issue_number"], workspace=ws)
+            db.update_issue(current_agent["issue_number"], workspace_id=workspace_id, status="pending")
         except Exception:
+            pass
+
+    # Clean up the old worktree BEFORE dispatching the new agent.
+    # dispatch_fix_review/dispatch_implement will create a new worktree at
+    # the same path (e.g. pr-fix-72), so if we cleaned up after dispatch we
+    # would destroy the new agent's working directory.
+    repo_path = ws["local_path"]
+    old_worktree_path = current_agent.get("worktree_path")
+    if old_worktree_path:
+        try:
+            worktree.cleanup_worktree(old_worktree_path, repo_path=repo_path)
+        except Exception:
+            pass
+
+    # Dispatch preconditions were validated before the kill; proceed to dispatch.
+    new_agent_id = None
+    try:
+        if current_agent.get("agent_type") == "fix_review":
+            new_agent_id = _agent_pool.dispatch_fix_review(
+                current_agent["pr_number"], branch, current_agent["issue_number"], ws, threads,
+            )
+        else:
+            new_agent_id = _agent_pool.dispatch_implement(current_agent["issue_number"], workspace=ws)
+    except Exception:
+        if is_running:
             _agent_pool.unmark_externally_stopped(agent_id)
-            raise
+        raise
 
-        if not new_agent_id:
-            # The old agent process is already dead (SIGTERM was sent and
-            # waited on above).  finish_agent was already called above.
+    if not new_agent_id:
+        if is_running:
             _agent_pool.unmark_externally_stopped(agent_id)
-            return JSONResponse(content={"error": "Failed to dispatch new agent"}, status_code=500)
+        return JSONResponse(content={"error": "Failed to dispatch new agent"}, status_code=500)
 
-        # Clean up the old worktree now that the new agent has its own.
-        # Use current_agent to ensure we target the fresh worktree_path.
-        repo_path = ws["local_path"]
-        if current_agent.get("worktree_path"):
-            try:
-                worktree.cleanup_worktree(current_agent["worktree_path"], repo_path=repo_path)
-            except Exception:
-                pass
-
-        return {"ok": True, "old_agent_id": agent_id, "new_agent_id": new_agent_id}
-
-    # The agent had already completed naturally before we could restart it.
-    # Remove agent_id from _stopped_agent_ids so it doesn't leak in the set.
-    _agent_pool.unmark_externally_stopped(agent_id)
-    return JSONResponse(content={"error": "Agent completed before restart could dispatch a new one"}, status_code=409)
+    return {"ok": True, "old_agent_id": agent_id, "new_agent_id": new_agent_id}
 
 
 @app.get("/api/issues")
