@@ -482,13 +482,6 @@ class AgentPool:
         # racing with restart_agent's own DB writes.
         if agent.stopped_externally:
             logger.info("Agent %s was externally stopped — skipping completion logic", agent_id)
-            if hasattr(agent, '_tailer_done') and agent._tailer_done is not None:
-                agent._tailer_done.wait(timeout=30)
-            if self._on_agent_complete:
-                try:
-                    self._on_agent_complete(agent)
-                except Exception as e:
-                    logger.error("Completion callback error: %s", e)
             with self._lock:
                 self._stopped_agent_ids.discard(agent_id)
             return
@@ -1017,10 +1010,10 @@ class AgentPool:
                     agent_id, pid, AGENT_TIMEOUT_SECONDS,
                 )
                 try:
-                    os.kill(pid, signal.SIGTERM)
+                    os.killpg(os.getpgid(pid), signal.SIGTERM)
                     time.sleep(5)
                     try:
-                        os.kill(pid, signal.SIGKILL)
+                        os.killpg(os.getpgid(pid), signal.SIGKILL)
                     except (OSError, ProcessLookupError):
                         pass
                 except (OSError, ProcessLookupError):
