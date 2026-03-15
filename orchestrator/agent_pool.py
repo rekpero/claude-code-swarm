@@ -124,7 +124,7 @@ class AgentProcess:
             while not os.path.exists(self.log_file):
                 if time.time() >= _deadline:
                     logger.warning("[%s] Log file not found after 1s: %s", self.agent_id, self.log_file)
-                    break
+                    return
                 time.sleep(0.05)
             with open(self.log_file) as f:
                 while True:
