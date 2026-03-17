@@ -1,8 +1,8 @@
 import { useState, useEffect, useRef } from 'react'
-import { ChevronDown, ChevronUp, Code, MessageSquare, RotateCw } from 'lucide-react'
+import { ChevronDown, ChevronUp, Code, MessageSquare, RotateCw, Square } from 'lucide-react'
 import { AgentStatusBadge } from './AgentStatusBadge'
 import { AgentLogViewer } from './AgentLogViewer'
-import { restartAgent } from '../../api/client'
+import { restartAgent, stopAgent } from '../../api/client'
 import { formatDuration, intervalToDuration } from 'date-fns'
 
 const AGENT_TYPE_META = {
@@ -42,6 +42,8 @@ export function AgentCard({ agent, workspaceName, onRestarted }) {
   const [expanded, setExpanded] = useState(isRunning)
   const [restarting, setRestarting] = useState(false)
   const [restartError, setRestartError] = useState(null)
+  const [stopping, setStopping] = useState(false)
+  const [stopError, setStopError] = useState(null)
   const mountedRef = useRef(true)
 
   useEffect(() => {
@@ -119,28 +121,55 @@ export function AgentCard({ agent, workspaceName, onRestarted }) {
             {agent.max_turns ? `/${agent.max_turns}` : ''} turns
           </span>
           {canRestart && (
-            <div className="flex flex-col items-end gap-0.5">
-              <button
-                onClick={(e) => {
-                  e.stopPropagation()
-                  if (restarting) return
-                  setRestarting(true)
-                  setRestartError(null)
-                  restartAgent(agent.agent_id)
-                    .then(() => { Promise.resolve(onRestarted?.()).catch(() => {}) })
-                    .catch((err) => { if (mountedRef.current) setRestartError(err?.message || 'Restart failed') })
-                    .finally(() => { if (mountedRef.current) setRestarting(false) })
-                }}
-                disabled={restarting}
-                className="flex items-center gap-1 px-2 py-1 text-[9px] font-medium text-[var(--yellow)] bg-[rgba(234,179,8,0.08)] border border-[rgba(234,179,8,0.15)] rounded hover:bg-[rgba(234,179,8,0.15)] transition-colors disabled:opacity-40"
-                title={isRunning ? 'Kill and restart this agent' : 'Restart this agent'}
-              >
-                <RotateCw size={9} className={restarting ? 'animate-spin' : ''} />
-                {restarting ? 'Restarting...' : isRunning ? 'Restart' : 'Retry'}
-              </button>
-              {restartError && (
-                <span className="text-[8px] text-[var(--red)]">{restartError}</span>
+            <div className="flex items-center gap-1.5">
+              {isRunning && (
+                <div className="flex flex-col items-end gap-0.5">
+                  <button
+                    onClick={(e) => {
+                      e.stopPropagation()
+                      if (stopping) return
+                      setStopping(true)
+                      setStopError(null)
+                      stopAgent(agent.agent_id)
+                        .then(() => { Promise.resolve(onRestarted?.()).catch(() => {}) })
+                        .catch((err) => { if (mountedRef.current) setStopError(err?.message || 'Stop failed') })
+                        .finally(() => { if (mountedRef.current) setStopping(false) })
+                    }}
+                    disabled={stopping || restarting}
+                    className="flex items-center gap-1 px-2 py-1 text-[9px] font-medium text-[var(--red)] bg-[rgba(239,68,68,0.08)] border border-[rgba(239,68,68,0.15)] rounded hover:bg-[rgba(239,68,68,0.15)] transition-colors disabled:opacity-40"
+                    title="Stop this agent"
+                  >
+                    <Square size={8} className={stopping ? 'animate-pulse' : ''} />
+                    {stopping ? 'Stopping...' : 'Stop'}
+                  </button>
+                  {stopError && (
+                    <span className="text-[8px] text-[var(--red)]">{stopError}</span>
+                  )}
+                </div>
               )}
+              <div className="flex flex-col items-end gap-0.5">
+                <button
+                  onClick={(e) => {
+                    e.stopPropagation()
+                    if (restarting) return
+                    setRestarting(true)
+                    setRestartError(null)
+                    restartAgent(agent.agent_id)
+                      .then(() => { Promise.resolve(onRestarted?.()).catch(() => {}) })
+                      .catch((err) => { if (mountedRef.current) setRestartError(err?.message || 'Restart failed') })
+                      .finally(() => { if (mountedRef.current) setRestarting(false) })
+                  }}
+                  disabled={restarting || stopping}
+                  className="flex items-center gap-1 px-2 py-1 text-[9px] font-medium text-[var(--yellow)] bg-[rgba(234,179,8,0.08)] border border-[rgba(234,179,8,0.15)] rounded hover:bg-[rgba(234,179,8,0.15)] transition-colors disabled:opacity-40"
+                  title={isRunning ? 'Kill and restart this agent' : 'Restart this agent'}
+                >
+                  <RotateCw size={9} className={restarting ? 'animate-spin' : ''} />
+                  {restarting ? 'Restarting...' : isRunning ? 'Restart' : 'Retry'}
+                </button>
+                {restartError && (
+                  <span className="text-[8px] text-[var(--red)]">{restartError}</span>
+                )}
+              </div>
             </div>
           )}
           <div className="text-[var(--text-muted)]">

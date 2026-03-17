@@ -137,6 +137,17 @@ def poll_issues(github_repo: str | None = None, workspace_id: str | None = None)
                 )
                 continue
 
+            # Check if a PR was created in a previous attempt (e.g. after
+            # orchestrator restart or DB state reset from force-push).
+            existing_pr = _find_open_pr_for_issue(issue_number, github_repo=repo)
+            if existing_pr:
+                db.update_issue(issue_number, workspace_id=workspace_id, status="pr_created", pr_number=existing_pr)
+                logger.info(
+                    "Issue #%d already has open PR #%d — promoting to pr_created",
+                    issue_number, existing_pr,
+                )
+                continue
+
             # Check trigger on each poll (someone may have commented since last check)
             if _issue_has_trigger(issue_number, github_repo=repo):
                 issue["workspace_id"] = workspace_id

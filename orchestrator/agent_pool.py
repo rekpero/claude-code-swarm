@@ -553,7 +553,16 @@ class AgentPool:
             db.update_agent(agent_id, turns_used=turns)
 
             if agent.agent_type == "implement":
-                db.update_issue(agent.issue_number, workspace_id=agent.workspace_id, status="pending")
+                # Check if a PR was already created before resetting to pending
+                branch_name = f"fix/issue-{agent.issue_number}"
+                workspace = agent._workspace
+                github_repo = workspace["github_repo"] if workspace else None
+                existing_pr = self._find_pr_for_branch(branch_name, github_repo=github_repo)
+                if existing_pr:
+                    logger.info("Agent %s failed but PR #%d exists — marking pr_created", agent_id, existing_pr)
+                    db.update_issue(agent.issue_number, workspace_id=agent.workspace_id, status="pr_created", pr_number=existing_pr)
+                else:
+                    db.update_issue(agent.issue_number, workspace_id=agent.workspace_id, status="pending")
 
             cleanup_worktree(agent.worktree_path, repo_path=repo_path)
 

@@ -6,6 +6,18 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 
+## [1.4.4] - 2026-03-17
+
+### Added
+- **Stop agent endpoint** — `POST /api/agents/{id}/stop` gracefully terminates a running agent (SIGTERM → SIGKILL fallback) without dispatching a replacement, resets the issue to `pending` (or `pr_created` if a PR already exists), and cleans up the worktree
+- **Stop button in dashboard** — running agents now show a red "Stop" button alongside the existing Restart button; both buttons are mutually disabled while either operation is in progress
+
+### Fixed
+- **Failed agent with existing PR no longer resets to pending** — when an implement agent fails, the orchestrator now checks for an existing PR on the `fix/issue-{N}` branch before resetting issue status; if a PR exists, the issue is marked `pr_created` instead of `pending`, preventing duplicate agent dispatch
+- **Issue poller detects pre-existing PRs** — on each poll cycle, pending issues are now checked for open PRs from previous attempts (e.g. after orchestrator restart or DB state reset); if found, the issue is promoted directly to `pr_created`
+
+---
+
 ## [1.4.3] - 2026-03-15
 
 ### Fixed

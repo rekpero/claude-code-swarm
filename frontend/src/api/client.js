@@ -51,6 +51,9 @@ export const getAgentLogs = (agentId, since = 0) =>
 export const restartAgent = (agentId) =>
   apiFetch(`/api/agents/${agentId}/restart`, { method: 'POST' })
 
+export const stopAgent = (agentId) =>
+  apiFetch(`/api/agents/${agentId}/stop`, { method: 'POST' })
+
 // Issues
 export const getIssues = (wsId) =>
   apiFetch(`/api/issues${wsId ? `?workspace_id=${encodeURIComponent(wsId)}` : ''}`)

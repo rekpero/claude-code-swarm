@@ -472,6 +472,80 @@ async def restart_agent(agent_id: str):
     return {"ok": True, "old_agent_id": agent_id, "new_agent_id": new_agent_id}
 
 
+@app.post("/api/agents/{agent_id}/stop")
+async def stop_agent(agent_id: str):
+    """Stop a running agent without dispatching a replacement."""
+    agent = db.get_agent(agent_id)
+    if not agent:
+        return JSONResponse(content={"error": "Agent not found"}, status_code=404)
+    if agent["status"] != "running":
+        return JSONResponse(content={"error": f"Agent is not running (status: {agent['status']})"}, status_code=400)
+    if not _agent_pool:
+        return JSONResponse(content={"error": "Agent pool not available"}, status_code=503)
+
+    pid = agent.get("pid")
+    if not pid:
+        return JSONResponse(content={"error": "Cannot stop: running agent has no PID recorded"}, status_code=409)
+
+    workspace_id = agent.get("workspace_id")
+    ws = db.get_workspace(workspace_id) if workspace_id else None
+
+    _agent_pool.mark_externally_stopped(agent_id)
+
+    # Kill the process group
+    try:
+        try:
+            os.killpg(os.getpgid(pid), signal.SIGTERM)
+        except ProcessLookupError:
+            pass
+        for _ in range(20):
+            await asyncio.sleep(0.5)
+            try:
+                os.kill(pid, 0)
+            except (OSError, ProcessLookupError):
+                break
+        else:
+            try:
+                os.killpg(os.getpgid(pid), signal.SIGKILL)
+                await asyncio.sleep(0.5)
+            except (OSError, ProcessLookupError):
+                pass
+    except (OSError, ProcessLookupError):
+        pass
+
+    # Check if agent completed naturally before our kill landed
+    current_agent = db.get_agent(agent_id)
+    if not current_agent or current_agent["status"] != "running":
+        _agent_pool.unmark_externally_stopped(agent_id)
+        return JSONResponse(content={"error": "Agent completed before stop took effect"}, status_code=409)
+
+    db.finish_agent(agent_id, status="stopped", error_message="Manually stopped by user")
+
+    # Reset issue to pending so it can be retried later, unless a PR already exists
+    issue_number = current_agent.get("issue_number")
+    if issue_number is not None:
+        if current_agent.get("agent_type") == "implement":
+            branch_name = f"fix/issue-{issue_number}"
+            github_repo = ws["github_repo"] if ws else None
+            existing_pr = _agent_pool._find_pr_for_branch(branch_name, github_repo=github_repo)
+            if existing_pr:
+                db.update_issue(issue_number, workspace_id=workspace_id, status="pr_created", pr_number=existing_pr)
+            else:
+                db.update_issue(issue_number, workspace_id=workspace_id, status="pending")
+        elif current_agent.get("agent_type") == "fix_review":
+            db.update_issue(issue_number, workspace_id=workspace_id, status="pending")
+
+    # Clean up worktree
+    old_worktree_path = current_agent.get("worktree_path")
+    if old_worktree_path and ws:
+        try:
+            worktree.cleanup_worktree(old_worktree_path, repo_path=ws["local_path"])
+        except Exception:
+            pass
+
+    return {"ok": True, "agent_id": agent_id}
+
+
 @app.get("/api/issues")
 async def list_issues(workspace_id: str | None = Query(None)):
     """List all tracked issues and their state."""
