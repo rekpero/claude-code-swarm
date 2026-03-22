@@ -55,6 +55,13 @@ DASHBOARD_PORT = int(os.environ.get("DASHBOARD_PORT", "8420"))
 ADMIN_USERNAME = os.environ.get("ADMIN_USERNAME", "admin")
 ADMIN_PASSWORD = os.environ.get("ADMIN_PASSWORD", "")
 
+# === API Keys (for external agent access) ===
+API_KEYS: list[str] = [
+    k.strip()
+    for k in os.environ.get("API_KEYS", "").split(",")
+    if k.strip()
+]
+
 # === Workspaces ===
 WORKSPACES_DIR = Path(os.environ.get("WORKSPACES_DIR", "/root/workspaces"))
 
@@ -129,6 +136,8 @@ def print_config():
     print(f"  DASHBOARD_PORT:        {DASHBOARD_PORT}")
     print(f"  ADMIN_USERNAME:        {ADMIN_USERNAME}")
     print(f"  ADMIN_PASSWORD:        {'(set)' if ADMIN_PASSWORD else '(NOT SET — unprotected!)'}")
+    api_keys_display = f"(set, {len(API_KEYS)} key{'s' if len(API_KEYS) != 1 else ''})" if API_KEYS else "(not set)"
+    print(f"  API_KEYS:              {api_keys_display}")
     print(f"  GIT_AUTHOR_NAME:       {GIT_AUTHOR_NAME or '(not set — agent default)'}")
     print(f"  GIT_AUTHOR_EMAIL:      {GIT_AUTHOR_EMAIL or '(not set — agent default)'}")
     token_preview = CLAUDE_CODE_OAUTH_TOKEN[:12] + "..." if CLAUDE_CODE_OAUTH_TOKEN else "(not set)"

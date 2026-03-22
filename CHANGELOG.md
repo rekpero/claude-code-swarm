@@ -6,6 +6,17 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 
+## [1.4.5] - 2026-03-22
+
+### Added
+- **API key authentication** — external agents and CI bots can now authenticate with a static `Authorization: Bearer <key>` header instead of a browser session; set one or more keys in `API_KEYS` (comma-separated) in `.env`; keys are compared with `secrets.compare_digest` to prevent timing attacks
+- **`API_KEYS` config var** — parsed at startup, displayed as `(set, N key(s))` or `(not set)` in `print_config()`; listed in `README.md` Configuration table
+- **Agent Planning API docs** — new `docs/agent-planning-api.md` covering authentication setup, all planning endpoints, request/response shapes, session status values, and a complete agent workflow example; linked from `README.md`
+- **PR labeling step in agent prompts** — both the implement and retry agent prompts now include a step to fetch all repo labels (`gh label list`) and apply up to 3 matching labels to the PR; labeling failures are silently skipped so they never block the task
+- **Updated planning API reference in README** — API table now lists the current planning endpoints (`GET /api/workspaces`, `GET /api/workspaces/{id}/planning-sessions`, `POST /api/planning`, `GET /api/planning/{id}`, `POST /api/planning/{id}/messages`, `POST /api/planning/{id}/create-issue`, `POST /api/planning/{id}/cancel`, `DELETE /api/planning/{id}`) replacing the outdated planner routes
+
+---
+
 ## [1.4.4] - 2026-03-17
 
 ### Added

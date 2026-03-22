@@ -20,7 +20,7 @@ from orchestrator import db
 from orchestrator import planner
 from orchestrator import worktree
 from orchestrator import workspace_manager as wm
-from orchestrator.config import ADMIN_USERNAME, ADMIN_PASSWORD
+from orchestrator.config import ADMIN_USERNAME, ADMIN_PASSWORD, API_KEYS
 
 app = FastAPI(title="SwarmOps Dashboard")
 
@@ -34,12 +34,17 @@ async def auth_middleware(request: Request, call_next):
     if path in ("/api/auth/login",) or not path.startswith("/api/"):
         return await call_next(request)
 
-    # All other /api/* routes require a valid session token
+    # All other /api/* routes require a valid session token or API key
     auth_header = request.headers.get("Authorization", "")
     if not auth_header.startswith("Bearer "):
         return JSONResponse({"detail": "Not authenticated"}, status_code=401)
 
     token = auth_header[7:]  # strip "Bearer "
+
+    # Allow requests authenticated with a configured API key
+    if any(secrets.compare_digest(token, k) for k in API_KEYS):
+        return await call_next(request)
+
     session = db.get_session(token)
     if session is None:
         return JSONResponse({"detail": "Invalid or expired session"}, status_code=401)

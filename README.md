@@ -304,10 +304,24 @@ Agents run in isolated git worktrees as siblings of the target repo. The orchest
 | `GET /api/agents/{id}/logs?since=N` | Stream-json events for an agent |
 | `GET /api/issues` | All tracked issues |
 | `GET /api/prs` | PR review loop status |
-| `GET /api/planner/sessions` | All planning sessions |
-| `POST /api/planner/start` | Start a new planning session |
-| `GET /api/planner/sessions/{id}/messages` | Messages for a planning session |
-| `POST /api/planner/sessions/{id}/create-issue` | Create a GitHub issue from a plan |
+| `GET /api/workspaces` | All workspaces |
+| `GET /api/workspaces/{workspace_id}/planning-sessions` | Planning sessions for a workspace |
+| `POST /api/planning` | Start a new planning session |
+| `GET /api/planning/{id}` | Get session status, messages, and plan |
+| `POST /api/planning/{id}/messages` | Refine the plan (continue conversation) |
+| `POST /api/planning/{id}/create-issue` | Create a GitHub issue from the plan |
+| `POST /api/planning/{id}/cancel` | Cancel in-progress generation |
+| `DELETE /api/planning/{id}` | Delete a planning session |
+
+### Agent Planning API
+
+External agents (other AI systems, CI bots, automations) can drive the full plan → issue workflow over HTTP using a static API key — no browser login needed.
+
+Set `API_KEYS=your-key` in `.env`, then pass it as `Authorization: Bearer <key>` on any request.
+
+**[Full API reference → docs/agent-planning-api.md](docs/agent-planning-api.md)**
+
+Covers: authentication setup, all planning endpoints, exact request/response shapes, session status values, where the plan lives in the response, and a complete agent workflow example.
 
 ## Safety Guardrails
 
