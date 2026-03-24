@@ -154,14 +154,14 @@ Create a PR: `gh pr create --title "Fix #{issue_number}: <concise title>" --body
 
 Step 6 — Label the PR:
 After creating the PR, add relevant labels. Follow these steps exactly:
-1. Fetch all labels available in the repo: `gh label list --repo {owner}/{repo_name} --json name --limit 500`
+1. Fetch all labels available in the repo using the REST API: `gh api repos/{owner}/{repo_name}/labels --paginate --jq '.[].name'`
 2. Look at the issue title, the implementation plan, and what you built. Pick labels ONLY from the fetched list that clearly match (at most 3). Common signals:
    - `bug` or `fix` — if this is a bug fix
    - `feature` or `enhancement` — if this adds new functionality
    - `documentation` or `docs` or `blog` — if you wrote a blog post or doc file
    - Any other label from the list that clearly applies
 3. Apply the chosen labels: `gh pr edit HEAD --add-label "<label>" --repo {owner}/{repo_name}`
-4. If `gh label list` fails, returns no results, no labels match, or `gh pr edit` fails — skip this step silently and do NOT retry. Never let labeling block or fail the overall task.
+4. If fetching labels fails, returns no results, no labels match, or `gh pr edit` fails — skip this step silently and do NOT retry. Never let labeling block or fail the overall task.
 
 Important:
 - The issue body IS the plan. Follow it precisely.
@@ -277,14 +277,14 @@ If a PR already exists, just push — the PR will update automatically.
 
 Step 7 — Label the PR:
 Add relevant labels to the PR (whether it was just created or already existed). Follow these steps exactly:
-1. Fetch all labels available in the repo: `gh label list --repo {owner}/{repo_name} --json name --limit 500`
+1. Fetch all labels available in the repo using the REST API: `gh api repos/{owner}/{repo_name}/labels --paginate --jq '.[].name'`
 2. Look at the issue title, the implementation plan, and what you built. Pick labels ONLY from the fetched list that clearly match (at most 3). Common signals:
    - `bug` or `fix` — if this is a bug fix
    - `feature` or `enhancement` — if this adds new functionality
    - `documentation` or `docs` or `blog` — if you wrote a blog post or doc file
    - Any other label from the list that clearly applies
 3. Apply the chosen labels: `gh pr edit HEAD --add-label "<label>" --repo {owner}/{repo_name}`
-4. If `gh label list` fails, returns no results, no labels match, or `gh pr edit` fails — skip this step silently and do NOT retry. Never let labeling block or fail the overall task.
+4. If fetching labels fails, returns no results, no labels match, or `gh pr edit` fails — skip this step silently and do NOT retry. Never let labeling block or fail the overall task.
 
 Important:
 - Do NOT redo work that's already been completed.
