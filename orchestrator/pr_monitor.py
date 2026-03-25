@@ -376,9 +376,9 @@ class PRMonitor:
         repo = github_repo
         try:
             _run_gh(
-                "issue", "edit", str(issue_number),
-                "--repo", repo,
-                "--add-label", "needs-human",
+                "api", f"repos/{repo}/issues/{issue_number}/labels",
+                "--method", "POST",
+                "-f", "labels[]=needs-human",
             )
         except Exception as e:
             logger.error("Failed to label issue #%d: %s", issue_number, e)

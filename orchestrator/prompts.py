@@ -160,8 +160,10 @@ After creating the PR, add relevant labels. Follow these steps exactly:
    - `feature` or `enhancement` — if this adds new functionality
    - `documentation` or `docs` or `blog` — if you wrote a blog post or doc file
    - Any other label from the list that clearly applies
-3. Apply the chosen labels: `gh pr edit HEAD --add-label "<label>" --repo {owner}/{repo_name}`
-4. If fetching labels fails, returns no results, no labels match, or `gh pr edit` fails — skip this step silently and do NOT retry. Never let labeling block or fail the overall task.
+3. Get the PR number from the output of `gh pr create` (or find it with `gh pr view --json number --jq .number`).
+4. Apply the chosen labels using the REST API: `gh api repos/{owner}/{repo_name}/issues/PR_NUMBER/labels --method POST -f "labels[]=<label1>" -f "labels[]=<label2>"`
+   (GitHub treats PR labels as issue labels, so use the issues endpoint with the PR number.)
+5. If fetching labels fails, returns no results, no labels match, or applying labels fails — skip this step silently and do NOT retry. Never let labeling block or fail the overall task.
 
 Important:
 - The issue body IS the plan. Follow it precisely.
@@ -283,8 +285,10 @@ Add relevant labels to the PR (whether it was just created or already existed). 
    - `feature` or `enhancement` — if this adds new functionality
    - `documentation` or `docs` or `blog` — if you wrote a blog post or doc file
    - Any other label from the list that clearly applies
-3. Apply the chosen labels: `gh pr edit HEAD --add-label "<label>" --repo {owner}/{repo_name}`
-4. If fetching labels fails, returns no results, no labels match, or `gh pr edit` fails — skip this step silently and do NOT retry. Never let labeling block or fail the overall task.
+3. Get the PR number (find it with `gh pr view --json number --jq .number`).
+4. Apply the chosen labels using the REST API: `gh api repos/{owner}/{repo_name}/issues/PR_NUMBER/labels --method POST -f "labels[]=<label1>" -f "labels[]=<label2>"`
+   (GitHub treats PR labels as issue labels, so use the issues endpoint with the PR number.)
+5. If fetching labels fails, returns no results, no labels match, or applying labels fails — skip this step silently and do NOT retry. Never let labeling block or fail the overall task.
 
 Important:
 - Do NOT redo work that's already been completed.

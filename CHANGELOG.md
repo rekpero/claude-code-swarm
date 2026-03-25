@@ -6,6 +6,13 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 
+## [1.4.6] - 2026-03-25
+
+### Fixed
+- **PR labeling uses REST API end-to-end** — both label fetching and label application now use the GitHub REST API (`gh api`) instead of GraphQL-based `gh label list` / `gh pr edit --add-label`, which required `read:org` token scope; the `needs-human` label in `pr_monitor` is also applied via REST
+
+---
+
 ## [1.4.5] - 2026-03-22
 
 ### Added
