@@ -205,11 +205,26 @@ _upgrade_claude_if_needed() {
     return 0
   fi
 
+  # Global npm prefixes are usually root-owned (e.g. /usr/lib/node_modules or
+  # root-installed nvm), so npm install -g fails with EACCES when run by a
+  # non-root user.  Use sudo -n if we're not already root — non-interactive
+  # so we never hang on a password prompt; if passwordless sudo isn't set up
+  # we fall through to the warning branch with the existing version intact.
+  local -a install_cmd
+  if [ "$EUID" -eq 0 ]; then
+    install_cmd=(npm install -g "@anthropic-ai/claude-code@latest")
+  elif command -v sudo &>/dev/null; then
+    install_cmd=(sudo -n npm install -g "@anthropic-ai/claude-code@latest")
+  else
+    echo "Cannot upgrade claude CLI: not root and sudo unavailable — skipping"
+    return 0
+  fi
+
   echo "Upgrading claude CLI: $current -> $latest"
-  if npm install -g @anthropic-ai/claude-code@latest >/dev/null 2>&1; then
+  if "${install_cmd[@]}" >/dev/null 2>&1; then
     echo "claude upgrade complete"
   else
-    echo "WARNING: claude upgrade failed — continuing with existing version ($current)"
+    echo "WARNING: claude upgrade failed (may need passwordless sudo) — continuing with existing version ($current)"
   fi
 }
 
