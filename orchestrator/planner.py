@@ -16,6 +16,35 @@ from orchestrator.prompts import build_planning_prompt
 
 logger = logging.getLogger(__name__)
 
+
+def _close_process_pipes(process: subprocess.Popen | None) -> None:
+    """Close stdin/stdout/stderr pipes of a finished planner subprocess.
+
+    Each planning session opens three PIPE FDs (stdin/stdout/stderr).  Popen
+    does not auto-close them when the child exits, so without explicit
+    cleanup the orchestrator leaks three FDs per planning session and
+    eventually exhausts its FD limit, failing with 'Too many open files'.
+
+    Refuses to close while the child is still running so we never truncate
+    output mid-flight by sending the child a SIGPIPE on its next write.
+    """
+    if process is None:
+        return
+    if process.poll() is None:
+        logger.warning(
+            "Refusing to close pipes for running planner process (pid=%s)",
+            process.pid,
+        )
+        return
+    for stream in (process.stdin, process.stdout, process.stderr):
+        if stream is None:
+            continue
+        try:
+            stream.close()
+        except Exception:
+            pass
+
+
 # Tracks active planning subprocesses: session_id -> subprocess.Popen
 _active: dict[str, subprocess.Popen] = {}
 # Sessions that have been claimed for a new start but whose subprocess has not
@@ -251,6 +280,7 @@ def _run_planning_agent_impl(session_id: str, workspace: dict, prompt: str):
                 process.wait(timeout=10)
             except subprocess.TimeoutExpired:
                 logger.warning("Process for session %s did not exit after SIGKILL", session_id)
+        _close_process_pipes(process)
         db.update_planning_session(session_id, status="active")
         with _active_lock:
             _cancelled.discard(session_id)
@@ -269,6 +299,7 @@ def _run_planning_agent_impl(session_id: str, workspace: dict, prompt: str):
             process.wait(timeout=10)
         except subprocess.TimeoutExpired:
             pass
+        _close_process_pipes(process)
         db.update_planning_session(session_id, status="error")
         return
 
@@ -532,6 +563,14 @@ def _run_planning_agent_impl(session_id: str, workspace: dict, prompt: str):
                 session_id,
             )
     finally:
+        # Release the three pipe FDs (stdin/stdout/stderr) held by the Popen.
+        # Safe: every path that reaches this finally has already waited for
+        # the subprocess to exit (try-branch waits at the end; except-branch
+        # kills+waits before falling through).  Without this, each planning
+        # session leaks 3 FDs and the orchestrator eventually hits the
+        # per-process open-files limit (1024 by default) and refuses to
+        # accept new connections.
+        _close_process_pipes(process)
         with _active_lock:
             _starting.discard(session_id)
             _active.pop(session_id, None)

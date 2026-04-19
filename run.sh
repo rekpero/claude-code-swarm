@@ -174,8 +174,48 @@ cmd_stop() {
   fi
 }
 
+_upgrade_claude_if_needed() {
+  # Opportunistic upgrade on restart: keep the claude CLI current so newly
+  # spawned agents run the latest version.  Designed to be resilient —
+  # network failures or permission issues only log a warning and let the
+  # restart proceed with the existing version.
+  if ! command -v claude &>/dev/null; then
+    echo "claude CLI not installed — skipping upgrade check"
+    return 0
+  fi
+  if ! command -v npm &>/dev/null; then
+    echo "npm not available — skipping claude upgrade check"
+    return 0
+  fi
+
+  local current latest
+  current=$(claude --version 2>/dev/null | awk '{print $1}' || true)
+  latest=$(npm view @anthropic-ai/claude-code version 2>/dev/null || true)
+
+  if [ -z "$latest" ]; then
+    echo "Unable to reach npm registry — skipping claude upgrade check"
+    return 0
+  fi
+  if [ -z "$current" ]; then
+    echo "Could not determine current claude version — skipping upgrade"
+    return 0
+  fi
+  if [ "$current" = "$latest" ]; then
+    echo "claude CLI already up to date ($current)"
+    return 0
+  fi
+
+  echo "Upgrading claude CLI: $current -> $latest"
+  if npm install -g @anthropic-ai/claude-code@latest >/dev/null 2>&1; then
+    echo "claude upgrade complete"
+  else
+    echo "WARNING: claude upgrade failed — continuing with existing version ($current)"
+  fi
+}
+
 cmd_restart() {
   cmd_build_ui
+  _upgrade_claude_if_needed
   if _is_systemd; then
     sudo systemctl restart "$SERVICE_NAME"
     sudo systemctl status "$SERVICE_NAME" --no-pager
@@ -248,6 +288,11 @@ KillSignal=SIGTERM
 TimeoutStopSec=60
 Restart=on-failure
 RestartSec=30
+# Modest bump above the 1024 default — enough headroom for normal
+# multi-agent operation (pipes + sockets + sqlite FDs) without giving a
+# buggy process room to eat into the kernel's global file-max on hosts
+# that run other production services.
+LimitNOFILE=4096
 StandardOutput=journal
 StandardError=journal
 SyslogIdentifier=claude-swarm

@@ -169,7 +169,11 @@ Important:
 - The issue body IS the plan. Follow it precisely.
 - Do NOT modify files unrelated to what the plan specifies.
 - If the plan is unclear or something seems wrong, create the PR as a draft and note your questions in the PR body.
-- Always run tests before creating the PR."""
+- Always run tests before creating the PR.
+- NEVER silently substitute placeholder content (copying an unrelated file as a stand-in, empty stub files, TODO comments as final output).
+  If a required skill, script, API key, or tool is missing or errors out, continue with the rest of the task — but call it out clearly
+  in the PR body under a "## Needs follow-up" section: name what was missing, what you skipped or stubbed, and what a human needs to do.
+  A silent placeholder that ships unnoticed is the failure mode — a clearly-flagged gap is fine."""
 
 
 def _format_unresolved_threads(threads: list[dict]) -> str:
@@ -293,7 +297,11 @@ Add relevant labels to the PR (whether it was just created or already existed). 
 Important:
 - Do NOT redo work that's already been completed.
 - Check git log and file state before making any changes.
-- The issue body IS the plan. Follow it precisely for remaining work."""
+- The issue body IS the plan. Follow it precisely for remaining work.
+- NEVER silently substitute placeholder content (copying an unrelated file as a stand-in, empty stub files, TODO comments as final output).
+  If a required skill, script, API key, or tool is missing or errors out, continue with the rest of the task — but call it out clearly
+  in the PR body under a "## Needs follow-up" section: name what was missing, what you skipped or stubbed, and what a human needs to do.
+  A silent placeholder that ships unnoticed is the failure mode — a clearly-flagged gap is fine."""
 
 
 def build_resume_fix_review_prompt(pr_number: int, unresolved_threads: list[dict] | None = None, github_repo: str | None = None, target_repo_path: Path | str | None = None) -> str:

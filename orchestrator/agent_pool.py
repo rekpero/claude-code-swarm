@@ -54,6 +54,34 @@ _RATE_LIMIT_PATTERNS = [
 logger = logging.getLogger(__name__)
 
 
+def _close_process_pipes(process: subprocess.Popen | None) -> None:
+    """Close PIPE file descriptors held by a finished Popen.
+
+    Popen does not auto-close stdin/stdout/stderr when the child exits, so
+    long-lived references (e.g. in AgentPool._agents) would otherwise leak
+    one pipe FD per agent until GC, eventually exhausting the process FD
+    limit and causing 'OSError: Too many open files' in the asyncio server.
+
+    Refuses to close while the child is still running: closing stdout/stderr
+    on a live subprocess would cause the child to receive SIGPIPE on its next
+    write and truncate any output we have not yet read.
+    """
+    if process is None:
+        return
+    if process.poll() is None:
+        logger.warning(
+            "Refusing to close pipes for running process (pid=%s)", process.pid
+        )
+        return
+    for stream in (process.stdin, process.stdout, process.stderr):
+        if stream is None:
+            continue
+        try:
+            stream.close()
+        except Exception:
+            pass
+
+
 def _workspace_config(workspace: dict) -> tuple[str, str, str, str]:
     """Extract (github_repo, local_path, worktree_dir, base_branch) from workspace dict."""
     local_path = workspace["local_path"]
@@ -189,6 +217,7 @@ class AgentProcess:
         except subprocess.TimeoutExpired:
             self.process.kill()
             self.process.wait()
+        _close_process_pipes(self.process)
 
 
 class AgentPool:
@@ -499,7 +528,7 @@ class AgentPool:
         while agent.is_running:
             if agent.is_timed_out:
                 logger.warning("Agent %s timed out after %ds, killing", agent_id, AGENT_TIMEOUT_SECONDS)
-                agent.kill()
+                agent.kill()  # already closes pipes after wait
                 db.finish_agent(agent_id, status="timeout", error_message="Agent exceeded timeout")
                 cleanup_worktree(agent.worktree_path, repo_path=repo_path)
                 return
@@ -511,6 +540,9 @@ class AgentPool:
             logger.info("Agent %s was externally stopped — skipping completion logic", agent_id)
             with self._lock:
                 self._stopped_agent_ids.discard(agent_id)
+            # Process has already exited (is_running above returned False), so
+            # releasing pipe FDs is safe even though we skip the DB writes.
+            _close_process_pipes(agent.process)
             return
 
         # Wait for the tailer thread to finish draining the log before reading
@@ -572,6 +604,13 @@ class AgentPool:
                 self._on_agent_complete(agent)
             except Exception as e:
                 logger.error("Completion callback error: %s", e)
+
+        # Release pipe FDs held by the finished subprocess.  Safe here because
+        # the process has exited (is_running returned False above) and stderr
+        # has already been read.  Without this, each completed agent leaks one
+        # pipe FD for the lifetime of the orchestrator because AgentProcess
+        # instances remain in self._agents for dashboard queries.
+        _close_process_pipes(agent.process)
 
     def _handle_implement_complete(self, agent: AgentProcess):
         """Handle completion of an implement agent — verify PR was actually created."""

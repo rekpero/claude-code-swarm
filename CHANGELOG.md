@@ -6,6 +6,18 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 
+## [1.4.7] - 2026-04-19
+
+### Fixed
+- **File descriptor leak in agent and planner subprocesses** — `Popen` does not auto-close `stdin`/`stdout`/`stderr` PIPE FDs when the child exits, so each completed agent leaked one FD and each planning session leaked three; the orchestrator would eventually hit the per-process open-files limit (1024 by default) and refuse to accept new connections with `OSError: Too many open files`. New `_close_process_pipes()` helper in both `agent_pool.py` and `planner.py` closes pipes after every exit path (normal completion, timeout, externally stopped, exception); refuses to close while the child is still running to avoid SIGPIPE-truncating output mid-flight
+
+### Added
+- **Anti-placeholder rule in implement and fix-review prompts** — agents are now explicitly forbidden from silently substituting placeholder content (copying an unrelated file as a stand-in, empty stub files, TODO comments as final output); when a required skill, script, API key, or tool is missing or errors out, agents must continue with the rest of the task but flag the gap in the PR body under a `## Needs follow-up` section naming what was missing, what was skipped or stubbed, and what a human needs to do
+- **Opportunistic `claude` CLI upgrade on `run.sh restart`** — before restarting the orchestrator, the script compares the installed `claude` version against the latest published on npm and runs `npm install -g @anthropic-ai/claude-code@latest` if they differ; network failures, missing `npm`, or permission issues only log a warning and let the restart proceed with the existing version
+- **`LimitNOFILE=4096` in the systemd unit** — modest bump from the 1024 default to give multi-agent operation headroom for pipes, sockets, and SQLite FDs without letting a buggy process eat into the kernel's global file-max on shared hosts
+
+---
+
 ## [1.4.6] - 2026-03-25
 
 ### Fixed
