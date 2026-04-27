@@ -6,6 +6,35 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 
+## [1.4.8] - 2026-04-26
+
+### Added
+- **Manual PR tracking** — open PRs that have no associated swarm-tracked issue (e.g. PRs the user creates manually) are now discovered, monitored for review comments and CI failures, and fixed by `fix_review` agents the same way issue-based PRs are; controlled by the new `TRACK_MANUAL_PRS` env var (default `true`)
+- **Synthetic issue records for manual PRs** — discovery seeds an `issues` row using `issue_number = pr_number` (GitHub PRs and issues share a number namespace per repo, so this is collision-free) with status `pr_created`, `is_manual_pr = 1`, and a `[Manual PR] ...` title prefix; the rest of `_poll_prs` then handles them through the existing flow with no special-casing
+- **`is_manual_pr` column** on `issues` table — `INTEGER DEFAULT 0`, added via the existing `_migrate_add_column` helper so existing databases upgrade without intervention
+- **`MANUAL_PR_DISCOVERY_LIMIT`** env var (default `500`) — caps the per-cycle `gh pr list` output for very busy repos; logs a warning when the cap is hit so operators can raise it
+- **`manual_prs` metric** in `/api/metrics` — counts synthetic-record manual PRs separately so the existing `total_issues` / `pending` / `pr_created` figures continue to reflect only real issues
+- **`db.get_issue_by_pr_number()`** — finds any issue row (real or synthetic) that already tracks a given PR, used by discovery to avoid duplicate seeding
+- **`db.upsert_manual_pr_tracking()`** — idempotent insert/update for synthetic records that preserves terminal statuses (`resolved`, `needs_human`) on re-discovery so a previously-merged or escalated PR isn't reopened
+- **`db.delete_pr_reviews()`** (workspace-scoped) — clears prior fix-iteration history when a closed-then-reopened manual PR is reactivated, so the user's reopen acts as a "try again" signal instead of immediately re-tripping `MAX_PR_FIX_RETRIES`
+- **`pr_monitor.list_open_prs()`** — fetches open PRs in a repo via `gh pr list`, filtering out drafts and any PR whose `headRepositoryOwner` doesn't match the repo owner (i.e. forks and deleted-fork PRs whose branches we couldn't push fixes to)
+- **`pr_monitor.get_pr_terminal_state()`** — returns `'merged'`, `'closed'` (closed without merge), or `None`; replaces the binary `is_pr_merged` check so the poll loop can distinguish merge from rejection
+- **`PRMonitor._discover_manual_prs()`** — runs at the top of every poll cycle for each active workspace; seeds new synthetic records and reactivates ones that were previously paused by a close-without-merge but are now open again on GitHub
+
+### Changed
+- **Closed-without-merge handling** — for synthetic records the row goes to `status='resolved'` (and is reactivated if the PR is reopened); for issue-backed PRs the row goes to `status='needs_human'` and a `needs-human` label is applied so the maintainer's rejection doesn't get silently marked as a successful resolution
+- **`db.get_pr_reviews()` and `db.get_latest_pr_review()`** now accept an optional `workspace_id` — without it, two workspaces that happen to track a PR with the same number would have shared a single iteration budget; `_poll_prs` passes the workspace_id so iteration limits are correctly scoped per repo
+- **Reactivation resets iteration history** — when a closed manual PR is reopened, prior `pr_reviews` rows for that PR are deleted so it doesn't immediately escalate to `needs_human` against the old retry count
+
+### Fixed
+- **Orphaned issue records no longer crash the PR poll cycle** — when an `issues` row points to a workspace that has been deleted, `_poll_prs` would pass `--repo None` to `gh` and abort with `TypeError`, blocking polling for every other PR until the next cycle; the loop now logs a warning and skips the orphan
+- **Defensive JSON shape checks across all `gh` wrappers** — `get_pr_terminal_state`, `get_pr_branch`, `get_pr_checks`, `get_pr_comments`, `list_open_prs`, and `get_unresolved_threads` now all verify the parsed JSON shape (`isinstance(data, dict)` / `isinstance(data, list)`) before downstream code calls `.get(...)` or iterates; a malformed `gh` response returns the empty/None case instead of crashing the poll cycle
+- **`get_pr_branch` and `get_pr_checks` guard against `github_repo=None`** — both now short-circuit instead of passing `None` into the `gh` argv (which would propagate as a `TypeError`)
+- **`get_unresolved_threads` AttributeError on non-dict GraphQL response** — `data.get("errors")` would crash when `data` was a list, and `AttributeError` was not in the function's catch tuple
+- **Defense-in-depth collision guard** in `_discover_manual_prs` — even though GitHub's invariant prevents an issue and PR from sharing a number, the discovery code now refuses to clobber a real issue row that happens to have `issue_number == pr_number` (e.g. from a stale DB import) and logs a warning
+
+---
+
 ## [1.4.7] - 2026-04-19
 
 ### Fixed

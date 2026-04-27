@@ -164,6 +164,9 @@ def init_db():
     _migrate_add_column(conn, "issues", "workspace_id", "TEXT")
     _migrate_add_column(conn, "agents", "workspace_id", "TEXT")
     _migrate_add_column(conn, "pr_reviews", "workspace_id", "TEXT")
+    # Manual-PR tracking: marks issue rows that are synthetic placeholders for
+    # PRs created without an associated issue (so PRMonitor can watch them).
+    _migrate_add_column(conn, "issues", "is_manual_pr", "INTEGER DEFAULT 0")
     conn.commit()
 
 
@@ -458,6 +461,64 @@ def get_all_issues(workspace_id: str | None = None) -> list[dict]:
     return [dict(r) for r in rows]
 
 
+def get_issue_by_pr_number(pr_number: int, workspace_id: str | None = None) -> dict | None:
+    """Find an issue record (real or synthetic) that already tracks this PR."""
+    conn = _get_connection()
+    if workspace_id:
+        row = conn.execute(
+            "SELECT * FROM issues WHERE pr_number = ? AND workspace_id = ? LIMIT 1",
+            (pr_number, workspace_id),
+        ).fetchone()
+    else:
+        row = conn.execute(
+            "SELECT * FROM issues WHERE pr_number = ? LIMIT 1",
+            (pr_number,),
+        ).fetchone()
+    return dict(row) if row else None
+
+
+def upsert_manual_pr_tracking(pr_number: int, title: str, workspace_id: str | None = None) -> None:
+    """Create a synthetic issue record so PRMonitor tracks a manually-created PR.
+
+    GitHub PRs and issues share the same number namespace inside a repo, so
+    using ``issue_number = pr_number`` is unambiguous and lets the rest of the
+    flow work unchanged.  Status starts at ``pr_created`` so _poll_prs picks it
+    up immediately on the next cycle.
+    """
+    conn = _get_connection()
+    if workspace_id is None:
+        existing = conn.execute(
+            "SELECT id FROM issues WHERE issue_number = ? AND workspace_id IS NULL",
+            (pr_number,),
+        ).fetchone()
+        if existing:
+            conn.execute(
+                """UPDATE issues SET title = ?, pr_number = ?, is_manual_pr = 1, updated_at = ?
+                   WHERE id = ?""",
+                (title, pr_number, _now(), existing["id"]),
+            )
+        else:
+            conn.execute(
+                """INSERT INTO issues (issue_number, title, status, pr_number, is_manual_pr, workspace_id, created_at, updated_at)
+                   VALUES (?, ?, 'pr_created', ?, 1, NULL, ?, ?)""",
+                (pr_number, title, pr_number, _now(), _now()),
+            )
+    else:
+        # Preserve terminal statuses (resolved / needs_human) on re-discovery so
+        # we don't reopen a PR that was already merged or escalated.
+        conn.execute(
+            """INSERT INTO issues (issue_number, title, status, pr_number, is_manual_pr, workspace_id, created_at, updated_at)
+               VALUES (?, ?, 'pr_created', ?, 1, ?, ?, ?)
+               ON CONFLICT(issue_number, workspace_id) DO UPDATE SET
+                 title = excluded.title,
+                 pr_number = excluded.pr_number,
+                 is_manual_pr = 1,
+                 updated_at = excluded.updated_at""",
+            (pr_number, title, pr_number, workspace_id, _now(), _now()),
+        )
+    conn.commit()
+
+
 def update_issue(issue_number: int, workspace_id: str | None = None, **kwargs):
     conn = _get_connection()
     kwargs["updated_at"] = _now()
@@ -618,22 +679,60 @@ def create_pr_review(pr_number: int, iteration: int, comments_count: int, commen
     return cursor.lastrowid
 
 
-def get_pr_reviews(pr_number: int) -> list[dict]:
+def get_pr_reviews(pr_number: int, workspace_id: str | None = None) -> list[dict]:
+    """Return pr_review rows for a PR.  Pass ``workspace_id`` when callers know
+    which workspace the PR belongs to — without it, two workspaces that happen
+    to have a PR with the same number would conflate their iteration counts.
+    """
     conn = _get_connection()
-    rows = conn.execute(
-        "SELECT * FROM pr_reviews WHERE pr_number = ? ORDER BY iteration",
-        (pr_number,),
-    ).fetchall()
+    if workspace_id:
+        rows = conn.execute(
+            "SELECT * FROM pr_reviews WHERE pr_number = ? AND workspace_id = ? ORDER BY iteration",
+            (pr_number, workspace_id),
+        ).fetchall()
+    else:
+        rows = conn.execute(
+            "SELECT * FROM pr_reviews WHERE pr_number = ? ORDER BY iteration",
+            (pr_number,),
+        ).fetchall()
     return [dict(r) for r in rows]
 
 
-def get_latest_pr_review(pr_number: int) -> dict | None:
+def get_latest_pr_review(pr_number: int, workspace_id: str | None = None) -> dict | None:
     conn = _get_connection()
-    row = conn.execute(
-        "SELECT * FROM pr_reviews WHERE pr_number = ? ORDER BY iteration DESC LIMIT 1",
-        (pr_number,),
-    ).fetchone()
+    if workspace_id:
+        row = conn.execute(
+            "SELECT * FROM pr_reviews WHERE pr_number = ? AND workspace_id = ? ORDER BY iteration DESC LIMIT 1",
+            (pr_number, workspace_id),
+        ).fetchone()
+    else:
+        row = conn.execute(
+            "SELECT * FROM pr_reviews WHERE pr_number = ? ORDER BY iteration DESC LIMIT 1",
+            (pr_number,),
+        ).fetchone()
     return dict(row) if row else None
+
+
+def delete_pr_reviews(pr_number: int, workspace_id: str | None = None) -> int:
+    """Delete all pr_review rows for a PR. Returns the number of rows removed.
+
+    Used when a synthetic manual-PR record is reactivated after being closed
+    and reopened — the user's reopen is a "try again" signal, so the previous
+    iteration count shouldn't immediately re-escalate the PR to needs_human.
+    """
+    conn = _get_connection()
+    if workspace_id:
+        cursor = conn.execute(
+            "DELETE FROM pr_reviews WHERE pr_number = ? AND workspace_id = ?",
+            (pr_number, workspace_id),
+        )
+    else:
+        cursor = conn.execute(
+            "DELETE FROM pr_reviews WHERE pr_number = ?",
+            (pr_number,),
+        )
+    conn.commit()
+    return cursor.rowcount
 
 
 def update_pr_review(review_id: int, **kwargs):
@@ -799,44 +898,51 @@ def cleanup_expired_sessions() -> None:
 def get_metrics(workspace_id: str | None = None) -> dict:
     conn = _get_connection()
 
-    ws_filter_agents = " AND workspace_id = ?" if workspace_id else ""
-    ws_filter_issues = " AND workspace_id = ?" if workspace_id else ""
+    ws_clause = " AND workspace_id = ?" if workspace_id else ""
     ws_params: tuple = (workspace_id,) if workspace_id else ()
 
+    # Issue counts exclude synthetic manual-PR records so they don't inflate
+    # "issue" totals.  Manual PRs are reported separately as ``manual_prs``.
+    issue_clause = " AND COALESCE(is_manual_pr, 0) = 0" + ws_clause
+
     active_agents = conn.execute(
-        f"SELECT COUNT(*) FROM agents WHERE status = 'running'{ws_filter_agents}", ws_params
+        f"SELECT COUNT(*) FROM agents WHERE status = 'running'{ws_clause}", ws_params
     ).fetchone()[0]
 
     total_issues = conn.execute(
-        f"SELECT COUNT(*) FROM issues WHERE 1=1{ws_filter_issues}", ws_params
+        f"SELECT COUNT(*) FROM issues WHERE 1=1{issue_clause}", ws_params
     ).fetchone()[0]
 
     resolved = conn.execute(
-        f"SELECT COUNT(*) FROM issues WHERE status = 'resolved'{ws_filter_issues}", ws_params
+        f"SELECT COUNT(*) FROM issues WHERE status = 'resolved'{issue_clause}", ws_params
     ).fetchone()[0]
 
     pending = conn.execute(
-        f"SELECT COUNT(*) FROM issues WHERE status = 'pending'{ws_filter_issues}", ws_params
+        f"SELECT COUNT(*) FROM issues WHERE status = 'pending'{issue_clause}", ws_params
     ).fetchone()[0]
 
     in_progress = conn.execute(
-        f"SELECT COUNT(*) FROM issues WHERE status = 'in_progress'{ws_filter_issues}", ws_params
+        f"SELECT COUNT(*) FROM issues WHERE status = 'in_progress'{issue_clause}", ws_params
     ).fetchone()[0]
 
     needs_human = conn.execute(
-        f"SELECT COUNT(*) FROM issues WHERE status = 'needs_human'{ws_filter_issues}", ws_params
+        f"SELECT COUNT(*) FROM issues WHERE status = 'needs_human'{issue_clause}", ws_params
     ).fetchone()[0]
 
     pr_created = conn.execute(
-        f"SELECT COUNT(*) FROM issues WHERE status = 'pr_created'{ws_filter_issues}", ws_params
+        f"SELECT COUNT(*) FROM issues WHERE status = 'pr_created'{issue_clause}", ws_params
+    ).fetchone()[0]
+
+    manual_prs = conn.execute(
+        f"SELECT COUNT(*) FROM issues WHERE COALESCE(is_manual_pr, 0) = 1{ws_clause}", ws_params
     ).fetchone()[0]
 
     avg_turns = conn.execute(
-        f"SELECT AVG(turns_used) FROM agents WHERE status = 'completed'{ws_filter_agents}", ws_params
+        f"SELECT AVG(turns_used) FROM agents WHERE status = 'completed'{ws_clause}", ws_params
     ).fetchone()[0]
 
     rate_limited = conn.execute(
-        f"SELECT COUNT(*) FROM agents WHERE status = 'rate_limited'{ws_filter_agents}", ws_params
+        f"SELECT COUNT(*) FROM agents WHERE status = 'rate_limited'{ws_clause}", ws_params
     ).fetchone()[0]
 
     return {
@@ -847,6 +953,7 @@ def get_metrics(workspace_id: str | None = None) -> dict:
         "in_progress": in_progress,
         "needs_human": needs_human,
         "pr_created": pr_created,
+        "manual_prs": manual_prs,
         "avg_turns": round(avg_turns, 1) if avg_turns else 0,
         "rate_limited": rate_limited,
     }

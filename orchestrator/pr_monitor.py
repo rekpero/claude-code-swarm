@@ -10,8 +10,10 @@ from orchestrator import db
 from orchestrator.config import (
     CI_WAIT_TIMEOUT_SECONDS,
     GH_TOKEN,
+    MANUAL_PR_DISCOVERY_LIMIT,
     MAX_PR_FIX_RETRIES,
     PR_POLL_INTERVAL_SECONDS,
+    TRACK_MANUAL_PRS,
 )
 
 logger = logging.getLogger(__name__)
@@ -38,10 +40,14 @@ def get_pr_comments(pr_number: int, github_repo: str | None = None) -> list[dict
         logger.error("Failed to fetch PR #%d comments: %s", pr_number, result.stderr)
         return []
     try:
-        return json.loads(result.stdout) if result.stdout.strip() else []
+        data = json.loads(result.stdout) if result.stdout.strip() else []
     except json.JSONDecodeError:
         logger.error("Failed to parse PR #%d comments JSON", pr_number)
         return []
+    if not isinstance(data, list):
+        logger.warning("PR #%d comments response is not a list — treating as empty", pr_number)
+        return []
+    return data
 
 
 def get_unresolved_threads(pr_number: int, github_repo: str | None = None) -> list[dict] | None:
@@ -98,6 +104,9 @@ def get_unresolved_threads(pr_number: int, github_repo: str | None = None) -> li
             return None
         try:
             data = json.loads(result.stdout)
+            if not isinstance(data, dict):
+                logger.warning("GraphQL response for PR #%d is not a dict", pr_number)
+                return None
             if data.get("errors"):
                 logger.warning("GraphQL response contained errors for PR #%d: %s", pr_number, data["errors"])
                 return None
@@ -131,53 +140,133 @@ def get_unresolved_threads(pr_number: int, github_repo: str | None = None) -> li
 
 def get_pr_checks(pr_number: int, github_repo: str | None = None) -> list[dict]:
     """Fetch CI check status for a PR."""
-    repo = github_repo
+    if not github_repo:
+        return []
     result = _run_gh(
         "pr", "checks", str(pr_number),
-        "--repo", repo,
+        "--repo", github_repo,
         "--json", "name,state,bucket",
     )
     if result.returncode != 0:
         logger.warning("Failed to fetch PR #%d checks: %s", pr_number, result.stderr)
         return []
     try:
-        return json.loads(result.stdout) if result.stdout.strip() else []
+        data = json.loads(result.stdout) if result.stdout.strip() else []
     except json.JSONDecodeError:
         return []
+    if not isinstance(data, list):
+        return []
+    return data
 
 
 def get_pr_branch(pr_number: int, github_repo: str | None = None) -> str | None:
     """Get the head branch name for a PR."""
-    repo = github_repo
+    if not github_repo:
+        return None
     result = _run_gh(
         "pr", "view", str(pr_number),
-        "--repo", repo,
+        "--repo", github_repo,
         "--json", "headRefName",
     )
     if result.returncode != 0:
         return None
     try:
         data = json.loads(result.stdout)
-        return data.get("headRefName")
     except json.JSONDecodeError:
         return None
+    if not isinstance(data, dict):
+        return None
+    return data.get("headRefName")
+
+
+def list_open_prs(github_repo: str | None = None) -> list[dict]:
+    """List open, non-draft PRs whose head branch lives in the same repo.
+
+    Fork PRs are excluded because the orchestrator can't push fixes back to a
+    fork's branch.  Drafts are excluded so we don't dispatch fixes against
+    work-in-progress that the author hasn't asked for review on yet.
+    """
+    if not github_repo:
+        return []
+    result = _run_gh(
+        "pr", "list",
+        "--repo", github_repo,
+        "--state", "open",
+        "--json", "number,title,headRefName,headRepositoryOwner,isDraft",
+        "--limit", str(MANUAL_PR_DISCOVERY_LIMIT),
+    )
+    if result.returncode != 0:
+        logger.warning("Failed to list open PRs for %s: %s", github_repo, result.stderr)
+        return []
+    try:
+        prs = json.loads(result.stdout) if result.stdout.strip() else []
+    except json.JSONDecodeError:
+        logger.warning("Failed to parse open PRs JSON for %s", github_repo)
+        return []
+    # ``gh pr list --json ...`` should produce a JSON array, but if it returns
+    # an error envelope or unexpected shape, downstream ``for pr in prs`` would
+    # iterate dict keys (strings) and crash on ``pr.get(...)``.
+    if not isinstance(prs, list):
+        logger.warning("Unexpected open-PR response shape for %s (not a list)", github_repo)
+        return []
+    if len(prs) >= MANUAL_PR_DISCOVERY_LIMIT:
+        logger.warning(
+            "Open-PR list for %s hit the discovery cap (%d). Some PRs may be "
+            "missed; raise MANUAL_PR_DISCOVERY_LIMIT if your repo has more.",
+            github_repo, MANUAL_PR_DISCOVERY_LIMIT,
+        )
+
+    repo_owner = github_repo.split("/", 1)[0]
+    eligible = []
+    for pr in prs:
+        if pr.get("isDraft"):
+            continue
+        head_owner = (pr.get("headRepositoryOwner") or {}).get("login")
+        # Strict match: skip PRs whose head ref isn't in the same repo.  A null
+        # head_owner means the fork repo was deleted, so the branch is also
+        # unreachable — treat the same as a fork PR and skip.
+        if head_owner != repo_owner:
+            continue
+        eligible.append(pr)
+    return eligible
 
 
 def is_pr_merged(pr_number: int, github_repo: str | None = None) -> bool:
     """Check if a PR has been merged."""
-    repo = github_repo
+    return get_pr_terminal_state(pr_number, github_repo=github_repo) == "merged"
+
+
+def get_pr_terminal_state(pr_number: int, github_repo: str | None = None) -> str | None:
+    """Return ``'merged'``, ``'closed'`` (closed without merge), or ``None``.
+
+    ``None`` covers still-open PRs, missing ``github_repo`` (workspace lookup
+    failed), and PR-view failures.  Callers must treat ``None`` as "keep
+    polling, can't conclude anything yet" so a transient error doesn't
+    accidentally close the tracking record.
+    """
+    if not github_repo:
+        return None
     result = _run_gh(
         "pr", "view", str(pr_number),
-        "--repo", repo,
+        "--repo", github_repo,
         "--json", "state,mergedAt",
     )
     if result.returncode != 0:
-        return False
+        return None
     try:
         data = json.loads(result.stdout)
-        return data.get("state") == "MERGED" or bool(data.get("mergedAt"))
     except json.JSONDecodeError:
-        return False
+        return None
+    # ``gh pr view --json state,mergedAt`` should return an object, but guard
+    # against unexpected shapes (empty stdout, error envelopes, lists) so we
+    # don't AttributeError the whole poll cycle on a malformed response.
+    if not isinstance(data, dict):
+        return None
+    if data.get("state") == "MERGED" or data.get("mergedAt"):
+        return "merged"
+    if data.get("state") == "CLOSED":
+        return "closed"
+    return None
 
 
 class PRMonitor:
@@ -208,8 +297,99 @@ class PRMonitor:
     def stop(self):
         self._running = False
 
+    def _discover_manual_prs(self):
+        """Find open PRs that have no associated issue record and start tracking them.
+
+        For each active workspace, list open PRs in the GitHub repo and seed a
+        synthetic issue record for any PR not already tracked.  The synthetic
+        record uses ``issue_number = pr_number`` (PRs and issues share a number
+        namespace in GitHub) and starts at status ``pr_created`` so the regular
+        ``_poll_prs`` flow processes it on the same cycle.
+        """
+        if not TRACK_MANUAL_PRS:
+            return
+
+        try:
+            workspaces = db.get_active_workspaces()
+        except Exception as e:
+            logger.warning("Could not load workspaces for manual-PR discovery: %s", e)
+            return
+
+        for ws in workspaces:
+            github_repo = ws.get("github_repo")
+            workspace_id = ws.get("id")
+            if not github_repo:
+                continue
+            try:
+                prs = list_open_prs(github_repo=github_repo)
+            except Exception as e:
+                logger.warning("Failed to list open PRs for %s: %s", github_repo, e)
+                continue
+
+            for pr in prs:
+                pr_number = pr.get("number")
+                if not pr_number:
+                    continue
+
+                # If we already track this PR, normally skip — but if it's a
+                # synthetic record we previously paused (status='resolved' from
+                # a closed-without-merge) and the PR is open again, reactivate
+                # monitoring.  ``gh pr list --state open`` only returns open
+                # PRs, so seeing it here means it was reopened on GitHub.
+                existing = db.get_issue_by_pr_number(pr_number, workspace_id=workspace_id)
+                if existing:
+                    if (
+                        existing.get("is_manual_pr")
+                        and existing.get("status") == "resolved"
+                    ):
+                        # Reset iteration count: the reopen is a "try again"
+                        # signal from the user, so prior pr_reviews shouldn't
+                        # instantly trip MAX_PR_FIX_RETRIES on the next cycle.
+                        cleared = db.delete_pr_reviews(pr_number, workspace_id=workspace_id)
+                        db.update_issue(
+                            existing["issue_number"],
+                            workspace_id=workspace_id,
+                            status="pr_created",
+                        )
+                        logger.info(
+                            "Manual PR #%d reopened — resuming monitoring "
+                            "(cleared %d prior fix iteration(s))",
+                            pr_number, cleared,
+                        )
+                    continue
+
+                # Defense-in-depth: GitHub's invariant says issue #N and PR #N
+                # cannot both exist in a repo, but if a real issue row already
+                # holds issue_number == pr_number (e.g. stale DB import), refuse
+                # to clobber it with a synthetic record.
+                clash = db.get_issue(pr_number, workspace_id=workspace_id)
+                if clash and not clash.get("is_manual_pr"):
+                    logger.warning(
+                        "Skipping manual-PR seed for #%d in %s: a real issue "
+                        "row already exists with that number (status=%s)",
+                        pr_number, github_repo, clash.get("status"),
+                    )
+                    continue
+
+                title = (pr.get("title") or f"PR #{pr_number}").strip()
+                if len(title) > 180:
+                    title = title[:177] + "..."
+                display_title = f"[Manual PR] {title}"
+                try:
+                    db.upsert_manual_pr_tracking(pr_number, display_title, workspace_id=workspace_id)
+                    logger.info(
+                        "Discovered manual PR #%d in %s — now monitoring for review comments",
+                        pr_number, ws.get("name") or github_repo,
+                    )
+                except Exception as e:
+                    logger.warning(
+                        "Failed to seed tracking record for PR #%d in %s: %s",
+                        pr_number, github_repo, e,
+                    )
+
     def _poll_prs(self):
         """Check all PRs in 'pr_created' status for review comments and merge status."""
+        self._discover_manual_prs()
         issues_with_prs = db.get_issues_by_status("pr_created")
 
         for issue in issues_with_prs:
@@ -228,19 +408,53 @@ class PRMonitor:
                 if workspace:
                     github_repo = workspace["github_repo"]
 
+            # Without a github_repo every gh call below would pass --repo None
+            # and crash the whole poll cycle.  Skip and surface the bad state
+            # so an operator can investigate.
+            if not github_repo:
+                logger.warning(
+                    "Skipping PR #%d (issue #%d): cannot resolve github_repo "
+                    "(workspace_id=%s missing or deleted)",
+                    pr_number, issue_number, workspace_id,
+                )
+                continue
+
             logger.debug("Checking PR #%d for issue #%d", pr_number, issue_number)
 
-            # Check if the PR has been merged
-            if is_pr_merged(pr_number, github_repo=github_repo):
+            # Check terminal state (merged or closed-without-merge).  Merged PRs
+            # are always 'resolved'.  For closed-without-merge: synthetic
+            # (manual-PR) rows are 'resolved' (the PR == the tracking unit; if
+            # it gets reopened later, _discover_manual_prs reactivates the row);
+            # rows backed by a real issue go to 'needs_human' so the user can
+            # decide whether to retry — the issue itself isn't actually fixed.
+            terminal_state = get_pr_terminal_state(pr_number, github_repo=github_repo)
+            if terminal_state == "merged":
                 logger.info(
                     "PR #%d has been merged. Resolving issue #%d",
                     pr_number, issue_number,
                 )
                 db.update_issue(issue_number, workspace_id=workspace_id, status="resolved")
                 continue
+            if terminal_state == "closed":
+                if issue.get("is_manual_pr"):
+                    logger.info(
+                        "Manual PR #%d closed without merge — pausing tracking",
+                        pr_number,
+                    )
+                    db.update_issue(issue_number, workspace_id=workspace_id, status="resolved")
+                else:
+                    logger.warning(
+                        "PR #%d for issue #%d closed without merge — escalating to needs_human",
+                        pr_number, issue_number,
+                    )
+                    db.update_issue(issue_number, workspace_id=workspace_id, status="needs_human")
+                    self._label_needs_human(issue_number, github_repo=github_repo)
+                continue
 
-            # Check how many fix iterations we've done
-            reviews = db.get_pr_reviews(pr_number)
+            # Check how many fix iterations we've done (scoped to this
+            # workspace so PRs with colliding numbers across repos don't share
+            # an iteration budget).
+            reviews = db.get_pr_reviews(pr_number, workspace_id=workspace_id)
             iteration_count = len(reviews)
 
             if iteration_count >= MAX_PR_FIX_RETRIES:

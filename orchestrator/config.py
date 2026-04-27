@@ -32,6 +32,14 @@ PR_POLL_INTERVAL_SECONDS = int(os.environ.get("PR_POLL_INTERVAL_SECONDS", "120")
 MAX_PR_FIX_RETRIES = int(os.environ.get("MAX_PR_FIX_RETRIES", "5"))
 CI_WAIT_TIMEOUT_SECONDS = int(os.environ.get("CI_WAIT_TIMEOUT_SECONDS", "600"))
 
+# Also discover open PRs that have no associated tracked issue (e.g. manually
+# created PRs) and monitor them for review comments / CI failures the same way.
+TRACK_MANUAL_PRS = os.environ.get("TRACK_MANUAL_PRS", "true").lower() in ("true", "1", "yes")
+# Cap on how many open PRs we list per workspace per discovery cycle.  If the
+# repo has more open PRs than this, the tail is silently dropped — bump this
+# (or paginate) for very busy repos.
+MANUAL_PR_DISCOVERY_LIMIT = int(os.environ.get("MANUAL_PR_DISCOVERY_LIMIT", "500"))
+
 # === Rate Limit Handling ===
 # How often (seconds) to check if rate-limited agents can be resumed.
 RATE_LIMIT_RETRY_INTERVAL = int(os.environ.get("RATE_LIMIT_RETRY_INTERVAL", "300"))
@@ -130,6 +138,8 @@ def print_config():
     print(f"  AGENT_TIMEOUT:         {AGENT_TIMEOUT_SECONDS}s")
     print(f"  PR_POLL_INTERVAL:      {PR_POLL_INTERVAL_SECONDS}s")
     print(f"  MAX_PR_FIX_RETRIES:    {MAX_PR_FIX_RETRIES}")
+    print(f"  TRACK_MANUAL_PRS:      {TRACK_MANUAL_PRS}")
+    print(f"  MANUAL_PR_DISC_LIMIT:  {MANUAL_PR_DISCOVERY_LIMIT}")
     print(f"  RATE_LIMIT_RETRY:      {RATE_LIMIT_RETRY_INTERVAL}s")
     print(f"  MAX_RATE_RESUMES:      {MAX_RATE_LIMIT_RESUMES}")
     print(f"  SKILLS_ENABLED:        {SKILLS_ENABLED}")
