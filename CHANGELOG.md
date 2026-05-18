@@ -6,6 +6,28 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 
+## [1.4.9] - 2026-05-18
+
+### Fixed
+- **Planner no longer treats a preamble as the plan** — when the planning agent emitted a text-only final message like "Now I have enough context. Let me write the comprehensive implementation plan." (and exited because no further tool calls followed), the orchestrator was storing that one-sentence preamble as the plan and showing a `Create Issue` button on top of it. New `_looks_like_plan()` heuristic in `planner.py` rejects content that lacks any `#{1,3}` line-start markdown heading or is under 100 chars; rejected output is replaced with a clearly-marked failure message (status `error`, red sidebar badge) and `create_issue_from_plan` runs the same check as defense-in-depth so old sessions with pre-stored bad messages can't be turned into garbage issues either
+- **Failure messages are surfaced in the chat, not hidden in the activity feed** — the failure explanation is stored as a `planning_message` so the user sees it directly in the planner chat (markdown-rendered with a `**⚠️ Plan generation failed**` heading-less banner and the agent's last text in a `> blockquote`). The `Create Issue` button still renders on it, but the server-side `_looks_like_plan` validation in `create_issue_from_plan` rejects the click with a clear error — so the message is informative without being usable as an issue body
+- **Commits made by the `commit` skill no longer get lost when an agent dies** — the commit slash-command only commits, it doesn't push; if the agent then died (rate limit, context exhaustion, crash) before issuing the push itself, the worktree was cleaned up and the commits were discarded. The failure branch of `_monitor_agent` now salvages implement-type work via the new `_salvage_implement_work()` helper (push the branch if it has unpushed commits ahead of base, then auto-create a PR via `_create_pr_for_branch`) and for fix_review agents calls `_push_current_branch()` (idempotent `git push -u origin HEAD`)
+- **fix_review success path now pushes HEAD before cleaning up** — even when the agent exited cleanly, the commit skill may have committed without pushing; `_push_current_branch()` is a no-op (`Everything up-to-date`) when the remote already has the local tip, so the safety push is free in the common case
+- **Reattached fix_review agents (post orchestrator restart) get the same salvage push** — `_monitor_pid` previously marked a reattached fix_review agent `completed` if commits existed after start time but never pushed them; both the success and failure branches now call `_push_current_branch()` before cleanup so the same commit-skill bug doesn't lose work across orchestrator restarts
+- **Failed implement agents with an existing PR now link the PR back to the agent record** — the failure-path "PR already exists" branch additionally writes `db.update_agent(agent_id, pr_number=...)` so dashboards can navigate from the failed agent to its PR (mirroring the success-path pattern in `_handle_implement_complete`)
+
+### Added
+- **`build_planning_prompt` "CRITICAL — about your FINAL message" paragraph** — explicitly warns the model that once it stops calling tools the conversation ends, so a preamble-only final message means the plan is lost; instructs it to budget exploration so the full plan fits in the next single message starting with `## Summary`
+- **`_looks_like_plan(text)`** helper in `planner.py` — accepts text with at least one `#{1,3}\s+\S` heading at line start and a length ≥ 100 chars (a minimal 6-section plan is ~130 chars); used both at plan-capture time and as defense-in-depth in `create_issue_from_plan`
+- **`_build_failure_message(reason, last_agent_text)`** helper in `planner.py` — composes a chat-visible failure message that intentionally contains no line-start `#{1,3}` heading: the body uses `**bold**` for emphasis (not headings), and the agent's last text is blockquoted with `> ` so any `## Section` inside it becomes `> ## Section` (not a heading by markdown rules)
+- **`AgentPool._push_current_branch(worktree_path)`** — pushes whatever branch is checked out via `git push -u origin HEAD`; used as a rescue path when the canonical branch name isn't on hand (e.g. fix_review worktrees) and as a defensive safety push on every fix_review completion (success or failure, including the reattach path)
+- **`AgentPool._salvage_implement_work(...)`** — extracted from the success-path recovery in `_handle_implement_complete`; pushes any unpushed local commits and auto-creates a PR, returning the PR number or `None`. Called from the failure path of `_monitor_agent` so implement agents that committed but didn't push still get their work into a PR
+
+### Changed
+- **Planner subprocess error handling no longer stores garbage as a plan on non-zero exit** — previously, any non-empty captured text was stored as an assistant message with `status='active'` even when the subprocess exited unsuccessfully, which surfaced a `Create Issue` button on truncated or error text. The planner now stores only validated plans as messages (passing `_looks_like_plan`); anything else becomes a clearly-marked failure message with `status='error'`. Non-zero exit + valid plan content is now also accepted (was previously only stored on `return_code==0`, so a CLI cleanup error after a complete plan caused the plan to be discarded)
+
+---
+
 ## [1.4.8] - 2026-04-26
 
 ### Added

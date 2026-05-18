@@ -598,29 +598,132 @@ def _run_planning_agent_impl(session_id: str, workspace: dict, prompt: str):
         return
 
     return_code = process.returncode
+    stderr_output = "".join(stderr_chunks)
     # Wrap all final DB writes in a try/except so they degrade gracefully when
     # the session row has already been deleted (e.g. delete_planning_session was
     # called while the background thread was still running).
     try:
-        if return_code == 0 and plan_text:
+        if _looks_like_plan(plan_text):
+            # Plan body received — accept it even if the subprocess exited
+            # non-zero (the plan is still usable; just log the anomaly).
             db.add_planning_message(session_id, "assistant", plan_text)
             db.update_planning_session(session_id, status="active")
-            logger.info("Planning agent completed for session %s", session_id)
-        else:
-            stderr_output = "".join(stderr_chunks)
-            error_detail = stderr_output[:300] if stderr_output else f"Exit code {return_code}"
-            logger.error("Planning agent failed for session %s: %s", session_id, error_detail)
-            # Store whatever partial plan we got, or an error message
-            if plan_text:
-                db.add_planning_message(session_id, "assistant", plan_text)
-                db.update_planning_session(session_id, status="active")
+            if return_code == 0:
+                logger.info("Planning agent completed for session %s", session_id)
             else:
-                db.update_planning_session(session_id, status="error")
+                logger.warning(
+                    "Planning session %s exited %d but plan body was captured",
+                    session_id, return_code,
+                )
+        elif return_code == 0 and plan_text:
+            # Subprocess exited cleanly but the captured text is a preamble
+            # like "Now I have enough context. Let me write the plan." rather
+            # than the plan itself.  This happens when the model emits a
+            # text-only final assistant message (no tool_use), causing the
+            # CLI to terminate before the plan body is generated — usually
+            # because context filled up after many file reads.
+            #
+            # We store an explanatory message (visible in the chat) AND set
+            # status='error' (red sidebar badge).  The Create-Issue button
+            # will still render on this message, but the server-side
+            # _looks_like_plan check in create_issue_from_plan rejects
+            # heading-less content with a clear error — so clicking the
+            # button cannot push garbage to GitHub.
+            logger.warning(
+                "Planning session %s exited cleanly but no plan body was produced "
+                "(captured text: %r)",
+                session_id, plan_text[:200],
+            )
+            failure_message = _build_failure_message(
+                reason="The agent stopped after exploring the codebase but never wrote "
+                       "the plan body — most likely the context window filled up after "
+                       "many file reads.",
+                last_agent_text=plan_text,
+            )
+            db.add_planning_message(session_id, "assistant", failure_message)
+            db.update_planning_session(session_id, status="error")
+        else:
+            if return_code == 0:
+                # Subprocess exited cleanly but produced no usable text at
+                # all — likely the stream was empty or failed to parse.
+                reason = "The planning subprocess exited cleanly but produced no output."
+                error_detail = "no output"
+            else:
+                error_detail = stderr_output[:300] if stderr_output else f"exit code {return_code}"
+                reason = f"The planning subprocess failed: {error_detail}."
+            logger.error("Planning agent failed for session %s: %s", session_id, error_detail)
+            failure_message = _build_failure_message(
+                reason=reason,
+                last_agent_text=plan_text,
+            )
+            db.add_planning_message(session_id, "assistant", failure_message)
+            db.update_planning_session(session_id, status="error")
     except Exception:
         logger.warning(
             "DB write failed for session %s (session may have been deleted)",
             session_id,
         )
+
+
+def _build_failure_message(reason: str, last_agent_text: str | None) -> str:
+    """Compose a user-facing failure message for a planning_message row.
+
+    Crucially, the body must NOT contain any markdown heading at line start
+    (``#``, ``##`` or ``###``).  If it did, ``_looks_like_plan`` would accept
+    it and the Create-Issue button would push the failure text to GitHub.
+    We achieve that by:
+      * Using bold (``**…**``) for emphasis, not headings.
+      * Quoting the agent's last text with ``>`` so any heading-looking lines
+        it contained become blockquoted lines (still ``> ##`` at line start,
+        which doesn't match ``^#{1,3}\\s+\\S``).
+
+    The intent: the user sees the failure clearly in chat; clicking Create
+    Issue safely fails the server-side ``_looks_like_plan`` check.
+    """
+    body = (
+        "**⚠️ Plan generation failed**\n\n"
+        f"{reason}\n\n"
+        "What you can do:\n"
+        "- Send a refinement message to retry — be more specific or narrower in scope.\n"
+        "- Break a large request into a few smaller, focused plans.\n"
+    )
+    if last_agent_text:
+        trimmed = last_agent_text.strip()[:600]
+        if trimmed:
+            # Blockquote each line so any '## something' inside the agent's
+            # text becomes '> ## something' (not a line-start heading).
+            quoted = "\n".join(f"> {line}" for line in trimmed.splitlines() or [trimmed])
+            body += "\nLast message from the agent:\n\n" + quoted + "\n"
+    return body
+
+
+def _looks_like_plan(text: str | None) -> bool:
+    """Heuristic check: does *text* look like an actual implementation plan?
+
+    The planner prompt instructs the agent to emit markdown starting with
+    `## Summary`.  When the model instead emits a short preamble such as
+    "Now I have enough context. Let me write the plan." (and then exits
+    without producing the plan body), we want to reject that output so the
+    UI can surface a clear error rather than offering "Create Issue" on a
+    one-sentence message.
+
+    A valid plan must (a) contain at least one markdown heading (``#``,
+    ``##``, or ``###`` — same levels accepted by ``create_issue_from_plan``)
+    and (b) be long enough to plausibly hold the required sections.  Using
+    the same heading levels here as in issue creation prevents the two
+    checks from disagreeing on a borderline plan.
+    """
+    if not text:
+        return False
+    stripped = text.strip()
+    # Length floor (100 chars) rejects one-sentence preambles like
+    # "Now I have enough context. Let me write the plan." (~85 chars) while
+    # still accepting a minimal-but-complete plan (six short sections is
+    # ~130 chars).  The heading check is the primary signal — without a
+    # markdown heading the text is almost certainly not a plan.
+    if len(stripped) < 100:
+        return False
+    return bool(re.search(r"(?m)^#{1,3}\s+\S", stripped))
 
 
 def _generate_title_from_plan(plan_body: str) -> str:
@@ -767,6 +870,17 @@ def create_issue_from_plan(session_id: str, title: str = "", message_index: int 
 
         if not plan_body:
             raise ValueError("No plan found in session — generate a plan first")
+
+        # Reject messages that don't look like a real plan — protects against
+        # old sessions where a preamble-only assistant message was stored
+        # before the planner gained _looks_like_plan validation.  Without this
+        # check, clicking "Create Issue" on a one-sentence message would push
+        # garbage into GitHub.
+        if not _looks_like_plan(plan_body):
+            raise ValueError(
+                "The selected message does not contain a valid plan "
+                "(missing markdown headings or too short). Please regenerate the plan."
+            )
 
         # Strip conversational preamble — find the first markdown heading and use
         # everything from there onward as the actual issue body.

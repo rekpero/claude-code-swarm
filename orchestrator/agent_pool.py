@@ -567,6 +567,15 @@ class AgentPool:
             if agent.agent_type == "implement":
                 self._handle_implement_complete(agent)
             else:
+                # fix_review: agent prompt says to push, but the commit skill
+                # only commits — defensively push HEAD before cleaning the
+                # worktree so we don't lose review fixes the agent committed
+                # but didn't push.  `git push -u origin HEAD` is idempotent:
+                # a no-op ("Everything up-to-date") when remote already has
+                # the local tip.  (We don't reuse _has_unpushed_commits here
+                # because for an existing PR branch its base-branch diff
+                # always returns True, making the gate useless.)
+                self._push_current_branch(agent.worktree_path)
                 db.finish_agent(agent_id, status="completed")
                 cleanup_worktree(agent.worktree_path, repo_path=repo_path)
         elif self._is_rate_limit_error(stderr_output, agent.events):
@@ -584,17 +593,46 @@ class AgentPool:
             db.finish_agent(agent_id, status="failed", error_message=error_msg)
             db.update_agent(agent_id, turns_used=turns)
 
+            # Salvage any commits the agent made before failing.  A common case:
+            # the commit skill creates a commit but doesn't push, and the agent
+            # then dies (rate limit, context exhaustion, crash) before issuing
+            # the push itself — without this rescue, those commits get
+            # discarded with the worktree.
+            workspace = agent._workspace
+            github_repo = workspace["github_repo"] if workspace else None
+            base_branch = workspace.get("base_branch", "main") if workspace else "main"
+
             if agent.agent_type == "implement":
-                # Check if a PR was already created before resetting to pending
                 branch_name = f"fix/issue-{agent.issue_number}"
-                workspace = agent._workspace
-                github_repo = workspace["github_repo"] if workspace else None
+                # Check if a PR was already created before resetting to pending
                 existing_pr = self._find_pr_for_branch(branch_name, github_repo=github_repo)
                 if existing_pr:
                     logger.info("Agent %s failed but PR #%d exists — marking pr_created", agent_id, existing_pr)
+                    db.update_agent(agent_id, pr_number=existing_pr)
                     db.update_issue(agent.issue_number, workspace_id=agent.workspace_id, status="pr_created", pr_number=existing_pr)
                 else:
-                    db.update_issue(agent.issue_number, workspace_id=agent.workspace_id, status="pending")
+                    recovered_pr = self._salvage_implement_work(
+                        agent_id=agent_id,
+                        branch_name=branch_name,
+                        issue_number=agent.issue_number,
+                        worktree_path=agent.worktree_path,
+                        base_branch=base_branch,
+                        github_repo=github_repo,
+                    )
+                    if recovered_pr:
+                        db.update_agent(agent_id, pr_number=recovered_pr)
+                        db.update_issue(agent.issue_number, workspace_id=agent.workspace_id, status="pr_created", pr_number=recovered_pr)
+                    else:
+                        db.update_issue(agent.issue_number, workspace_id=agent.workspace_id, status="pending")
+            elif agent.agent_type == "fix_review":
+                # The PR/branch already exists upstream — push HEAD so the
+                # review fixes don't vanish when the worktree is cleaned up
+                # below.  Idempotent: a no-op when nothing was committed.
+                logger.warning(
+                    "Fix-review agent %s failed — pushing HEAD as a salvage step",
+                    agent_id,
+                )
+                self._push_current_branch(agent.worktree_path)
 
             cleanup_worktree(agent.worktree_path, repo_path=repo_path)
 
@@ -723,6 +761,63 @@ class AgentPool:
         except Exception as e:
             logger.error("Error pushing branch %s: %s", branch_name, e)
         return False
+
+    def _push_current_branch(self, worktree_path: str) -> bool:
+        """Push whatever branch is currently checked out in the worktree.
+
+        Used as a rescue path when we don't have the canonical branch name on
+        hand — e.g. a fix_review worktree where the branch name is determined
+        by the upstream PR's head ref.  `git push -u origin HEAD` lets git
+        resolve the branch from the worktree itself.
+        """
+        try:
+            result = subprocess.run(
+                ["git", "push", "-u", "origin", "HEAD"],
+                capture_output=True, text=True, timeout=60, cwd=worktree_path,
+            )
+            if result.returncode == 0:
+                logger.info("Pushed current branch from %s", worktree_path)
+                return True
+            logger.error("Failed to push current branch from %s: %s", worktree_path, result.stderr)
+        except Exception as e:
+            logger.error("Error pushing current branch from %s: %s", worktree_path, e)
+        return False
+
+    def _salvage_implement_work(
+        self,
+        *,
+        agent_id: str,
+        branch_name: str,
+        issue_number: int,
+        worktree_path: str,
+        base_branch: str,
+        github_repo: str | None,
+    ) -> int | None:
+        """Recover a failed implement agent's work into a PR if possible.
+
+        Mirrors steps 3–4 of :meth:`_handle_implement_complete` but is safe to
+        call from the failure path: pushes any unpushed local commits and
+        auto-creates a PR.  Returns the PR number on success, otherwise
+        ``None``.
+        """
+        # Branch already pushed upstream → just create the PR.
+        if self._is_branch_pushed(branch_name, worktree_path):
+            logger.warning(
+                "Agent %s failed but branch %s is pushed — auto-creating PR",
+                agent_id, branch_name,
+            )
+            return self._create_pr_for_branch(branch_name, issue_number, github_repo=github_repo)
+
+        # Local commits not yet pushed → push, then create PR.
+        if self._has_unpushed_commits(worktree_path, base_branch=base_branch):
+            logger.warning(
+                "Agent %s failed with unpushed commits — pushing %s and auto-creating PR",
+                agent_id, branch_name,
+            )
+            if self._push_branch(branch_name, worktree_path):
+                return self._create_pr_for_branch(branch_name, issue_number, github_repo=github_repo)
+
+        return None
 
     def _create_pr_for_branch(self, branch_name: str, issue_number: int, github_repo: str | None = None) -> int | None:
         """Create a PR for the given branch."""
@@ -1261,6 +1356,12 @@ class AgentPool:
 
             if agent_succeeded:
                 logger.info("Reattached fix_review agent %s succeeded — marking completed", agent_id)
+                # Defensively push HEAD before cleaning up the worktree —
+                # the commit skill commits without pushing, and if the agent
+                # finished after orchestrator restart we can't trust that it
+                # got around to pushing.  Idempotent when remote is up to date.
+                if worktree_path and os.path.exists(worktree_path):
+                    self._push_current_branch(worktree_path)
                 db.finish_agent(agent_id, status="completed")
                 if issue_number is not None:
                     db.update_issue(issue_number, workspace_id=workspace_id, status="pr_created")
@@ -1269,6 +1370,10 @@ class AgentPool:
                     "Reattached fix_review agent %s did not succeed (exit_code=%s) — marking failed",
                     agent_id, exit_code,
                 )
+                # Same salvage push as the success branch — if the agent
+                # committed before failing we don't want to lose the work.
+                if worktree_path and os.path.exists(worktree_path):
+                    self._push_current_branch(worktree_path)
                 db.finish_agent(agent_id, status="failed", error_message="Fix review agent exited unsuccessfully (reattached)")
                 if issue_number is not None:
                     db.update_issue(issue_number, workspace_id=workspace_id, status="needs_human")

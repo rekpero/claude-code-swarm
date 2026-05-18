@@ -120,7 +120,10 @@ Important:
 - Be specific and actionable. The plan should be detailed enough for another developer (or AI agent) to follow without ambiguity.
 - Reference actual file paths and existing code patterns from the codebase.
 - The output will be used directly as a GitHub issue body. Output ONLY the markdown plan starting with ## Summary. Do NOT include any conversational text, preamble, sign-off, or commentary before or after the plan. No "Here is the plan:" or "I've analyzed the codebase" — just the raw plan content.
-- Only use Read, Glob, and Grep tools to explore — do not modify any files.{history_block}"""
+- Only use Read, Glob, and Grep tools to explore — do not modify any files.
+
+CRITICAL — about your FINAL message:
+Your final message (the one with no tool calls) MUST contain the complete plan starting with `## Summary`. Do NOT emit a final message that only says things like "Now I have enough context, let me write the plan" or "I'll now produce the implementation plan" — once you stop calling tools, the conversation ends and no further turn will happen, so a preamble-only final message means the plan is lost. Whenever you decide you have read enough, your very next message must BE the plan itself (full markdown, starting with `## Summary`), with no preamble and no tool calls. Budget your exploration so you have headroom to write the full plan before context fills up — prefer fewer, more targeted reads over exhaustive scanning.{history_block}"""
 
 
 def build_implement_prompt(issue_number: int, github_repo: str | None = None, target_repo_path: Path | str | None = None) -> str:
