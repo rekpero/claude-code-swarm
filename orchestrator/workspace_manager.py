@@ -42,6 +42,38 @@ def _normalize_repo_url(repo_url: str) -> str:
     return url
 
 
+def configure_repo_auth(local_path: str | Path) -> None:
+    """Sync per-repo git auth state to the current GH_TOKEN.
+
+    Idempotent — safe to call before every fetch/push. Fixes two ways
+    credentials get pinned at clone time and survive token rotation:
+      1. ``credential.helper`` baked with the old token.
+      2. Old token embedded in ``remote.origin.url``
+         (``https://x-access-token:<old>@...``), which overrides the helper.
+    """
+    if not GH_TOKEN:
+        return
+    path = str(local_path)
+
+    cur_url = subprocess.run(
+        ["git", "-C", path, "remote", "get-url", "origin"],
+        capture_output=True, text=True, timeout=10,
+    )
+    if cur_url.returncode == 0:
+        clean_url = re.sub(r"https://[^@/]+@", "https://", cur_url.stdout.strip())
+        if clean_url and clean_url != cur_url.stdout.strip():
+            subprocess.run(
+                ["git", "-C", path, "remote", "set-url", "origin", clean_url],
+                capture_output=True, text=True, timeout=10,
+            )
+
+    subprocess.run(
+        ["git", "-C", path, "config", "credential.helper",
+         f"!f() {{ echo \"username=x-access-token\"; echo \"password={GH_TOKEN}\"; }}; f"],
+        capture_output=True, text=True, timeout=10,
+    )
+
+
 def create_workspace(
     repo_url: str,
     name: str | None = None,
@@ -102,19 +134,14 @@ def _clone_repo_thread(workspace_id: str, repo_url: str, local_path: str):
         if result.returncode != 0:
             raise RuntimeError(f"git clone failed: {result.stderr}")
 
-        # Reset the remote URL to the original (non-token) URL so we don't
-        # persist credentials in .git/config
+        # Reset the remote URL and set up the credential helper so we don't
+        # persist the (rotateable) token inside .git/config's URL.
         if clone_url != repo_url:
             subprocess.run(
                 ["git", "-C", local_path, "remote", "set-url", "origin", repo_url],
                 capture_output=True, text=True, timeout=30,
             )
-            # Configure git to use GH_TOKEN via credential helper for future operations
-            subprocess.run(
-                ["git", "-C", local_path, "config", "credential.helper",
-                 f"!f() {{ echo \"username=x-access-token\"; echo \"password={GH_TOKEN}\"; }}; f"],
-                capture_output=True, text=True, timeout=10,
-            )
+        configure_repo_auth(local_path)
 
         logger.info("Clone complete for workspace %s", workspace_id)
 

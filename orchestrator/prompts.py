@@ -32,20 +32,45 @@ def _discover_installed_skills(target_repo_path: Path | str | None = None) -> li
 
 
 def _skills_block(target_repo_path: Path | str | None = None) -> str:
-    """Return the skills hint if skills are enabled, empty string otherwise."""
+    """Return the skills hint if skills are enabled, empty string otherwise.
+
+    Always emits a "do not use" warning for skills that hijack a headless
+    multi-step flow by ending the agent mid-task — even when no skills are
+    discovered via the filesystem scan, because plugin skills are auto-loaded
+    by the claude CLI and remain callable at runtime.
+    """
     if not SKILLS_ENABLED:
         return ""
 
-    skills = _discover_installed_skills(target_repo_path)
-    if not skills:
-        return ""
+    # Hard-block list: skills whose own SKILL.md tells the model "do not use
+    # any other tools or do anything else" after their narrow sub-task. They
+    # silently truncate the orchestrator's commit→push→PR→label workflow.
+    forbidden_skills = (
+        "commit-commands:commit",
+        "commit-commands:commit-push-pr",
+        "commit-commands:clean_gone",
+    )
+    forbidden_list = ", ".join(f"`{s}`" for s in forbidden_skills)
 
-    skill_list = ", ".join(skills)
-    return f"""
-Skills: You have access to Claude Code skills via the Skill tool. Installed skills: {skill_list}.
-If the issue plan or review comments mention using a specific skill (e.g. "use the frontend-design skill"),
-invoke it with the Skill tool. You can also use relevant skills proactively when the task
-matches their domain."""
+    block = f"""
+Skills (IMPORTANT):
+You have access to Claude Code skills via the Skill tool, BUT you MUST NOT invoke
+any of these: {forbidden_list}. They end the session after their narrow sub-task
+and would prevent you from completing the push / PR / labeling steps below. For
+all git and gh operations, run the commands yourself via the Bash tool exactly
+as the steps below specify — do not delegate them to a skill."""
+
+    skills = _discover_installed_skills(target_repo_path)
+    if skills:
+        skill_list = ", ".join(skills)
+        block += f"""
+
+Other skills available: {skill_list}. If the issue plan or review comments
+mention a specific skill (e.g. "use the frontend-design skill"), invoke it via
+the Skill tool. You may also use relevant skills proactively when the task
+matches their domain — except for the forbidden ones above."""
+
+    return block
 
 
 def build_planning_prompt(user_description: str, conversation_history: list[dict] | None = None) -> str:
@@ -249,6 +274,8 @@ Important:
 
 
 def build_resume_implement_prompt(issue_number: int, github_repo: str | None = None, target_repo_path: Path | str | None = None) -> str:
+    repo = github_repo
+    owner, repo_name = repo.split("/", 1)
     skills = _skills_block(target_repo_path)
     return f"""Read the AGENT.md file at the root of this repository FIRST and follow every guideline strictly.
 

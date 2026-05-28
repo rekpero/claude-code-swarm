@@ -21,9 +21,12 @@ def _run_git(*args: str, repo_path: Path | str | None = None, check: bool = True
 
 def ensure_repo_updated(repo_path: Path | str, base_branch: str = "main"):
     """Fetch and pull latest changes from origin."""
+    from orchestrator.workspace_manager import configure_repo_auth
+
     target = repo_path
     branch = base_branch
     logger.info("Updating target repo at %s", target)
+    configure_repo_auth(target)
     _run_git("fetch", "origin", repo_path=target)
     # Ensure we're on the base branch (not a stale feature branch).
     # Use check=False so that a dirty working tree (e.g. from an interrupted
@@ -48,10 +51,13 @@ def get_sync_status(repo_path: Path | str, base_branch: str = "main") -> dict:
       - behind (int): commits behind remote
       - ahead (int): commits ahead of remote
     """
+    from orchestrator.workspace_manager import configure_repo_auth
+
     target = repo_path
     # Fetch latest refs from remote (silent, no merge).
     # Use a short timeout so an unreachable remote yields a fast error
     # rather than blocking the HTTP endpoint for minutes.
+    configure_repo_auth(target)
     _run_git("fetch", "origin", repo_path=target, check=False, timeout=15)
 
     local = _run_git("rev-parse", "--short", base_branch, repo_path=target, check=False)
@@ -136,6 +142,8 @@ def create_worktree_for_pr(
         cleanup_worktree(str(worktree_path), repo_path=target)
 
     # Fetch the branch first
+    from orchestrator.workspace_manager import configure_repo_auth
+    configure_repo_auth(target)
     _run_git("fetch", "origin", branch_name, repo_path=target, check=False)
 
     logger.info("Creating worktree for PR fix: %s (branch: %s)", worktree_path, branch_name)
