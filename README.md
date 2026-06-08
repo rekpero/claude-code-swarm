@@ -271,6 +271,7 @@ claude-code-swarm/              ← This project (orchestrator)
 │   ├── issue_poller.py         # Polls GitHub for labeled issues
 │   ├── agent_pool.py           # Manages claude -p subprocess lifecycle
 │   ├── pr_monitor.py           # Watches PRs for review comments / CI status
+│   ├── conflict_monitor.py     # Scans open PRs for merge conflicts → resolver agents
 │   ├── worktree.py             # Git worktree create/cleanup
 │   ├── stream_parser.py        # Parses claude stream-json output
 │   ├── prompts.py              # Agent prompt templates (with skill discovery)

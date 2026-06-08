@@ -128,11 +128,18 @@ def create_worktree_for_pr(
     branch_name: str,
     repo_path: Path | str,
     worktree_dir: Path | str,
+    prefix: str = "pr-fix",
 ) -> str:
-    """Create a git worktree for fixing PR review comments. Returns the path."""
+    """Create a git worktree for working on a PR's head branch. Returns the path.
+
+    ``prefix`` namespaces the worktree directory so different agent types
+    operating on the same PR don't share (and clobber) a directory — e.g.
+    ``pr-fix-<n>`` for review fixes vs ``pr-conflict-<n>`` for conflict
+    resolution.
+    """
     target = repo_path
     wt_dir = Path(worktree_dir)
-    worktree_path = wt_dir / f"pr-fix-{pr_number}"
+    worktree_path = wt_dir / f"{prefix}-{pr_number}"
 
     wt_dir.mkdir(parents=True, exist_ok=True)
 

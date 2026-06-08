@@ -14,6 +14,7 @@ from orchestrator.config import (
     MAX_PR_FIX_RETRIES,
     PR_POLL_INTERVAL_SECONDS,
     TRACK_MANUAL_PRS,
+    TRACK_MERGE_CONFLICTS,
 )
 
 logger = logging.getLogger(__name__)
@@ -177,6 +178,48 @@ def get_pr_branch(pr_number: int, github_repo: str | None = None) -> str | None:
     if not isinstance(data, dict):
         return None
     return data.get("headRefName")
+
+
+def get_pr_merge_info(pr_number: int, github_repo: str | None = None) -> dict | None:
+    """Fetch a PR's mergeability state and the branches/commits involved.
+
+    Returns a dict with:
+      - ``mergeable``: ``MERGEABLE`` | ``CONFLICTING`` | ``UNKNOWN`` — GitHub
+        computes this asynchronously, so a freshly-opened or freshly-pushed PR
+        often reads ``UNKNOWN`` for a few seconds before settling.
+      - ``merge_state``: GitHub's ``mergeStateStatus`` (``DIRTY`` == conflicts,
+        ``BEHIND``, ``CLEAN``, ``BLOCKED``, ``UNSTABLE``, ``UNKNOWN``, ...).
+      - ``head_ref`` / ``base_ref``: branch names.
+      - ``head_oid`` / ``base_oid``: tip commit SHAs (used to bound retries
+        per base revision and detect new pushes).
+
+    Returns ``None`` on any failure so callers treat it as "can't conclude
+    anything this cycle" rather than acting on a malformed response.
+    """
+    if not github_repo:
+        return None
+    result = _run_gh(
+        "pr", "view", str(pr_number),
+        "--repo", github_repo,
+        "--json", "mergeable,mergeStateStatus,headRefName,baseRefName,headRefOid,baseRefOid",
+    )
+    if result.returncode != 0:
+        logger.warning("Failed to fetch merge info for PR #%d: %s", pr_number, result.stderr)
+        return None
+    try:
+        data = json.loads(result.stdout)
+    except json.JSONDecodeError:
+        return None
+    if not isinstance(data, dict):
+        return None
+    return {
+        "mergeable": data.get("mergeable"),
+        "merge_state": data.get("mergeStateStatus"),
+        "head_ref": data.get("headRefName"),
+        "base_ref": data.get("baseRefName"),
+        "head_oid": data.get("headRefOid"),
+        "base_oid": data.get("baseRefOid"),
+    }
 
 
 def list_open_prs(github_repo: str | None = None) -> list[dict]:
@@ -451,6 +494,21 @@ class PRMonitor:
                     self._label_needs_human(issue_number, github_repo=github_repo)
                 continue
 
+            # If the PR currently has merge conflicts, hold off on the
+            # review/CI flow entirely — the ConflictMonitor owns this PR until
+            # it's mergeable again.  Dispatching a fix_review agent now would
+            # race a resolve_conflict agent on the same head branch (two pushes,
+            # one wins, work is lost).  Once conflicts clear, mergeable flips
+            # back to MERGEABLE and this skip stops firing.
+            if TRACK_MERGE_CONFLICTS:
+                merge_info = get_pr_merge_info(pr_number, github_repo=github_repo)
+                if merge_info and merge_info.get("mergeable") == "CONFLICTING":
+                    logger.debug(
+                        "PR #%d is CONFLICTING — deferring review/CI handling to the conflict resolver",
+                        pr_number,
+                    )
+                    continue
+
             # Check how many fix iterations we've done (scoped to this
             # workspace so PRs with colliding numbers across repos don't share
             # an iteration budget).
@@ -466,14 +524,22 @@ class PRMonitor:
                 self._label_needs_human(issue_number, github_repo=github_repo)
                 continue
 
-            # Check if there's already a running fix agent for this PR
-            running_agents = db.get_running_agents()
+            # Check if there's already a fix or conflict-resolver agent working
+            # this PR.  Including resolve_conflict closes the brief window where
+            # a resolver has just made the PR mergeable but hasn't finished
+            # cleaning up — dispatching a fix agent then would push the same
+            # head branch concurrently.
+            # Include rate-limited agents, not just running ones: a rate-limited
+            # fix/conflict agent has its worktree preserved for resumption, and
+            # dispatching a fresh fix here would recreate (and clobber) that same
+            # worktree, leaving the resumed agent racing on the branch.
+            busy_agents = db.get_running_agents() + db.get_rate_limited_agents()
             has_running_fix = any(
-                a["pr_number"] == pr_number and a["agent_type"] == "fix_review"
-                for a in running_agents
+                a.get("pr_number") == pr_number and a.get("agent_type") in ("fix_review", "resolve_conflict")
+                for a in busy_agents
             )
             if has_running_fix:
-                logger.debug("Fix agent already running for PR #%d, skipping", pr_number)
+                logger.debug("Fix/conflict agent already busy on PR #%d, skipping", pr_number)
                 continue
 
             # Fetch CI status

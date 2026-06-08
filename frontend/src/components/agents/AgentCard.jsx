@@ -1,5 +1,5 @@
 import { useState, useEffect, useRef } from 'react'
-import { ChevronDown, ChevronUp, Code, MessageSquare, RotateCw, Square } from 'lucide-react'
+import { ChevronDown, ChevronUp, Code, GitMerge, MessageSquare, RotateCw, Square } from 'lucide-react'
 import { AgentStatusBadge } from './AgentStatusBadge'
 import { AgentLogViewer } from './AgentLogViewer'
 import { restartAgent, stopAgent } from '../../api/client'
@@ -8,6 +8,7 @@ import { formatDuration, intervalToDuration } from 'date-fns'
 const AGENT_TYPE_META = {
   implement: { label: 'Implementing Issue', icon: Code, color: 'text-[var(--accent)]' },
   fix_review: { label: 'Fixing PR Review', icon: MessageSquare, color: 'text-[var(--blue)]' },
+  resolve_conflict: { label: 'Resolving Conflicts', icon: GitMerge, color: 'text-[var(--yellow)]' },
 }
 
 function ElapsedTime({ startedAt, status }) {

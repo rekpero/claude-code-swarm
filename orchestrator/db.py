@@ -97,6 +97,21 @@ CREATE TABLE IF NOT EXISTS pr_reviews (
     FOREIGN KEY (workspace_id) REFERENCES workspaces(id)
 );
 
+CREATE TABLE IF NOT EXISTS pr_conflict_fixes (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    pr_number INTEGER NOT NULL,
+    iteration INTEGER NOT NULL,
+    base_branch TEXT,
+    base_sha TEXT,
+    head_sha TEXT,
+    agent_id TEXT,
+    workspace_id TEXT,
+    status TEXT NOT NULL DEFAULT 'pending',
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    FOREIGN KEY (agent_id) REFERENCES agents(agent_id),
+    FOREIGN KEY (workspace_id) REFERENCES workspaces(id)
+);
+
 CREATE TABLE IF NOT EXISTS planning_sessions (
     id TEXT PRIMARY KEY,
     workspace_id TEXT NOT NULL,
@@ -278,6 +293,7 @@ def delete_workspace(workspace_id: str):
     conn.execute("DELETE FROM workspace_env WHERE workspace_id = ?", (workspace_id,))
     conn.execute("DELETE FROM agent_events WHERE agent_id IN (SELECT agent_id FROM agents WHERE workspace_id = ?)", (workspace_id,))
     conn.execute("DELETE FROM pr_reviews WHERE workspace_id = ?", (workspace_id,))
+    conn.execute("DELETE FROM pr_conflict_fixes WHERE workspace_id = ?", (workspace_id,))
     conn.execute("DELETE FROM agents WHERE workspace_id = ?", (workspace_id,))
     conn.execute("DELETE FROM issues WHERE workspace_id = ?", (workspace_id,))
     conn.execute("DELETE FROM planning_messages WHERE session_id IN (SELECT id FROM planning_sessions WHERE workspace_id = ?)", (workspace_id,))
@@ -754,6 +770,93 @@ def get_all_pr_reviews(workspace_id: str | None = None) -> list[dict]:
             "SELECT * FROM pr_reviews ORDER BY pr_number, iteration"
         ).fetchall()
     return [dict(r) for r in rows]
+
+
+# === PR Conflict Fixes ===
+
+
+def create_conflict_fix(
+    pr_number: int,
+    iteration: int,
+    base_branch: str | None = None,
+    base_sha: str | None = None,
+    head_sha: str | None = None,
+    agent_id: str | None = None,
+    workspace_id: str | None = None,
+) -> int:
+    conn = _get_connection()
+    cursor = conn.execute(
+        """INSERT INTO pr_conflict_fixes
+           (pr_number, iteration, base_branch, base_sha, head_sha, agent_id, workspace_id, created_at)
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?)""",
+        (pr_number, iteration, base_branch, base_sha, head_sha, agent_id, workspace_id, _now()),
+    )
+    conn.commit()
+    return cursor.lastrowid
+
+
+def get_conflict_fixes(pr_number: int, workspace_id: str | None = None, base_sha: str | None = None) -> list[dict]:
+    """Return conflict-fix attempt rows for a PR.
+
+    When ``base_sha`` is supplied, only attempts made against that base commit
+    are returned.  This is how the conflict monitor bounds retries *per base
+    revision*: once the base branch advances, the new base_sha has zero prior
+    attempts, so a genuinely-new conflict is retried from scratch instead of
+    being immediately escalated.
+    """
+    conn = _get_connection()
+    clauses = ["pr_number = ?"]
+    params: list = [pr_number]
+    if workspace_id:
+        clauses.append("workspace_id = ?")
+        params.append(workspace_id)
+    if base_sha is not None:
+        clauses.append("base_sha = ?")
+        params.append(base_sha)
+    where = " AND ".join(clauses)
+    rows = conn.execute(
+        f"SELECT * FROM pr_conflict_fixes WHERE {where} ORDER BY iteration", params
+    ).fetchall()
+    return [dict(r) for r in rows]
+
+
+def get_all_conflict_fixes(workspace_id: str | None = None) -> list[dict]:
+    conn = _get_connection()
+    if workspace_id:
+        rows = conn.execute(
+            "SELECT * FROM pr_conflict_fixes WHERE workspace_id = ? ORDER BY pr_number, iteration",
+            (workspace_id,),
+        ).fetchall()
+    else:
+        rows = conn.execute(
+            "SELECT * FROM pr_conflict_fixes ORDER BY pr_number, iteration"
+        ).fetchall()
+    return [dict(r) for r in rows]
+
+
+def delete_conflict_fixes(pr_number: int, workspace_id: str | None = None) -> int:
+    """Delete all conflict-fix rows for a PR. Returns the number of rows removed."""
+    conn = _get_connection()
+    if workspace_id:
+        cursor = conn.execute(
+            "DELETE FROM pr_conflict_fixes WHERE pr_number = ? AND workspace_id = ?",
+            (pr_number, workspace_id),
+        )
+    else:
+        cursor = conn.execute(
+            "DELETE FROM pr_conflict_fixes WHERE pr_number = ?",
+            (pr_number,),
+        )
+    conn.commit()
+    return cursor.rowcount
+
+
+def update_conflict_fix(conflict_fix_id: int, **kwargs):
+    conn = _get_connection()
+    sets = ", ".join(f"{k} = ?" for k in kwargs)
+    vals = list(kwargs.values()) + [conflict_fix_id]
+    conn.execute(f"UPDATE pr_conflict_fixes SET {sets} WHERE id = ?", vals)
+    conn.commit()
 
 
 # === Metrics ===

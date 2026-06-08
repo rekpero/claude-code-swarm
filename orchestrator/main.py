@@ -15,6 +15,7 @@ from orchestrator.config import (
     print_config,
     validate_environment,
 )
+from orchestrator.conflict_monitor import ConflictMonitor
 from orchestrator.issue_poller import poll_issues
 from orchestrator.pr_monitor import PRMonitor
 from orchestrator.rate_limit_watcher import RateLimitWatcher
@@ -128,6 +129,13 @@ def main():
         )
     )
 
+    # Create conflict monitor with dispatch callback
+    conflict_monitor = ConflictMonitor(
+        dispatch_conflict_callback=lambda pr_num, branch, base_branch, issue_num=None, workspace=None: pool.dispatch_resolve_conflict(
+            pr_num, branch, base_branch, issue_num, workspace
+        )
+    )
+
     # Create rate limit watcher
     rate_limit_watcher = RateLimitWatcher(agent_pool=pool)
 
@@ -136,6 +144,7 @@ def main():
         logger.info("Received signal %s, shutting down...", signum)
         _shutdown_event.set()
         pr_monitor.stop()
+        conflict_monitor.stop()
         rate_limit_watcher.stop()
         pool.shutdown()
 
@@ -155,6 +164,13 @@ def main():
     )
     pr_monitor_thread.start()
     logger.info("PR Monitor started")
+
+    # Start conflict monitor in background thread
+    conflict_monitor_thread = threading.Thread(
+        target=conflict_monitor.start, daemon=True, name="conflict-monitor"
+    )
+    conflict_monitor_thread.start()
+    logger.info("Conflict Monitor started")
 
     # Start rate limit watcher in background thread
     rate_limit_thread = threading.Thread(

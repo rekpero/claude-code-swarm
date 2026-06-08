@@ -13,6 +13,7 @@ from typing import Callable
 
 from orchestrator import db
 from orchestrator.config import (
+    AGENT_MAX_TURNS_CONFLICT,
     AGENT_MAX_TURNS_FIX,
     AGENT_MAX_TURNS_IMPLEMENT,
     AGENT_TIMEOUT_SECONDS,
@@ -30,6 +31,7 @@ AGENT_LOGS_DIR = WORKSPACES_DIR / ".agent-logs"
 from orchestrator.prompts import (
     build_fix_review_prompt,
     build_implement_prompt,
+    build_resolve_conflict_prompt,
     build_resume_fix_review_prompt,
     build_resume_implement_prompt,
 )
@@ -422,6 +424,91 @@ class AgentPool:
 
         return agent_id
 
+    def dispatch_resolve_conflict(
+        self,
+        pr_number: int,
+        branch_name: str,
+        base_branch: str,
+        issue_number: int | None = None,
+        workspace: dict | None = None,
+    ) -> str | None:
+        """Dispatch an agent to resolve merge conflicts on a PR.
+
+        Checks out the PR's head branch in an isolated worktree, then runs an
+        agent that merges ``base_branch`` in, resolves the conflicts, and pushes
+        the merge commit back to the head branch. Returns agent_id or None.
+        """
+        if not self.can_dispatch:
+            logger.warning("Agent pool full, cannot dispatch conflict resolver")
+            return None
+
+        github_repo, local_path, worktree_dir, _ws_base_branch = _workspace_config(workspace)
+        workspace_id = workspace["id"] if workspace else None
+        agent_id = f"agent-pr-conflict-{pr_number}-{int(time.time())}"
+
+        try:
+            ensure_repo_updated(repo_path=local_path, base_branch=base_branch)
+            worktree_path = create_worktree_for_pr(
+                pr_number, branch_name,
+                repo_path=local_path,
+                worktree_dir=worktree_dir,
+                prefix="pr-conflict",
+            )
+        except Exception as e:
+            logger.error("Failed to create conflict worktree for PR #%d: %s", pr_number, e)
+            return None
+
+        # Copy .env files from the workspace into the worktree (they are gitignored)
+        copy_env_files_to_worktree(worktree_path, local_path, workspace_id=workspace_id)
+
+        prompt = build_resolve_conflict_prompt(
+            pr_number,
+            base_branch=base_branch,
+            branch_name=branch_name,
+            github_repo=github_repo,
+            target_repo_path=local_path,
+        )
+
+        try:
+            agent_proc = self._spawn_agent(
+                agent_id=agent_id,
+                prompt=prompt,
+                worktree_path=worktree_path,
+                max_turns=AGENT_MAX_TURNS_CONFLICT,
+                issue_number=issue_number,
+                agent_type="resolve_conflict",
+                pr_number=pr_number,
+                workspace_id=workspace_id,
+            )
+            agent_proc._workspace = workspace
+        except Exception as e:
+            logger.error("Failed to spawn conflict resolver for PR #%d: %s", pr_number, e)
+            cleanup_worktree(worktree_path, repo_path=local_path)
+            return None
+
+        db.create_agent(
+            agent_id=agent_id,
+            issue_number=issue_number,
+            pr_number=pr_number,
+            agent_type="resolve_conflict",
+            worktree_path=worktree_path,
+            branch_name=branch_name,
+            pid=agent_proc.process.pid,
+            workspace_id=workspace_id,
+        )
+
+        with self._lock:
+            self._agents[agent_id] = agent_proc
+
+        agent_proc.start_reader()
+        logger.info("Dispatched conflict resolver %s for PR #%d", agent_id, pr_number)
+
+        threading.Thread(
+            target=self._monitor_agent, args=(agent_id,), daemon=True, name=f"monitor-{agent_id}"
+        ).start()
+
+        return agent_id
+
     def _spawn_agent(
         self,
         agent_id: str,
@@ -567,10 +654,11 @@ class AgentPool:
             if agent.agent_type == "implement":
                 self._handle_implement_complete(agent)
             else:
-                # fix_review: agent prompt says to push, but the commit skill
-                # only commits — defensively push HEAD before cleaning the
-                # worktree so we don't lose review fixes the agent committed
-                # but didn't push.  `git push -u origin HEAD` is idempotent:
+                # fix_review / resolve_conflict: agent prompt says to push, but
+                # the commit skill only commits — defensively push HEAD before
+                # cleaning the worktree so we don't lose review fixes or a merge
+                # commit the agent made but didn't push.  `git push -u origin
+                # HEAD` is idempotent:
                 # a no-op ("Everything up-to-date") when remote already has
                 # the local tip.  (We don't reuse _has_unpushed_commits here
                 # because for an existing PR branch its base-branch diff
@@ -624,13 +712,16 @@ class AgentPool:
                         db.update_issue(agent.issue_number, workspace_id=agent.workspace_id, status="pr_created", pr_number=recovered_pr)
                     else:
                         db.update_issue(agent.issue_number, workspace_id=agent.workspace_id, status="pending")
-            elif agent.agent_type == "fix_review":
+            elif agent.agent_type in ("fix_review", "resolve_conflict"):
                 # The PR/branch already exists upstream — push HEAD so the
-                # review fixes don't vanish when the worktree is cleaned up
-                # below.  Idempotent: a no-op when nothing was committed.
+                # review fixes / conflict resolution don't vanish when the
+                # worktree is cleaned up below.  Idempotent: a no-op when
+                # nothing was committed.  Note: if a conflict resolver failed
+                # mid-merge, HEAD is still the pre-merge commit (git won't let
+                # you commit an unresolved merge), so this safely pushes nothing.
                 logger.warning(
-                    "Fix-review agent %s failed — pushing HEAD as a salvage step",
-                    agent_id,
+                    "%s agent %s failed — pushing HEAD as a salvage step",
+                    agent.agent_type, agent_id,
                 )
                 self._push_current_branch(agent.worktree_path)
 
@@ -895,6 +986,19 @@ class AgentPool:
         if agent_type == "implement":
             prompt = build_resume_implement_prompt(issue_number, github_repo=github_repo, target_repo_path=local_path)
             max_turns = AGENT_MAX_TURNS_IMPLEMENT
+        elif agent_type == "resolve_conflict":
+            # Re-issue the conflict-resolution prompt. The worktree is preserved,
+            # so an in-progress merge is still on disk; the agent inspects
+            # `git status` and continues resolving from there. Resolve the PR's
+            # actual base branch (it may not be the workspace default).
+            from orchestrator.pr_monitor import get_pr_merge_info
+            info = get_pr_merge_info(pr_number, github_repo=github_repo) if pr_number else None
+            base_branch = (info or {}).get("base_ref") or (workspace.get("base_branch", "main") if workspace else "main")
+            prompt = build_resolve_conflict_prompt(
+                pr_number, base_branch=base_branch, branch_name=branch_name,
+                github_repo=github_repo, target_repo_path=local_path,
+            )
+            max_turns = AGENT_MAX_TURNS_CONFLICT
         else:
             from orchestrator.pr_monitor import get_unresolved_threads
             unresolved_threads = get_unresolved_threads(pr_number, github_repo=github_repo) if pr_number else None
@@ -1324,6 +1428,23 @@ class AgentPool:
                 db.finish_agent(agent_id, status="failed", error_message="Agent exited without creating PR (reattached)")
                 if issue_number is not None:
                     db.update_issue(issue_number, workspace_id=workspace_id, status="pending")
+        elif agent_type == "resolve_conflict":
+            # A reattached conflict resolver (orchestrator restarted mid-merge).
+            # Mirror _monitor_agent's resolve_conflict handling: salvage-push HEAD
+            # (idempotent — pushes nothing if the merge was left unresolved, since
+            # git won't commit an in-progress merge) and mark the agent completed.
+            # Critically, do NOT write issue status here: unlike fix_review, a
+            # conflict resolver's issue_number is often just the PR number (for
+            # untracked/manual PRs), so flipping it to needs_human/pr_created
+            # would corrupt an unrelated issue.  The ConflictMonitor re-evaluates
+            # the PR on its next poll and re-dispatches within the retry budget if
+            # it's still CONFLICTING.
+            logger.info(
+                "Reattached resolve_conflict agent %s exited — salvage-pushing HEAD", agent_id
+            )
+            if worktree_path and os.path.exists(worktree_path):
+                self._push_current_branch(worktree_path)
+            db.finish_agent(agent_id, status="completed")
         else:
             # fix_review agent — determine success from git state.
             # Try to decode the exit status. For child processes os.waitpid succeeds;

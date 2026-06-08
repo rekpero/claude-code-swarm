@@ -6,6 +6,28 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 
+## [1.5.0] - 2026-06-08
+
+### Added
+- **Automated merge-conflict resolution loop** — a new background poller (`ConflictMonitor` in `conflict_monitor.py`) scans every active workspace's open, same-repo, non-draft PRs and, when GitHub reports a PR `CONFLICTING`, dispatches a new `resolve_conflict` agent that merges the PR's base branch into its head branch, resolves the conflicts, verifies, and pushes the merge commit back to the same head branch so GitHub re-marks the PR mergeable. Runs independently of the review/CI loop in `pr_monitor.py`, started from `main()` on its own daemon thread and stopped via the shared shutdown signal handler. Controlled by `TRACK_MERGE_CONFLICTS` (default `true`)
+- **`pr_monitor.get_pr_merge_info(pr_number)`** — fetches a PR's `mergeable` (`MERGEABLE`/`CONFLICTING`/`UNKNOWN`), `mergeStateStatus`, head/base ref names, and head/base commit OIDs in a single `gh pr view` call; returns `None` on any failure so callers treat it as "can't conclude anything this cycle" rather than acting on a malformed response
+- **`AgentPool.dispatch_resolve_conflict(pr_number, branch_name, base_branch, ...)`** — checks out the PR head branch in an isolated `pr-conflict-<n>` worktree (via the new `prefix` parameter on `create_worktree_for_pr`, so it never shares/clobbers a `fix_review` agent's `pr-fix-<n>` directory) and spawns a `resolve_conflict` agent bounded by `AGENT_MAX_TURNS_CONFLICT`
+- **`prompts.build_resolve_conflict_prompt(...)`** — step-by-step prompt instructing the agent to fetch + merge the base branch, resolve every conflict by hand (never blindly pick a side, never leave markers), verify no markers remain and the build/tests pass, commit the merge, and push to the same head branch with `git push origin HEAD:<branch>` (no force-push, no new branch/PR); if a conflict is genuinely ambiguous it must `git merge --abort`, comment on the PR explaining what a human must decide, and stop
+- **`pr_conflict_fixes` table + CRUD** (`create_conflict_fix`, `get_conflict_fixes`, `get_all_conflict_fixes`, `update_conflict_fix`, `delete_conflict_fixes`) — tracks resolution attempts per PR. `get_conflict_fixes(base_sha=...)` scopes the count to a single base revision so retries are bounded *per base commit*: when the base branch advances, the new `base_sha` has zero prior attempts and a genuinely-new conflict is retried from scratch. `delete_workspace` now also clears this table
+- **`AGENT_MAX_TURNS_CONFLICT`** (default `25`), **`CONFLICT_POLL_INTERVAL_SECONDS`** (default `180`), and **`MAX_CONFLICT_FIX_RETRIES`** (default `3`) config vars, surfaced in `print_config()` and documented in `.env.example`
+- **`resolve_conflict` agent type in the dashboard** — `AgentCard.jsx` renders it with a `GitMerge` icon and "Resolving Conflicts" label; `restart_agent` resolves the PR's head/base via `get_pr_merge_info` and re-dispatches through `dispatch_resolve_conflict`
+
+### Changed
+- **PRMonitor defers `CONFLICTING` PRs to the ConflictMonitor** — `_poll_prs` now skips the review/CI flow entirely for any PR `get_pr_merge_info` reports as `CONFLICTING` (when `TRACK_MERGE_CONFLICTS` is on), so a `fix_review` agent never races a `resolve_conflict` agent pushing the same head branch. Once conflicts clear the skip stops firing
+- **Salvage/completion paths handle `resolve_conflict` alongside `fix_review`** — the success and failure branches of `_monitor_agent` push HEAD before worktree cleanup (idempotent; a conflict resolver that failed mid-merge leaves HEAD at the pre-merge commit since git won't commit an unresolved merge, so this safely pushes nothing), and the rate-limit `resume_agent` path rebuilds the conflict prompt (resolving the PR's *actual* base branch, which may differ from the workspace default) so a paused resolver continues from the in-progress merge on disk
+
+### Fixed
+- **Reattached `resolve_conflict` agents no longer corrupt tracked-issue state** — after an orchestrator restart, `_monitor_pid` routed every non-`implement` agent through the `fix_review` branch, which writes `db.update_issue(..., status="needs_human"/"pr_created")`. Because a conflict resolver's `issue_number` is often just the PR number (untracked/manual PRs), and because the git-log heuristic misreads a no-op merge as failure, this could flip an unrelated or genuinely-tracked issue to `needs_human`. `_monitor_pid` now has a dedicated `resolve_conflict` branch that salvage-pushes HEAD and marks the agent `completed` without touching issue status, mirroring `_monitor_agent`; the ConflictMonitor re-evaluates and re-dispatches within the retry budget on its next poll
+- **PRMonitor's "agent already working this PR" guard now includes rate-limited agents** — it previously checked only `get_running_agents()`, so a *rate-limited* `fix_review`/`resolve_conflict` agent (whose worktree is preserved for resumption) did not block PRMonitor from dispatching a fresh agent, which would recreate and clobber that same worktree and leave the resumed agent racing the branch. The check now unions `get_running_agents()` with `get_rate_limited_agents()`, matching ConflictMonitor's own busy-check
+- **`get_conflict_fixes` base-revision filter hardened** — switched the guard from `if base_sha:` to `if base_sha is not None:` so a falsy-but-present value can't silently drop the per-base-revision scoping
+
+---
+
 ## [1.4.10] - 2026-05-28
 
 ### Fixed

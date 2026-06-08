@@ -25,6 +25,7 @@ TRIGGER_MENTION = os.environ.get("TRIGGER_MENTION", "@claude-swarm")
 MAX_CONCURRENT_AGENTS = int(os.environ.get("MAX_CONCURRENT_AGENTS", "3"))
 AGENT_MAX_TURNS_IMPLEMENT = int(os.environ.get("AGENT_MAX_TURNS_IMPLEMENT", "30"))
 AGENT_MAX_TURNS_FIX = int(os.environ.get("AGENT_MAX_TURNS_FIX", "20"))
+AGENT_MAX_TURNS_CONFLICT = int(os.environ.get("AGENT_MAX_TURNS_CONFLICT", "25"))
 AGENT_TIMEOUT_SECONDS = int(os.environ.get("AGENT_TIMEOUT_SECONDS", "1800"))
 
 # === PR Review Loop ===
@@ -39,6 +40,18 @@ TRACK_MANUAL_PRS = os.environ.get("TRACK_MANUAL_PRS", "true").lower() in ("true"
 # repo has more open PRs than this, the tail is silently dropped — bump this
 # (or paginate) for very busy repos.
 MANUAL_PR_DISCOVERY_LIMIT = int(os.environ.get("MANUAL_PR_DISCOVERY_LIMIT", "500"))
+
+# === Merge-Conflict Resolution Loop ===
+# A separate poller that scans all open (same-repo, non-draft) PRs for merge
+# conflicts and dispatches an agent to merge the base branch into the PR branch,
+# resolve the conflicts, and push the result back to the PR's head branch.
+TRACK_MERGE_CONFLICTS = os.environ.get("TRACK_MERGE_CONFLICTS", "true").lower() in ("true", "1", "yes")
+# How often (seconds) to scan open PRs for merge conflicts.
+CONFLICT_POLL_INTERVAL_SECONDS = int(os.environ.get("CONFLICT_POLL_INTERVAL_SECONDS", "180"))
+# Max times we'll try to resolve conflicts on a PR *against the same base commit*
+# before escalating to a human.  Attempts reset automatically when the base
+# branch advances (a new base commit is a genuinely new conflict to resolve).
+MAX_CONFLICT_FIX_RETRIES = int(os.environ.get("MAX_CONFLICT_FIX_RETRIES", "3"))
 
 # === Rate Limit Handling ===
 # How often (seconds) to check if rate-limited agents can be resumed.
@@ -140,6 +153,9 @@ def print_config():
     print(f"  MAX_PR_FIX_RETRIES:    {MAX_PR_FIX_RETRIES}")
     print(f"  TRACK_MANUAL_PRS:      {TRACK_MANUAL_PRS}")
     print(f"  MANUAL_PR_DISC_LIMIT:  {MANUAL_PR_DISCOVERY_LIMIT}")
+    print(f"  TRACK_MERGE_CONFLICTS: {TRACK_MERGE_CONFLICTS}")
+    print(f"  CONFLICT_POLL_INT:     {CONFLICT_POLL_INTERVAL_SECONDS}s")
+    print(f"  MAX_CONFLICT_RETRIES:  {MAX_CONFLICT_FIX_RETRIES}")
     print(f"  RATE_LIMIT_RETRY:      {RATE_LIMIT_RETRY_INTERVAL}s")
     print(f"  MAX_RATE_RESUMES:      {MAX_RATE_LIMIT_RESUMES}")
     print(f"  SKILLS_ENABLED:        {SKILLS_ENABLED}")

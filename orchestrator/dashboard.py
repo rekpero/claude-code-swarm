@@ -344,6 +344,7 @@ async def restart_agent(agent_id: str):
     # stopped state with no replacement agent.
     branch = None
     threads = None
+    base_branch = None
     if agent.get("agent_type") == "fix_review":
         if not agent.get("pr_number"):
             return JSONResponse(
@@ -362,6 +363,27 @@ async def restart_agent(agent_id: str):
         if not branch:
             return JSONResponse(
                 content={"error": "Cannot restart: could not resolve PR branch"},
+                status_code=400,
+            )
+    elif agent.get("agent_type") == "resolve_conflict":
+        if not agent.get("pr_number"):
+            return JSONResponse(
+                content={"error": "Cannot restart: resolve_conflict agent has no pr_number"},
+                status_code=400,
+            )
+        from orchestrator.pr_monitor import get_pr_merge_info
+        github_repo = ws.get("github_repo")
+        if not github_repo:
+            return JSONResponse(
+                content={"error": "Workspace has no github_repo configured"},
+                status_code=409,
+            )
+        info = get_pr_merge_info(agent["pr_number"], github_repo=github_repo)
+        branch = (info or {}).get("head_ref")
+        base_branch = (info or {}).get("base_ref")
+        if not branch or not base_branch:
+            return JSONResponse(
+                content={"error": "Cannot restart: could not resolve PR head/base branch"},
                 status_code=400,
             )
     else:
@@ -461,6 +483,10 @@ async def restart_agent(agent_id: str):
         if current_agent.get("agent_type") == "fix_review":
             new_agent_id = _agent_pool.dispatch_fix_review(
                 current_agent["pr_number"], branch, current_agent["issue_number"], ws, threads,
+            )
+        elif current_agent.get("agent_type") == "resolve_conflict":
+            new_agent_id = _agent_pool.dispatch_resolve_conflict(
+                current_agent["pr_number"], branch, base_branch, current_agent["issue_number"], ws,
             )
         else:
             new_agent_id = _agent_pool.dispatch_implement(current_agent["issue_number"], workspace=ws)

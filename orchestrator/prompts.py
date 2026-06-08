@@ -273,6 +273,77 @@ Important:
 - If a comment is unclear, add a reply comment asking for clarification using `gh pr comment`."""
 
 
+def build_resolve_conflict_prompt(
+    pr_number: int,
+    base_branch: str,
+    branch_name: str,
+    github_repo: str | None = None,
+    target_repo_path: Path | str | None = None,
+) -> str:
+    """Build the prompt for an agent that resolves merge conflicts on a PR.
+
+    The agent runs inside a worktree that is already checked out on the PR's
+    head branch (reset to ``origin/<head>``).  Its job is to merge the PR's
+    base branch in, resolve every conflict by hand, verify, and push the merge
+    commit back to the same head branch so GitHub re-marks the PR mergeable.
+    """
+    repo = github_repo
+    skills = _skills_block(target_repo_path)
+    return f"""Read the AGENT.md file at the root of this repository FIRST and follow every guideline strictly.
+
+Your task: Resolve the merge conflicts on PR #{pr_number}.
+{skills}
+CONTEXT: PR #{pr_number} cannot be merged because its head branch (`{branch_name}`)
+has conflicts with its base branch (`{base_branch}`). You are running in a worktree
+that is already checked out on `{branch_name}` at the latest pushed commit. Your job
+is to merge `{base_branch}` into this branch, resolve the conflicts correctly, and
+push the result back so the PR becomes mergeable again.
+
+Step 1 — Fetch the latest base branch:
+Run `git fetch origin {base_branch}`.
+
+Step 2 — Merge the base branch into the PR branch:
+Run `git merge --no-edit origin/{base_branch}`.
+- If git reports "Already up to date" or the merge completes with NO conflicts,
+  there is nothing to resolve. Skip to Step 6 (there may be nothing to push —
+  that's fine, just report it).
+- Otherwise git will stop and list conflicted files.
+
+Step 3 — Resolve every conflict:
+Run `git status` to see the conflicted files, then `git diff` to inspect them.
+For EACH conflicted file:
+- Open it and find the conflict markers (`<<<<<<<`, `=======`, `>>>>>>>`).
+- Understand BOTH sides: the base-branch change (theirs) and this PR's change (ours).
+  Read the surrounding code and, if needed, the PR description (`gh pr view {pr_number}`)
+  to understand the PR's intent.
+- Produce a correct merged result that preserves the PR's intended change AND the
+  incoming base-branch changes. Do NOT blindly pick one side, and NEVER leave any
+  conflict markers in the file.
+- Stage the resolved file with `git add <file>`.
+
+Step 4 — Verify nothing is broken:
+After resolving all files, run `grep -rn '<<<<<<<\\|>>>>>>>\\|=======' .` (excluding
+.git) to confirm no conflict markers remain. Then run the project's test suite /
+build to make sure the merged code actually works. Fix any breakage the merge
+introduced and re-run until it passes.
+
+Step 5 — Commit the merge:
+Once everything is staged and verified, complete the merge commit:
+`git commit --no-edit` (the merge message is fine; or use
+"merge: resolve conflicts with {base_branch} for PR #{pr_number}").
+
+Step 6 — Push back to the PR branch:
+Push to the SAME head branch so the existing PR updates:
+`git push origin HEAD:{branch_name}`
+Do NOT force-push. Do NOT create a new branch or a new PR.
+
+Important:
+- Resolve conflicts in EVERY file — do not skip any. A leftover conflict marker is a hard failure.
+- Only resolve the conflicts and fix breakage the merge caused. Do NOT make unrelated changes or "improve" code that wasn't conflicting.
+- If a conflict is genuinely ambiguous and you cannot determine the correct resolution with confidence, do NOT guess. Abort the merge with `git merge --abort`, leave a comment on the PR explaining exactly which conflict is ambiguous and what decision a human needs to make (`gh pr comment {pr_number} --body "..."`), and stop without pushing.
+- The repository is {repo}."""
+
+
 def build_resume_implement_prompt(issue_number: int, github_repo: str | None = None, target_repo_path: Path | str | None = None) -> str:
     repo = github_repo
     owner, repo_name = repo.split("/", 1)
