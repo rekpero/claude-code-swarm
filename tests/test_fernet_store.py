@@ -89,12 +89,28 @@ def test_concurrent_dek_creation_race(db, master_key):
 
     store = FernetSecretStore(master_key=master_key, session_scope=session_scope)
 
-    # Patch create() to raise IntegrityError (simulating the "race loser" path).
+    # Simulate the race loser:
+    #   1. get_for_org returns None on the first call — the winner's INSERT isn't
+    #      visible yet at the moment the loser checks.
+    #   2. create() raises IntegrityError — the winner committed just before us.
+    #   3. get_for_org delegates to the real implementation on subsequent calls so
+    #      the re-read after rollback finds the committed winner row.
+    real_get_for_org = TenantKeyRepository.get_for_org
+    _call_count = 0
+
+    def _first_call_returns_none(self, org_id):
+        nonlocal _call_count
+        _call_count += 1
+        if _call_count == 1:
+            return None
+        return real_get_for_org(self, org_id)
+
     def _raise_integrity(*args, **kwargs):
         raise SAIntegrityError("UNIQUE constraint failed", None, None)
 
-    with patch.object(TenantKeyRepository, "create", _raise_integrity):
-        # put() must catch the error, re-read the winner's key, and succeed.
-        store.put(org_id, "anthropic", "sk-ant-race-test")
+    with patch.object(TenantKeyRepository, "get_for_org", _first_call_returns_none):
+        with patch.object(TenantKeyRepository, "create", _raise_integrity):
+            # put() must catch the IntegrityError, re-read the winner's key, and succeed.
+            store.put(org_id, "anthropic", "sk-ant-race-test")
 
     assert store.get(org_id, "anthropic") == "sk-ant-race-test"
