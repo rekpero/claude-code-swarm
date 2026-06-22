@@ -56,27 +56,49 @@ class ApiKeyCredentialProvider(CredentialProvider):
         return AgentCredentials(env={"ANTHROPIC_API_KEY": key})
 
     def validate(self, org_id: str) -> bool:
-        """Hit a cheap endpoint to confirm the key works; persist the result."""
+        """Hit a cheap endpoint to confirm the key works; persist the result.
+
+        Returns True if the key is confirmed active, False if definitively
+        invalid, or False (without updating the DB status) on transient errors
+        so a momentary 429/5xx does not mark a valid credential as invalid.
+        """
         key = self._secrets.get(org_id, PROVIDER_ANTHROPIC)
         if not key:
             return False
         ok = self._probe(key)
-        with self._session_scope() as s:
-            CredentialRepository(s).set_status(
-                org_id,
-                STATUS_ACTIVE if ok else STATUS_INVALID,
-                validated=ok,
-            )
-        return ok
+        if ok is not None:
+            # Only persist when we have a definitive answer (True/False).
+            with self._session_scope() as s:
+                CredentialRepository(s).set_status(
+                    org_id,
+                    STATUS_ACTIVE if ok else STATUS_INVALID,
+                    validated=ok,
+                )
+        return bool(ok)
 
-    def _probe(self, key: str) -> bool:
+    def _probe(self, key: str) -> bool | None:
+        """Return True (active), False (invalid), or None (transient error).
+
+        Only 401/403 are treated as definitive auth failures. 429, 5xx, and
+        network errors are transient and return None so the caller can skip
+        persisting a misleading STATUS_INVALID.
+        """
         try:
             resp = httpx.get(
                 f"{self._base_url}/v1/models",
                 headers={"x-api-key": key, "anthropic-version": "2023-06-01"},
                 timeout=10.0,
             )
-            return resp.status_code == 200
+            if resp.status_code == 200:
+                return True
+            if resp.status_code in (401, 403):
+                return False
+            # 429, 5xx, or any other transient / unexpected code.
+            logger.warning(
+                "Anthropic key probe returned transient status %s — skipping status update",
+                resp.status_code,
+            )
+            return None
         except httpx.HTTPError as e:
             logger.warning("Anthropic key validation failed: %s", e)
-            return False
+            return None

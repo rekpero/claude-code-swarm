@@ -10,6 +10,7 @@ onto repositories (which use these sessions) one at a time.
 
 from __future__ import annotations
 
+import threading
 from collections.abc import Iterator
 from contextlib import contextmanager
 
@@ -21,18 +22,22 @@ from orchestrator.settings import get_settings
 
 _engine: Engine | None = None
 _SessionFactory: sessionmaker[Session] | None = None
+_engine_lock = threading.Lock()
+_session_factory_lock = threading.Lock()
 
 
 def get_engine() -> Engine:
     """Return the process-wide SQLAlchemy engine (lazily created)."""
     global _engine
     if _engine is None:
-        settings = get_settings()
-        _engine = create_engine(
-            settings.database_url,
-            pool_pre_ping=True,  # recover from dropped connections
-            future=True,
-        )
+        with _engine_lock:
+            if _engine is None:
+                settings = get_settings()
+                _engine = create_engine(
+                    settings.database_url,
+                    pool_pre_ping=True,  # recover from dropped connections
+                    future=True,
+                )
     return _engine
 
 
@@ -40,9 +45,11 @@ def get_session_factory() -> sessionmaker[Session]:
     """Return the process-wide session factory (lazily created)."""
     global _SessionFactory
     if _SessionFactory is None:
-        _SessionFactory = sessionmaker(
-            bind=get_engine(), expire_on_commit=False, future=True
-        )
+        with _session_factory_lock:
+            if _SessionFactory is None:
+                _SessionFactory = sessionmaker(
+                    bind=get_engine(), expire_on_commit=False, future=True
+                )
     return _SessionFactory
 
 

@@ -20,11 +20,14 @@ from orchestrator.models import Base
 @pytest.fixture(autouse=True)
 def _clear_settings_cache():
     """Ensure each test reads fresh settings (env overrides take effect)."""
+    from orchestrator.container import get_container
     from orchestrator.settings import get_settings
 
     get_settings.cache_clear()
+    get_container.cache_clear()
     yield
     get_settings.cache_clear()
+    get_container.cache_clear()
 
 
 @pytest.fixture()
