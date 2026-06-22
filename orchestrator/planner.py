@@ -11,10 +11,23 @@ import threading
 import time
 
 from orchestrator import db
-from orchestrator.config import CLAUDE_CODE_OAUTH_TOKEN, GH_TOKEN, ISSUE_LABEL
+from orchestrator.config import GH_TOKEN, ISSUE_LABEL
+from orchestrator.container import get_container
+from orchestrator.tenancy import resolve_org_id
 from orchestrator.prompts import build_planning_prompt
 
 logger = logging.getLogger(__name__)
+
+
+def _planning_credential_env(workspace_id: str | None = None) -> dict[str, str]:
+    """Resolve the per-org credential env (BYO Anthropic API key) for planner runs.
+
+    Mirrors AgentPool._agent_credential_env so the planning agent and the issue
+    agents run on the same per-tenant credentials. Raises MissingCredentialError
+    if the org has not connected a credential.
+    """
+    org_id = resolve_org_id(workspace_id)
+    return dict(get_container().credential_provider.for_org(org_id).env)
 
 
 def _close_process_pipes(process: subprocess.Popen | None) -> None:
@@ -224,7 +237,7 @@ def _run_planning_agent_impl(session_id: str, workspace: dict, prompt: str):
 
     env = {
         **os.environ,
-        "CLAUDE_CODE_OAUTH_TOKEN": CLAUDE_CODE_OAUTH_TOKEN,
+        **_planning_credential_env(workspace_id),  # per-org ANTHROPIC_API_KEY
         "GH_TOKEN": GH_TOKEN,
     }
 
@@ -763,7 +776,8 @@ def _generate_title_with_ai(plan_body: str) -> str:
         + plan_body[:3000]
     )
     try:
-        env = {**os.environ, "CLAUDE_CODE_OAUTH_TOKEN": CLAUDE_CODE_OAUTH_TOKEN}
+        # No workspace context here — resolves to the default org's credential.
+        env = {**os.environ, **_planning_credential_env()}
         result = subprocess.run(
             ["claude", "--output-format", "text"],
             input=prompt,

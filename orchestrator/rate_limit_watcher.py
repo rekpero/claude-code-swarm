@@ -7,10 +7,10 @@ import threading
 import time
 
 from orchestrator import db
-from orchestrator.config import (
-    CLAUDE_CODE_OAUTH_TOKEN,
-    RATE_LIMIT_RETRY_INTERVAL,
-)
+from orchestrator.config import RATE_LIMIT_RETRY_INTERVAL
+from orchestrator.container import get_container
+from orchestrator.credentials.base import MissingCredentialError
+from orchestrator.tenancy import resolve_org_id
 
 logger = logging.getLogger(__name__)
 
@@ -20,9 +20,14 @@ def _probe_claude_available() -> bool:
 
     Sends a trivial prompt with --max-turns 1 and checks the exit code.
     Returns True if Claude responds successfully (no rate limit).
+
+    TODO(port): under BYO-key, rate limits are per-org, not global. This probe
+    currently uses the default org's credential; make it per-org-aware (probe
+    the specific org whose agent is waiting) when the auth slice lands.
     """
     try:
-        env = {**os.environ, "CLAUDE_CODE_OAUTH_TOKEN": CLAUDE_CODE_OAUTH_TOKEN}
+        creds = get_container().credential_provider.for_org(resolve_org_id())
+        env = {**os.environ, **creds.env}
         result = subprocess.run(
             ["claude", "-p", "Reply with just the word OK", "--max-turns", "1"],
             capture_output=True,
@@ -42,6 +47,9 @@ def _probe_claude_available() -> bool:
         return True
     except subprocess.TimeoutExpired:
         logger.debug("Claude probe timed out — assuming still limited")
+        return False
+    except MissingCredentialError:
+        logger.debug("No Anthropic credential connected — cannot probe; treating as unavailable")
         return False
     except Exception as e:
         logger.debug("Claude probe failed: %s", e)

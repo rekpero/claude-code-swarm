@@ -17,7 +17,6 @@ from orchestrator.config import (
     AGENT_MAX_TURNS_FIX,
     AGENT_MAX_TURNS_IMPLEMENT,
     AGENT_TIMEOUT_SECONDS,
-    CLAUDE_CODE_OAUTH_TOKEN,
     GH_TOKEN,
     GIT_AUTHOR_EMAIL,
     GIT_AUTHOR_NAME,
@@ -26,6 +25,9 @@ from orchestrator.config import (
     SKILLS_ENABLED,
     WORKSPACES_DIR,
 )
+from orchestrator.container import get_container
+from orchestrator.credentials.base import CredentialProvider, MissingCredentialError
+from orchestrator.tenancy import resolve_org_id
 
 AGENT_LOGS_DIR = WORKSPACES_DIR / ".agent-logs"
 from orchestrator.prompts import (
@@ -225,7 +227,13 @@ class AgentProcess:
 class AgentPool:
     """Manages the lifecycle of Claude Code agent subprocesses."""
 
-    def __init__(self):
+    def __init__(self, credential_provider: "CredentialProvider | None" = None):
+        # CredentialProvider resolves each org's agent credentials (BYO Anthropic
+        # API key in v2). Injected for testability; defaults to the container's
+        # configured provider. Replaces the shared CLAUDE_CODE_OAUTH_TOKEN.
+        self._credentials: "CredentialProvider" = (
+            credential_provider or get_container().credential_provider
+        )
         self._agents: dict[str, AgentProcess] = {}
         self._lock = threading.Lock()
         self._on_agent_complete: Callable[[AgentProcess], None] | None = None
@@ -509,6 +517,17 @@ class AgentPool:
 
         return agent_id
 
+    def _agent_credential_env(self, workspace_id: str | None) -> dict[str, str]:
+        """Resolve the per-org credential env for an agent run.
+
+        Replaces the shared CLAUDE_CODE_OAUTH_TOKEN with the owning org's
+        credentials (BYO Anthropic API key in v2). Raises MissingCredentialError
+        if the org has not connected a credential — callers surface this rather
+        than spawning an agent that would immediately fail.
+        """
+        org_id = resolve_org_id(workspace_id)
+        return dict(self._credentials.for_org(org_id).env)
+
     def _spawn_agent(
         self,
         agent_id: str,
@@ -535,12 +554,14 @@ class AgentPool:
 
         env = {
             **os.environ,
-            "CLAUDE_CODE_OAUTH_TOKEN": CLAUDE_CODE_OAUTH_TOKEN,
+            **self._agent_credential_env(workspace_id),  # per-org ANTHROPIC_API_KEY
             "GH_TOKEN": GH_TOKEN,
         }
 
         # Set git author identity so commits are attributed to a real GitHub user
         # (avoids Vercel / deploy rejections for unknown commit authors).
+        # TODO(github-app): replace this with the GitHub App bot identity +
+        # installation token once the App slice lands.
         if GIT_AUTHOR_NAME:
             env["GIT_AUTHOR_NAME"] = GIT_AUTHOR_NAME
             env["GIT_COMMITTER_NAME"] = GIT_AUTHOR_NAME
@@ -1028,7 +1049,7 @@ class AgentPool:
 
         env = {
             **os.environ,
-            "CLAUDE_CODE_OAUTH_TOKEN": CLAUDE_CODE_OAUTH_TOKEN,
+            **self._agent_credential_env(workspace_id),  # per-org ANTHROPIC_API_KEY
             "GH_TOKEN": GH_TOKEN,
         }
 
