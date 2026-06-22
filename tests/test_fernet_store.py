@@ -68,3 +68,33 @@ def test_delete(db, master_key):
 def test_requires_master_key():
     with pytest.raises(ValueError):
         FernetSecretStore(master_key="", session_scope=session_scope)
+
+
+def test_concurrent_dek_creation_race(db, master_key):
+    """Race loser catches IntegrityError, re-reads the winner's committed DEK."""
+    from unittest.mock import patch
+
+    from sqlalchemy.exc import IntegrityError as SAIntegrityError
+
+    from orchestrator.infra import crypto as cr
+    from orchestrator.repositories.credential_repo import TenantKeyRepository
+
+    org_id = _make_org("acme")
+
+    # Pre-commit a DEK row simulating the "race winner" having already inserted.
+    real_dek = cr.generate_dek()
+    real_wrapped = cr.wrap_dek(real_dek, master_key)
+    with session_scope() as s:
+        TenantKeyRepository(s).create(org_id, real_wrapped, cr.KEY_VERSION)
+
+    store = FernetSecretStore(master_key=master_key, session_scope=session_scope)
+
+    # Patch create() to raise IntegrityError (simulating the "race loser" path).
+    def _raise_integrity(*args, **kwargs):
+        raise SAIntegrityError("UNIQUE constraint failed", None, None)
+
+    with patch.object(TenantKeyRepository, "create", _raise_integrity):
+        # put() must catch the error, re-read the winner's key, and succeed.
+        store.put(org_id, "anthropic", "sk-ant-race-test")
+
+    assert store.get(org_id, "anthropic") == "sk-ant-race-test"

@@ -17,6 +17,7 @@ from __future__ import annotations
 from collections.abc import Callable
 from contextlib import AbstractContextManager
 
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
 from orchestrator.infra import crypto
@@ -54,7 +55,15 @@ class FernetSecretStore(SecretStore):
             return crypto.unwrap_dek(tk.wrapped_dek, self._master_key)
         dek = crypto.generate_dek()
         wrapped = crypto.wrap_dek(dek, self._master_key)
-        tk_repo.create(org_id, wrapped, crypto.KEY_VERSION)
+        try:
+            tk_repo.create(org_id, wrapped, crypto.KEY_VERSION)
+        except IntegrityError:
+            # Concurrent caller won the race to INSERT — roll back and re-read.
+            tk_repo.session.rollback()
+            tk = tk_repo.get_for_org(org_id)
+            if tk is None:
+                raise
+            return crypto.unwrap_dek(tk.wrapped_dek, self._master_key)
         return dek
 
     def put(self, org_id: str, name: str, plaintext: str) -> None:
