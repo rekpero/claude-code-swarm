@@ -247,9 +247,10 @@ def _run_planning_agent_impl(session_id: str, workspace: dict, prompt: str):
                 _cancelled.discard(session_id)
         if was_cancelled:
             logger.info("Planning session %s was cancelled before spawn completed", session_id)
-            db.update_planning_session(session_id, status="active")
-        else:
-            db.update_planning_session(session_id, status="error")
+        # Always surface as 'error', even if cancelled: the missing credential is
+        # the root cause of the failure and would otherwise cause an infinite
+        # retry loop if something polls for and re-runs 'active' sessions.
+        db.update_planning_session(session_id, status="error")
         return
 
     env = {
