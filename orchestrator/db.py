@@ -619,6 +619,15 @@ def get_rate_limited_agents() -> list[dict]:
     return [dict(r) for r in rows]
 
 
+def get_hibernated_agents() -> list[dict]:
+    """Get all agents that were paused (killed) when the swarm hibernated."""
+    conn = _get_connection()
+    rows = conn.execute(
+        "SELECT * FROM agents WHERE status = 'hibernated' ORDER BY started_at"
+    ).fetchall()
+    return [dict(r) for r in rows]
+
+
 def update_agent(agent_id: str, **kwargs):
     conn = _get_connection()
     sets = ", ".join(f"{k} = ?" for k in kwargs)

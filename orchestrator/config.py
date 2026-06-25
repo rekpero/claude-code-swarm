@@ -54,9 +54,14 @@ CONFLICT_POLL_INTERVAL_SECONDS = int(os.environ.get("CONFLICT_POLL_INTERVAL_SECO
 MAX_CONFLICT_FIX_RETRIES = int(os.environ.get("MAX_CONFLICT_FIX_RETRIES", "3"))
 
 # === Rate Limit Handling ===
-# How often (seconds) to check if rate-limited agents can be resumed.
-RATE_LIMIT_RETRY_INTERVAL = int(os.environ.get("RATE_LIMIT_RETRY_INTERVAL", "300"))
+# When ANY agent hits a Claude usage/rate limit the whole swarm enters
+# "hibernation": every in-flight agent is killed, new dispatch is paused, and a
+# watcher polls Claude every RATE_LIMIT_RETRY_INTERVAL seconds.  Once the limit
+# clears the paused work is restarted *from the beginning* by the normal pollers.
+# How often (seconds) to probe Claude while hibernating to see if the limit reset.
+RATE_LIMIT_RETRY_INTERVAL = int(os.environ.get("RATE_LIMIT_RETRY_INTERVAL", "900"))
 # Max times we'll resume a single agent after rate limits before giving up.
+# (Legacy path — only applies to any pre-existing 'rate_limited' agent rows.)
 MAX_RATE_LIMIT_RESUMES = int(os.environ.get("MAX_RATE_LIMIT_RESUMES", "5"))
 
 # === Git Author Identity ===
@@ -85,6 +90,13 @@ API_KEYS: list[str] = [
 
 # === Workspaces ===
 WORKSPACES_DIR = Path(os.environ.get("WORKSPACES_DIR", "/root/workspaces"))
+
+# Sentinel file marking that the swarm is hibernating (rate-limit pause).
+# Persisted so a restart mid-hibernation stays paused until the watcher confirms
+# the limit has reset.
+HIBERNATION_STATE_FILE = Path(
+    os.environ.get("HIBERNATION_STATE_FILE", str(WORKSPACES_DIR / ".hibernating"))
+)
 
 # === Paths ===
 DB_PATH = Path(
@@ -156,7 +168,7 @@ def print_config():
     print(f"  TRACK_MERGE_CONFLICTS: {TRACK_MERGE_CONFLICTS}")
     print(f"  CONFLICT_POLL_INT:     {CONFLICT_POLL_INTERVAL_SECONDS}s")
     print(f"  MAX_CONFLICT_RETRIES:  {MAX_CONFLICT_FIX_RETRIES}")
-    print(f"  RATE_LIMIT_RETRY:      {RATE_LIMIT_RETRY_INTERVAL}s")
+    print(f"  HIBERNATION_POLL:      {RATE_LIMIT_RETRY_INTERVAL}s (probe while rate-limited)")
     print(f"  MAX_RATE_RESUMES:      {MAX_RATE_LIMIT_RESUMES}")
     print(f"  SKILLS_ENABLED:        {SKILLS_ENABLED}")
     print(f"  DASHBOARD_PORT:        {DASHBOARD_PORT}")

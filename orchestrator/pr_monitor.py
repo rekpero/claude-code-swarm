@@ -315,13 +315,18 @@ def get_pr_terminal_state(pr_number: int, github_repo: str | None = None) -> str
 class PRMonitor:
     """Monitors PRs created by agents and dispatches fix agents when needed."""
 
-    def __init__(self, dispatch_fix_callback):
+    def __init__(self, dispatch_fix_callback, is_paused=None):
         """
         Args:
             dispatch_fix_callback: function(pr_number, branch_name, issue_number, workspace, unresolved_threads) -> agent_id
                 Called when a PR needs review fixes.
+            is_paused: optional zero-arg callable returning True when the swarm is
+                hibernating for a rate limit.  When it returns True the monitor
+                skips its poll cycle so it doesn't bump fix iterations on
+                dispatches that would be gated anyway.
         """
         self._dispatch_fix = dispatch_fix_callback
+        self._is_paused = is_paused
         self._last_comment_counts: dict[int, int] = {}
         self._running = False
 
@@ -332,7 +337,10 @@ class PRMonitor:
 
         while self._running:
             try:
-                self._poll_prs()
+                if self._is_paused and self._is_paused():
+                    logger.debug("Swarm hibernating — PR Monitor skipping cycle")
+                else:
+                    self._poll_prs()
             except Exception as e:
                 logger.error("PR Monitor poll error: %s", e)
             time.sleep(PR_POLL_INTERVAL_SECONDS)

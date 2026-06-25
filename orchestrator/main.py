@@ -122,18 +122,23 @@ def main():
     # Recover from previous crash — reattach monitors to surviving agents
     _recover_stale_agents(pool=pool)
 
-    # Create PR monitor with dispatch callback (now workspace-aware)
+    # Create PR monitor with dispatch callback (now workspace-aware).
+    # is_paused lets the monitor skip its whole cycle while the swarm is
+    # hibernating for a rate limit, so it doesn't burn fix-retry budget on
+    # dispatches that would be gated anyway.
     pr_monitor = PRMonitor(
         dispatch_fix_callback=lambda pr_num, branch, issue_num, workspace=None, threads=None: pool.dispatch_fix_review(
             pr_num, branch, issue_num, workspace, threads
-        )
+        ),
+        is_paused=lambda: pool.is_hibernating,
     )
 
     # Create conflict monitor with dispatch callback
     conflict_monitor = ConflictMonitor(
         dispatch_conflict_callback=lambda pr_num, branch, base_branch, issue_num=None, workspace=None: pool.dispatch_resolve_conflict(
             pr_num, branch, base_branch, issue_num, workspace
-        )
+        ),
+        is_paused=lambda: pool.is_hibernating,
     )
 
     # Create rate limit watcher
@@ -204,6 +209,12 @@ def main():
 
 def _poll_and_dispatch(pool: AgentPool):
     """Poll for new issues across all active workspaces and dispatch agents."""
+    # Skip the whole cycle while hibernating for a rate limit — dispatch is
+    # gated anyway, and this avoids needless GitHub API calls while paused.
+    if pool.is_hibernating:
+        logger.info("Swarm hibernating (rate limit) — skipping issue poll this cycle")
+        return
+
     workspaces = db.get_active_workspaces()
 
     if not workspaces:
