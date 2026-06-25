@@ -56,10 +56,14 @@ class FernetSecretStore(SecretStore):
         dek = crypto.generate_dek()
         wrapped = crypto.wrap_dek(dek, self._master_key)
         try:
-            tk_repo.create(org_id, wrapped, crypto.KEY_VERSION)
+            # SAVEPOINT around just the INSERT: on IntegrityError only this
+            # nested transaction rolls back, leaving the outer transaction
+            # (managed by the caller's session_scope) and anything already
+            # loaded/written on `tk_repo.session` intact.
+            with tk_repo.session.begin_nested():
+                tk_repo.create(org_id, wrapped, crypto.KEY_VERSION)
         except IntegrityError:
-            # Concurrent caller won the race to INSERT — roll back and re-read.
-            tk_repo.session.rollback()
+            # Concurrent caller won the race to INSERT — re-read their row.
             tk = tk_repo.get_for_org(org_id)
             if tk is None:
                 raise

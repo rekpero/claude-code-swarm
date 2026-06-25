@@ -38,12 +38,15 @@ class OrganizationRepository(Repository[Organization]):
         if org is not None:
             return org
         try:
-            org = self.create(name="Default", slug=DEFAULT_ORG_SLUG)
-            # Flush so the INSERT reaches the DB and any constraint violation
-            # surfaces here rather than at commit time.
-            self.session.flush()
+            # SAVEPOINT around just the INSERT: on IntegrityError only this
+            # nested transaction rolls back, leaving the caller's outer
+            # session_scope() transaction intact for any other work on it.
+            with self.session.begin_nested():
+                org = self.create(name="Default", slug=DEFAULT_ORG_SLUG)
+                # Flush so the INSERT reaches the DB and any constraint violation
+                # surfaces here rather than at commit time.
+                self.session.flush()
         except IntegrityError:
-            self.session.rollback()
             org = self.get_by_slug(DEFAULT_ORG_SLUG)
             if org is None:
                 raise

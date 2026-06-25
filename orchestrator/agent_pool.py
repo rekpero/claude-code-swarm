@@ -624,9 +624,15 @@ class AgentPool:
             "--verbose",
         ]
 
+        try:
+            credential_env = self._agent_credential_env(workspace_id)
+        except MissingCredentialError as e:
+            logger.error("Cannot spawn agent %s: %s", agent_id, e)
+            raise
+
         env = {
             **os.environ,
-            **self._agent_credential_env(workspace_id),  # per-org ANTHROPIC_API_KEY
+            **credential_env,  # per-org ANTHROPIC_API_KEY
             "GH_TOKEN": GH_TOKEN,
         }
 
@@ -1329,9 +1335,19 @@ class AgentPool:
             "--verbose",
         ]
 
+        try:
+            credential_env = self._agent_credential_env(workspace_id)
+        except MissingCredentialError as e:
+            logger.error("Cannot resume agent %s: %s", old_agent_id, e)
+            db.finish_agent(old_agent_id, status="failed", error_message=str(e))
+            if agent_type == "implement":
+                db.update_issue(issue_number, workspace_id=workspace_id, status="pending")
+            cleanup_worktree(worktree_path, repo_path=repo_path)
+            return None
+
         env = {
             **os.environ,
-            **self._agent_credential_env(workspace_id),  # per-org ANTHROPIC_API_KEY
+            **credential_env,  # per-org ANTHROPIC_API_KEY
             "GH_TOKEN": GH_TOKEN,
         }
 

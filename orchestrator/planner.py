@@ -13,6 +13,7 @@ import time
 from orchestrator import db
 from orchestrator.config import GH_TOKEN, ISSUE_LABEL
 from orchestrator.container import get_container
+from orchestrator.credentials.base import MissingCredentialError
 from orchestrator.tenancy import resolve_org_id
 from orchestrator.prompts import build_planning_prompt
 
@@ -235,9 +236,25 @@ def _run_planning_agent_impl(session_id: str, workspace: dict, prompt: str):
         "--verbose",
     ]
 
+    try:
+        credential_env = _planning_credential_env(workspace_id)
+    except MissingCredentialError as e:
+        logger.error("Cannot start planning agent for session %s: %s", session_id, e)
+        with _active_lock:
+            was_cancelled = session_id in _cancelled
+            _starting.discard(session_id)
+            if was_cancelled:
+                _cancelled.discard(session_id)
+        if was_cancelled:
+            logger.info("Planning session %s was cancelled before spawn completed", session_id)
+            db.update_planning_session(session_id, status="active")
+        else:
+            db.update_planning_session(session_id, status="error")
+        return
+
     env = {
         **os.environ,
-        **_planning_credential_env(workspace_id),  # per-org ANTHROPIC_API_KEY
+        **credential_env,  # per-org ANTHROPIC_API_KEY
         "GH_TOKEN": GH_TOKEN,
     }
 
