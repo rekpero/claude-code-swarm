@@ -42,13 +42,18 @@ def _run_gh(*args: str) -> subprocess.CompletedProcess:
 class ConflictMonitor:
     """Polls open PRs for merge conflicts and dispatches resolver agents."""
 
-    def __init__(self, dispatch_conflict_callback):
+    def __init__(self, dispatch_conflict_callback, is_paused=None):
         """
         Args:
             dispatch_conflict_callback: function(pr_number, branch_name, base_branch, issue_number, workspace) -> agent_id
                 Called when a PR needs its conflicts resolved.
+            is_paused: optional zero-arg callable returning True when the swarm is
+                hibernating for a rate limit.  When True the monitor skips its
+                poll cycle so it doesn't record conflict-fix attempts that would
+                be gated anyway.
         """
         self._dispatch_conflict = dispatch_conflict_callback
+        self._is_paused = is_paused
         self._running = False
 
     def start(self):
@@ -64,7 +69,10 @@ class ConflictMonitor:
 
         while self._running:
             try:
-                self._poll_conflicts()
+                if self._is_paused and self._is_paused():
+                    logger.debug("Swarm hibernating — Conflict Monitor skipping cycle")
+                else:
+                    self._poll_conflicts()
             except Exception as e:
                 logger.error("Conflict Monitor poll error: %s", e)
             time.sleep(CONFLICT_POLL_INTERVAL_SECONDS)

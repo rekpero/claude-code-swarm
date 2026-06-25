@@ -21,6 +21,7 @@ from orchestrator.config import (
     GH_TOKEN,
     GIT_AUTHOR_EMAIL,
     GIT_AUTHOR_NAME,
+    HIBERNATION_STATE_FILE,
     MAX_CONCURRENT_AGENTS,
     MAX_RATE_LIMIT_RESUMES,
     SKILLS_ENABLED,
@@ -54,6 +55,46 @@ _RATE_LIMIT_PATTERNS = [
 ]
 
 logger = logging.getLogger(__name__)
+
+
+def _probe_claude_available(timeout: int = 60) -> bool:
+    """Lightweight check of whether Claude is responding (i.e. not rate-limited).
+
+    Runs ``claude -p "Reply with OK" --max-turns 1`` and inspects the result:
+    - exit 0                      -> available (True)
+    - exit !=0 with a limit token -> still limited (False)
+    - exit !=0 for other reasons  -> available (True), so an unrelated CLI error
+                                      never gets mistaken for a rate limit
+    - timeout / spawn failure     -> treated as still limited (False)
+
+    Both stdout and stderr are scanned because the CLI may print the limit
+    message to either stream in ``-p`` mode (scanning only one risks a premature
+    wake / flapping loop).
+    """
+    try:
+        env = {**os.environ, "CLAUDE_CODE_OAUTH_TOKEN": CLAUDE_CODE_OAUTH_TOKEN}
+        result = subprocess.run(
+            ["claude", "-p", "Reply with just the word OK", "--max-turns", "1"],
+            capture_output=True,
+            text=True,
+            timeout=timeout,
+            env=env,
+        )
+        if result.returncode == 0:
+            return True
+        combined = ((result.stderr or "") + (result.stdout or "")).lower()
+        for pattern in _RATE_LIMIT_PATTERNS:
+            if pattern in combined:
+                return False
+        # Non-zero exit without a rate-limit signature — assume available so we
+        # don't falsely hibernate (or falsely stay hibernated) on an unrelated error.
+        return True
+    except subprocess.TimeoutExpired:
+        logger.debug("Claude probe timed out — assuming still rate-limited")
+        return False
+    except Exception as e:
+        logger.debug("Claude probe failed: %s", e)
+        return False
 
 
 def _close_process_pipes(process: subprocess.Popen | None) -> None:
@@ -235,6 +276,22 @@ class AgentPool:
         # Agent IDs that were stopped externally (via restart_agent) so that
         # _monitor_agent / _monitor_pid skip their completion DB writes.
         self._stopped_agent_ids: set[str] = set()
+        # === Hibernation (rate-limit pause) state ===
+        # When set, the whole swarm is paused: every in-flight agent has been
+        # killed and no new agent may dispatch until the limit clears.
+        self._hibernating = threading.Event()
+        self._hibernation_lock = threading.Lock()
+        # Agent IDs already folded into the current hibernation, so concurrent
+        # rate-limit triggers don't double-process the same agent.
+        self._hibernated_ids: set[str] = set()
+        # Restore hibernation across an orchestrator restart from the sentinel.
+        if HIBERNATION_STATE_FILE.exists():
+            self._hibernating.set()
+            logger.warning(
+                "Found hibernation sentinel %s — starting paused; the rate-limit "
+                "watcher will probe Claude and wake the swarm when the limit clears.",
+                HIBERNATION_STATE_FILE,
+            )
 
     @property
     def active_count(self) -> int:
@@ -242,7 +299,14 @@ class AgentPool:
             return sum(1 for a in self._agents.values() if a.is_running)
 
     @property
+    def is_hibernating(self) -> bool:
+        return self._hibernating.is_set()
+
+    @property
     def can_dispatch(self) -> bool:
+        # No dispatch while hibernating — the swarm is paused for a rate limit.
+        if self._hibernating.is_set():
+            return False
         return self.active_count < MAX_CONCURRENT_AGENTS
 
     def set_completion_callback(self, callback: Callable[[AgentProcess], None]):
@@ -602,6 +666,199 @@ class AgentPool:
                         return True
         return False
 
+    def _confirm_rate_limited(self) -> bool:
+        """Confirm a suspected rate limit before hibernating the whole swarm.
+
+        A single agent's error text can match a rate-limit pattern for unrelated
+        reasons (an agent working on HTTP 429 handling, a disk "capacity" error,
+        a log line containing "429", etc.).  Because hibernation kills *every*
+        agent, we confirm the suspicion with a lightweight probe: a real
+        account-wide limit fails the probe too, while a false positive does not.
+
+        Returns True if hibernation should proceed.
+        """
+        if self.is_hibernating:
+            # Already in a known rate-limit window — no need to re-probe.
+            return True
+        return not _probe_claude_available()
+
+    # ------------------------------------------------------------------
+    # Hibernation — pause the whole swarm on a rate limit and restart the
+    # paused work from the beginning once the limit clears.
+    # ------------------------------------------------------------------
+
+    @staticmethod
+    def _write_hibernation_sentinel(reason: str) -> None:
+        try:
+            HIBERNATION_STATE_FILE.parent.mkdir(parents=True, exist_ok=True)
+            HIBERNATION_STATE_FILE.write_text(
+                f"{datetime.now(timezone.utc).isoformat()}\n{reason}\n"
+            )
+        except Exception as e:
+            logger.warning("Could not write hibernation sentinel: %s", e)
+
+    @staticmethod
+    def _remove_hibernation_sentinel() -> None:
+        try:
+            HIBERNATION_STATE_FILE.unlink(missing_ok=True)
+        except Exception as e:
+            logger.warning("Could not remove hibernation sentinel: %s", e)
+
+    def enter_hibernation(self, reason: str, trigger_agent_id: str | None = None) -> None:
+        """Pause the swarm: kill every in-flight agent and block new dispatch.
+
+        Called when an agent hits a Claude usage/rate limit.  Idempotent — the
+        first caller flips the global flag and sweeps all currently-running
+        agents; later callers (other agents that exit rate-limited in the same
+        window) just fold their own agent into the existing hibernation.
+
+        Each paused agent's work item is reset so the normal pollers re-dispatch
+        it *from the beginning* once the swarm wakes; the worktree is removed so
+        the restart starts from a clean checkout.
+        """
+        with self._hibernation_lock:
+            already = self._hibernating.is_set()
+            self._hibernating.set()
+            self._write_hibernation_sentinel(reason)
+
+        if not already:
+            logger.warning(
+                "RATE LIMIT — entering hibernation (%s). Killing all in-flight "
+                "agents and pausing dispatch; will probe Claude until the limit clears.",
+                reason,
+            )
+
+        # Drive off the DB's authoritative list of running agents so we also
+        # catch agents reattached after a restart (monitored by _monitor_pid,
+        # which have no AgentProcess object in self._agents).
+        try:
+            running = db.get_running_agents()
+        except Exception as e:
+            logger.error("Hibernation could not list running agents: %s", e)
+            running = []
+
+        for record in running:
+            try:
+                self._hibernate_one(record, reason)
+            except Exception as e:
+                logger.error("Failed to hibernate agent %s: %s", record.get("agent_id"), e)
+
+        # The triggering agent has already exited; its _monitor_agent thread
+        # returns right after this call, so discard its externally-stopped marker
+        # here (its monitor won't reach the code that normally clears it).
+        if trigger_agent_id:
+            with self._lock:
+                self._stopped_agent_ids.discard(trigger_agent_id)
+
+    def _hibernate_one(self, record: dict, reason: str) -> None:
+        """Kill one agent and reset its work item for a from-scratch restart."""
+        agent_id = record["agent_id"]
+        with self._hibernation_lock:
+            if agent_id in self._hibernated_ids:
+                return
+            self._hibernated_ids.add(agent_id)
+
+        # Tell the monitor threads to skip their own completion writes before we
+        # kill, so they don't race this method's DB updates.
+        self.mark_externally_stopped(agent_id)
+
+        agent = self._agents.get(agent_id)
+        if agent is not None:
+            if agent.is_running:
+                logger.info("Hibernating agent %s — killing process", agent_id)
+                try:
+                    agent.kill()
+                except Exception as e:
+                    logger.warning("Error killing agent %s: %s", agent_id, e)
+            else:
+                _close_process_pipes(agent.process)
+            workspace = agent._workspace
+        else:
+            # Reattached survivor — kill by PID group.
+            workspace = db.get_workspace(record["workspace_id"]) if record.get("workspace_id") else None
+            pid = record.get("pid")
+            if pid:
+                logger.info("Hibernating reattached agent %s — killing PID group %s", agent_id, pid)
+                try:
+                    os.killpg(os.getpgid(pid), signal.SIGTERM)
+                    time.sleep(2)
+                    try:
+                        os.killpg(os.getpgid(pid), signal.SIGKILL)
+                    except (OSError, ProcessLookupError):
+                        pass
+                except (OSError, ProcessLookupError):
+                    pass
+
+        repo_path = workspace["local_path"] if workspace else None
+
+        # Record the pause and reset the work item so it restarts fresh.
+        db.update_agent(agent_id, status="hibernated", error_message=f"Hibernated: {reason}"[:500])
+
+        agent_type = record.get("agent_type")
+        issue_number = record.get("issue_number")
+        workspace_id = record.get("workspace_id")
+
+        if agent_type == "implement" and issue_number is not None:
+            # Reset the issue to pending so the issue poller re-dispatches it from
+            # scratch on wake.  Decrement attempts by one so this pause (not the
+            # agent's fault) doesn't burn the issue's retry budget — the fresh
+            # dispatch will re-increment it back to its pre-hibernation value.
+            issue = db.get_issue(issue_number, workspace_id=workspace_id)
+            if issue:
+                new_attempts = max(0, (issue.get("attempts") or 0) - 1)
+                db.update_issue(
+                    issue_number,
+                    workspace_id=workspace_id,
+                    status="pending",
+                    agent_id=None,
+                    attempts=new_attempts,
+                )
+        elif agent_type == "resolve_conflict" and record.get("pr_number") is not None:
+            # The conflict monitor recorded this resolver's attempt against the
+            # PR's retry budget *before* dispatch.  Since a rate-limit pause (not
+            # a genuine failed resolution) is killing it, roll that attempt back
+            # to 'dispatch_failed' (excluded from the retry count) so repeated
+            # hibernations don't prematurely escalate the PR to a human.  The
+            # conflict monitor re-dispatches a fresh resolver on wake.
+            try:
+                for cf in db.get_conflict_fixes(record["pr_number"], workspace_id=workspace_id):
+                    if cf.get("agent_id") == agent_id and cf.get("status") == "dispatched":
+                        db.update_conflict_fix(cf["id"], status="dispatch_failed")
+                        break
+            except Exception as e:
+                logger.warning("Could not roll back conflict-fix attempt for %s: %s", agent_id, e)
+        # fix_review: leave the PR's work-item status as-is.  Because the agent is
+        # now 'hibernated' (not in the running/rate_limited "busy" set the monitors
+        # check), the PR monitor re-dispatches a fresh fix agent on its next poll
+        # once the swarm wakes.
+
+        # Remove the worktree so the restart begins from a clean checkout.
+        worktree_path = record.get("worktree_path")
+        if worktree_path:
+            try:
+                cleanup_worktree(worktree_path, repo_path=repo_path)
+            except Exception as e:
+                logger.warning("Could not clean worktree for hibernated agent %s: %s", agent_id, e)
+
+    def wake_from_hibernation(self) -> bool:
+        """Lift the pause.  Returns True if the swarm was actually hibernating.
+
+        Does not re-dispatch anything itself: clearing the flag re-enables
+        ``can_dispatch`` and the normal pollers (issue poller, PR monitor,
+        conflict monitor) restart the paused work from the beginning.
+        """
+        with self._hibernation_lock:
+            if not self._hibernating.is_set():
+                return False
+            self._hibernating.clear()
+            self._hibernated_ids.clear()
+            self._remove_hibernation_sentinel()
+        logger.info(
+            "Rate limit cleared — waking from hibernation. Pollers will restart "
+            "the paused work from the beginning."
+        )
+        return True
+
     def _monitor_agent(self, agent_id: str):
         """Monitor an agent until it finishes or times out."""
         with self._lock:
@@ -666,16 +923,33 @@ class AgentPool:
                 self._push_current_branch(agent.worktree_path)
                 db.finish_agent(agent_id, status="completed")
                 cleanup_worktree(agent.worktree_path, repo_path=repo_path)
-        elif self._is_rate_limit_error(stderr_output, agent.events):
+        elif self._is_rate_limit_error(stderr_output, agent.events) and self._confirm_rate_limited():
             logger.warning(
-                "Agent %s hit rate limit — preserving worktree at %s for later resumption",
-                agent_id, agent.worktree_path,
+                "Agent %s hit a Claude rate limit (confirmed) — hibernating the whole swarm",
+                agent_id,
             )
-            from datetime import datetime
             db.update_agent(agent_id, turns_used=turns)
-            db.finish_agent(agent_id, status="rate_limited", error_message=stderr_output[:500])
-            db.update_agent(agent_id, rate_limited_at=datetime.utcnow().isoformat())
+            # Pause everything: this kills the other in-flight agents, resets all
+            # paused work for a from-scratch restart, and blocks new dispatch
+            # until the rate-limit watcher confirms the limit has cleared.  This
+            # agent has already exited, so enter_hibernation just folds it in.
+            self.enter_hibernation(
+                reason=f"agent {agent_id} hit rate limit",
+                trigger_agent_id=agent_id,
+            )
+            # enter_hibernation handled this agent's DB state, worktree and pipes.
+            return
         else:
+            # Either a normal failure, or an error whose text *looked* like a rate
+            # limit but a live Claude probe succeeded (false positive) — in which
+            # case we deliberately do NOT hibernate and fall through to the normal
+            # failure/salvage path below.
+            if self._is_rate_limit_error(stderr_output, agent.events):
+                logger.warning(
+                    "Agent %s reported a rate-limit-like error but a Claude probe "
+                    "succeeded — treating as a normal failure (no hibernation)",
+                    agent_id,
+                )
             error_msg = stderr_output[:500] if stderr_output else f"Exit code {return_code}"
             logger.error("Agent %s failed: %s", agent_id, error_msg)
             db.finish_agent(agent_id, status="failed", error_message=error_msg)

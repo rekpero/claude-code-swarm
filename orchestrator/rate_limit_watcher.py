@@ -1,55 +1,27 @@
-"""Monitors rate-limited agents and resumes them when the limit resets."""
+"""Watches for the Claude rate limit to reset and wakes the swarm.
+
+The probe used here lives in ``agent_pool`` so the same logic that confirms a
+rate limit before hibernating also decides when to wake.
+"""
 
 import logging
-import os
-import subprocess
 import threading
-import time
 
 from orchestrator import db
-from orchestrator.config import (
-    CLAUDE_CODE_OAUTH_TOKEN,
-    RATE_LIMIT_RETRY_INTERVAL,
-)
+from orchestrator.agent_pool import _probe_claude_available
+from orchestrator.config import RATE_LIMIT_RETRY_INTERVAL
 
 logger = logging.getLogger(__name__)
 
 
-def _probe_claude_available() -> bool:
-    """Run a lightweight Claude CLI command to check if rate limits have reset.
-
-    Sends a trivial prompt with --max-turns 1 and checks the exit code.
-    Returns True if Claude responds successfully (no rate limit).
-    """
-    try:
-        env = {**os.environ, "CLAUDE_CODE_OAUTH_TOKEN": CLAUDE_CODE_OAUTH_TOKEN}
-        result = subprocess.run(
-            ["claude", "-p", "Reply with just the word OK", "--max-turns", "1"],
-            capture_output=True,
-            text=True,
-            timeout=60,
-            env=env,
-        )
-        if result.returncode == 0:
-            return True
-        # Check if still rate limited
-        stderr_lower = result.stderr.lower()
-        from orchestrator.agent_pool import _RATE_LIMIT_PATTERNS
-        for pattern in _RATE_LIMIT_PATTERNS:
-            if pattern in stderr_lower:
-                return False
-        # Non-zero exit for other reasons — assume available
-        return True
-    except subprocess.TimeoutExpired:
-        logger.debug("Claude probe timed out — assuming still limited")
-        return False
-    except Exception as e:
-        logger.debug("Claude probe failed: %s", e)
-        return False
-
-
 class RateLimitWatcher:
-    """Background watcher that detects when rate limits reset and resumes paused agents."""
+    """Watches for the rate limit to reset and wakes the swarm from hibernation.
+
+    When any agent hits a Claude usage/rate limit the pool enters *hibernation*
+    (all in-flight agents killed, dispatch paused).  This watcher polls Claude on
+    a fixed interval (default 15 min) and, once a probe succeeds, wakes the pool
+    so the normal pollers restart the paused work from the beginning.
+    """
 
     def __init__(self, agent_pool):
         self._pool = agent_pool
@@ -58,12 +30,17 @@ class RateLimitWatcher:
     def start(self):
         """Run the watcher loop (blocking — call from a thread)."""
         logger.info(
-            "Rate limit watcher started (check interval: %ds)",
+            "Rate limit watcher started (probe interval while hibernating: %ds)",
             RATE_LIMIT_RETRY_INTERVAL,
         )
         while not self._stop_event.is_set():
             try:
-                self._check_and_resume()
+                if self._pool.is_hibernating:
+                    self._check_and_wake()
+                else:
+                    # Legacy: resume any pre-existing 'rate_limited' rows (e.g.
+                    # left over from before hibernation was introduced).
+                    self._resume_legacy_rate_limited()
             except Exception as e:
                 logger.error("Rate limit watcher error: %s", e)
             self._stop_event.wait(timeout=RATE_LIMIT_RETRY_INTERVAL)
@@ -73,31 +50,32 @@ class RateLimitWatcher:
     def stop(self):
         self._stop_event.set()
 
-    def _check_and_resume(self):
-        """Check for rate-limited agents and attempt to resume them."""
+    def _check_and_wake(self):
+        """While hibernating, probe Claude and wake the swarm once it responds."""
+        logger.info("Swarm hibernating — probing Claude availability...")
+        if not _probe_claude_available():
+            logger.info(
+                "Claude still rate-limited — staying hibernated, retrying in %ds",
+                RATE_LIMIT_RETRY_INTERVAL,
+            )
+            return
+
+        logger.info("Claude responded — waking the swarm from hibernation")
+        self._pool.wake_from_hibernation()
+
+    def _resume_legacy_rate_limited(self):
+        """Resume any leftover 'rate_limited' agents from before hibernation."""
         limited_agents = db.get_rate_limited_agents()
         if not limited_agents:
             return
 
-        logger.info(
-            "Found %d rate-limited agent(s), probing Claude availability...",
-            len(limited_agents),
-        )
-
         if not _probe_claude_available():
-            logger.info("Claude still rate-limited — will retry in %ds", RATE_LIMIT_RETRY_INTERVAL)
             return
-
-        logger.info("Claude is available again — resuming rate-limited agents")
 
         for agent_record in limited_agents:
             if not self._pool.can_dispatch:
-                logger.info("Agent pool full — deferring remaining resumes to next cycle")
                 break
-
             old_id = agent_record["agent_id"]
             new_id = self._pool.resume_rate_limited_agent(agent_record)
             if new_id:
-                logger.info("Resumed agent %s -> %s", old_id, new_id)
-            else:
-                logger.warning("Failed to resume agent %s", old_id)
+                logger.info("Resumed legacy rate-limited agent %s -> %s", old_id, new_id)
