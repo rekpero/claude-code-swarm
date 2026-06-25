@@ -10,6 +10,7 @@ from __future__ import annotations
 from datetime import datetime, timezone
 
 from sqlalchemy import select
+from sqlalchemy.exc import IntegrityError
 
 from orchestrator.models.credential import (
     PROVIDER_ANTHROPIC,
@@ -50,11 +51,35 @@ class CredentialRepository(Repository[OrgCredential]):
         provider: str = PROVIDER_ANTHROPIC,
         status: str = "active",
     ) -> OrgCredential:
-        """Insert or replace the org's credential for a provider."""
+        """Insert or replace the org's credential for a provider.
+
+        Uses catch-and-retry to handle the race where two concurrent first-time
+        ``put()`` calls for the same (org_id, provider) both observe ``get()``
+        returning ``None`` and attempt to INSERT simultaneously — the loser
+        catches IntegrityError and re-reads the winner's row.
+        """
         cred = self.get(org_id, provider)
         if cred is None:
-            cred = OrgCredential(org_id=org_id, provider=provider)
-            self.session.add(cred)
+            cred = OrgCredential(
+                org_id=org_id,
+                provider=provider,
+                ciphertext=ciphertext,
+                key_version=key_version,
+                status=status,
+            )
+            try:
+                # SAVEPOINT around just the INSERT: on IntegrityError only this
+                # nested transaction rolls back, leaving the outer transaction
+                # (managed by the caller's session_scope) intact.
+                with self.session.begin_nested():
+                    self.session.add(cred)
+                    self.session.flush()
+                return cred
+            except IntegrityError:
+                # Concurrent caller won the race to INSERT — re-read their row.
+                cred = self.get(org_id, provider)
+                if cred is None:
+                    raise
         cred.ciphertext = ciphertext
         cred.key_version = key_version
         cred.status = status

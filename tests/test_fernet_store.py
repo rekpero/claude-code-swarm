@@ -116,6 +116,43 @@ def test_concurrent_dek_creation_race(db, master_key):
     assert store.get(org_id, "anthropic") == "sk-ant-race-test"
 
 
+def test_concurrent_credential_upsert_race(db, master_key):
+    """Race loser catches IntegrityError, re-reads and updates the winner's row."""
+    from unittest.mock import patch
+
+    from orchestrator.repositories.credential_repo import CredentialRepository
+
+    org_id = _make_org("acme")
+
+    # Pre-commit a credential row simulating the "race winner" having already
+    # inserted, so the loser's INSERT below hits the real UNIQUE constraint.
+    with session_scope() as s:
+        CredentialRepository(s).upsert(org_id, b"winner-ciphertext", 1, provider="anthropic")
+
+    store = FernetSecretStore(master_key=master_key, session_scope=session_scope)
+
+    # Simulate the race loser: CredentialRepository.get() returns None on the
+    # first call — the winner's INSERT isn't visible yet at the moment the
+    # loser checks — then delegates to the real implementation so the re-read
+    # after the SAVEPOINT rollback finds the committed winner row.
+    real_get = CredentialRepository.get
+    _call_count = 0
+
+    def _first_call_returns_none(self, org_id, provider):
+        nonlocal _call_count
+        _call_count += 1
+        if _call_count == 1:
+            return None
+        return real_get(self, org_id, provider)
+
+    with patch.object(CredentialRepository, "get", _first_call_returns_none):
+        # upsert() must catch the IntegrityError, re-read the winner's row,
+        # and apply this call's values to it instead of raising.
+        store.put(org_id, "anthropic", "sk-ant-race-test")
+
+    assert store.get(org_id, "anthropic") == "sk-ant-race-test"
+
+
 def test_dek_creation_race_does_not_lose_sibling_writes_in_same_transaction(db, master_key):
     """The DEK INSERT race is recovered via a SAVEPOINT, not a full rollback.
 
