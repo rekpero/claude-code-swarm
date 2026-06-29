@@ -43,6 +43,12 @@ from orchestrator.worktree import cleanup_worktree, copy_env_files_to_worktree, 
 _RATE_LIMIT_PATTERNS = [
     "rate limit",
     "usage limit",
+    # The Claude CLI prints "You've hit your session limit · resets <time>"
+    # when the 5-hour usage window is exhausted — the most common limit the
+    # swarm hits.  Without this token the limit reads as a normal failure and
+    # the swarm retries forever instead of hibernating.
+    "session limit",
+    "limit reached",
     "too many requests",
     "429",
     "token limit exceeded",
@@ -80,12 +86,16 @@ def _probe_claude_available(timeout: int = 60) -> bool:
             timeout=timeout,
             env=env,
         )
-        if result.returncode == 0:
-            return True
+        # Scan the output for a limit signature *before* trusting the exit code:
+        # the CLI may print "You've hit your session limit · resets ..." and still
+        # exit 0 in -p mode, so a returncode==0 short-circuit would mask a real
+        # limit and cause flapping wakes / never confirming hibernation.
         combined = ((result.stderr or "") + (result.stdout or "")).lower()
         for pattern in _RATE_LIMIT_PATTERNS:
             if pattern in combined:
                 return False
+        if result.returncode == 0:
+            return True
         # Non-zero exit without a rate-limit signature — assume available so we
         # don't falsely hibernate (or falsely stay hibernated) on an unrelated error.
         return True
@@ -653,16 +663,31 @@ class AgentPool:
 
     @staticmethod
     def _is_rate_limit_error(stderr_output: str, events: list[AgentEvent]) -> bool:
-        """Check if the agent failure was caused by a rate/usage limit."""
+        """Check if the agent failure was caused by a rate/usage limit.
+
+        The limit surfaces in several shapes and the CLI does not always write it
+        to stderr, so we look at all of them:
+        - a dedicated ``rate_limit_event`` stream event (definitive signal), and
+        - rate-limit text in the terminal ``result``, an ``assistant`` turn, or an
+          ``error`` event (e.g. "You've hit your session limit · resets ...").
+
+        Scanning ``assistant``/``result`` text can match an agent that merely
+        *discusses* rate limits, but that is fine here: every caller gates this on
+        a live ``_confirm_rate_limited()`` probe, which fails only for a real
+        account-wide limit, so a false positive never actually hibernates.
+        """
         text = stderr_output.lower()
         for pattern in _RATE_LIMIT_PATTERNS:
             if pattern in text:
                 return True
         for event in events:
-            if event.event_type == "error":
-                error_text = event.summary.lower()
+            # The CLI emits this event type specifically for usage/rate limits.
+            if event.event_type == "rate_limit_event":
+                return True
+            if event.event_type in ("error", "result", "assistant"):
+                event_text = event.summary.lower()
                 for pattern in _RATE_LIMIT_PATTERNS:
-                    if pattern in error_text:
+                    if pattern in event_text:
                         return True
         return False
 
@@ -859,6 +884,70 @@ class AgentPool:
         )
         return True
 
+    def hibernation_status(self) -> dict:
+        """Return the current hibernation state for the dashboard.
+
+        Reads the sentinel (written by ``_write_hibernation_sentinel`` as
+        ``<iso-timestamp>\\n<reason>\\n``) so the UI can show *why* the swarm is
+        paused and *since when*.  Returns a not-hibernating shape when idle.
+        """
+        if not self._hibernating.is_set():
+            return {"hibernating": False, "since": None, "reason": None}
+        since = None
+        reason = None
+        try:
+            if HIBERNATION_STATE_FILE.exists():
+                lines = HIBERNATION_STATE_FILE.read_text().splitlines()
+                if lines:
+                    since = lines[0].strip() or None
+                if len(lines) > 1:
+                    reason = lines[1].strip() or None
+        except Exception as e:
+            logger.debug("Could not read hibernation sentinel: %s", e)
+        return {"hibernating": True, "since": since, "reason": reason}
+
+    def manual_probe(self) -> dict:
+        """Probe Claude on demand and wake the swarm if the limit has cleared.
+
+        Backs the dashboard's "Check rate limit" button so a human can confirm
+        recovery without waiting for the watcher's (up to 15-min) poll.  Safe to
+        call when not hibernating — it just reports availability.
+        """
+        if not self._hibernating.is_set():
+            return {"hibernating": False, "available": True, "woke": False, "reason": None, "since": None}
+        available = _probe_claude_available()
+        woke = self.wake_from_hibernation() if available else False
+        status = self.hibernation_status()
+        return {
+            "hibernating": status["hibernating"],
+            "available": available,
+            "woke": woke,
+            "reason": status["reason"],
+            "since": status["since"],
+        }
+
+    def _reattached_hit_rate_limit(self, agent_id: str) -> bool:
+        """Check a reattached agent's stored events for a rate-limit signal.
+
+        ``_monitor_pid`` has no in-memory event list (the agent survived an
+        orchestrator restart), so we scan the persisted ``agent_events`` rows
+        the same way :meth:`_is_rate_limit_error` scans live events.
+        """
+        try:
+            events = db.get_agent_events(agent_id, since_id=0, limit=1000)
+        except Exception as e:
+            logger.debug("Could not load events for reattached agent %s: %s", agent_id, e)
+            return False
+        for ev in events:
+            if ev.get("event_type") == "rate_limit_event":
+                return True
+            if ev.get("event_type") in ("error", "result", "assistant"):
+                data = (ev.get("event_data") or "").lower()
+                for pattern in _RATE_LIMIT_PATTERNS:
+                    if pattern in data:
+                        return True
+        return False
+
     def _monitor_agent(self, agent_id: str):
         """Monitor an agent until it finishes or times out."""
         with self._lock:
@@ -904,6 +993,27 @@ class AgentPool:
         if session_id:
             db.update_agent(agent_id, session_id=session_id)
 
+        # Check for a rate limit FIRST, before the exit-0 success path: the CLI
+        # can print "You've hit your session limit · resets ..." and still exit 0,
+        # in which case treating it as a success would mark the issue failed and
+        # let the poller re-dispatch straight into the same limit (a retry loop).
+        if self._is_rate_limit_error(stderr_output, agent.events) and self._confirm_rate_limited():
+            logger.warning(
+                "Agent %s hit a Claude rate limit (confirmed) — hibernating the whole swarm",
+                agent_id,
+            )
+            db.update_agent(agent_id, turns_used=turns)
+            # Pause everything: this kills the other in-flight agents, resets all
+            # paused work for a from-scratch restart, and blocks new dispatch
+            # until the rate-limit watcher confirms the limit has cleared.  This
+            # agent has already exited, so enter_hibernation just folds it in.
+            self.enter_hibernation(
+                reason=f"agent {agent_id} hit rate limit",
+                trigger_agent_id=agent_id,
+            )
+            # enter_hibernation handled this agent's DB state, worktree and pipes.
+            return
+
         if return_code == 0:
             logger.info("Agent %s finished (exit 0, %d turns)", agent_id, turns)
             db.update_agent(agent_id, turns_used=turns)
@@ -923,22 +1033,6 @@ class AgentPool:
                 self._push_current_branch(agent.worktree_path)
                 db.finish_agent(agent_id, status="completed")
                 cleanup_worktree(agent.worktree_path, repo_path=repo_path)
-        elif self._is_rate_limit_error(stderr_output, agent.events) and self._confirm_rate_limited():
-            logger.warning(
-                "Agent %s hit a Claude rate limit (confirmed) — hibernating the whole swarm",
-                agent_id,
-            )
-            db.update_agent(agent_id, turns_used=turns)
-            # Pause everything: this kills the other in-flight agents, resets all
-            # paused work for a from-scratch restart, and blocks new dispatch
-            # until the rate-limit watcher confirms the limit has cleared.  This
-            # agent has already exited, so enter_hibernation just folds it in.
-            self.enter_hibernation(
-                reason=f"agent {agent_id} hit rate limit",
-                trigger_agent_id=agent_id,
-            )
-            # enter_hibernation handled this agent's DB state, worktree and pipes.
-            return
         else:
             # Either a normal failure, or an error whose text *looked* like a rate
             # limit but a live Claude probe succeeded (false positive) — in which
@@ -1631,6 +1725,20 @@ class AgentPool:
         turns = db.get_agent_turn_count(agent_id)
         if turns:
             db.update_agent(agent_id, turns_used=turns)
+
+        # A reattached agent can also exit on a rate limit — detect it before the
+        # normal completion handling (which would otherwise mark the issue failed
+        # and let the poller re-dispatch into the same limit).
+        if self._reattached_hit_rate_limit(agent_id) and self._confirm_rate_limited():
+            logger.warning(
+                "Reattached agent %s hit a Claude rate limit (confirmed) — hibernating the whole swarm",
+                agent_id,
+            )
+            self.enter_hibernation(
+                reason=f"reattached agent {agent_id} hit rate limit",
+                trigger_agent_id=agent_id,
+            )
+            return
 
         repo_path = workspace.get("local_path") if workspace else None
         github_repo = workspace.get("github_repo") if workspace else None

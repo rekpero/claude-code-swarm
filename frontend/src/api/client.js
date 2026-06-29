@@ -41,6 +41,10 @@ export const checkAuth = () =>
 export const getMetrics = (wsId) =>
   apiFetch(`/api/metrics${wsId ? `?workspace_id=${encodeURIComponent(wsId)}` : ''}`)
 
+// Rate limit / hibernation — manual probe to wake the swarm early
+export const checkRateLimit = () =>
+  apiFetch('/api/rate-limit/check', { method: 'POST' })
+
 // Agents
 export const getAgents = (wsId, limit = 20, offset = 0) =>
   apiFetch(`/api/agents?limit=${limit}&offset=${offset}${wsId ? `&workspace_id=${encodeURIComponent(wsId)}` : ''}`)

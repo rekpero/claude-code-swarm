@@ -104,6 +104,16 @@ a, button, input, textarea, select {
   pointer-events: none;
 }
 
+/* Hibernation banner — a slow light sweep along the bottom edge signals the
+   swarm is paused and actively waiting for the rate limit to clear. */
+@keyframes hib-sweep {
+  0% { transform: translateX(-100%); }
+  100% { transform: translateX(100%); }
+}
+.animate-hib-sweep {
+  animation: hib-sweep 2.8s ease-in-out infinite;
+}
+
 /* Slide-in for activity feed items */
 @keyframes slide-in {
   from { opacity: 0; transform: translateX(-6px); }

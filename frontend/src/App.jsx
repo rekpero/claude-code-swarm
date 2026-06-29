@@ -2,6 +2,7 @@ import { useState } from 'react'
 import { Header } from './components/layout/Header'
 import { TabNav } from './components/layout/TabNav'
 import { MetricsBar } from './components/metrics/MetricsBar'
+import { HibernationBanner } from './components/metrics/HibernationBanner'
 import { ActiveAgents } from './components/agents/ActiveAgents'
 import { IssueQueue } from './components/issues/IssueQueue'
 import { PRTracker } from './components/prs/PRTracker'
@@ -20,7 +21,7 @@ function ErrorBanner({ error }) {
   if (!error) return null
   return (
     <div className="bg-[var(--red-dim)] border-b border-[rgba(248,113,113,0.15)] px-6 py-2 text-[11px] text-[var(--red)] font-mono">
-      Cannot connect to backend \u2014 {error.message}
+      Cannot connect to backend &mdash; {error.message}
     </div>
   )
 }
@@ -33,7 +34,7 @@ export function App() {
   const [plannerOpen, setPlannerOpen] = useState(false)
   const { selectedWorkspaceId } = useWorkspaceContext()
   const queryEnabled = isAuthenticated && !isChecking
-  const { error: metricsError } = useMetrics(selectedWorkspaceId, { enabled: queryEnabled })
+  const { data: metricsData, error: metricsError } = useMetrics(selectedWorkspaceId, { enabled: queryEnabled })
   const { data: agentsData } = useAgents(selectedWorkspaceId, { enabled: queryEnabled })
   const { data: issuesData } = useIssues(selectedWorkspaceId, { enabled: queryEnabled })
   const { data: prsData } = usePRs(selectedWorkspaceId, { enabled: queryEnabled })
@@ -60,6 +61,7 @@ export function App() {
         onOpenPlanner={() => setPlannerOpen(true)}
       />
       <ErrorBanner error={metricsError} />
+      <HibernationBanner hibernation={metricsData?.hibernation} />
       <MetricsBar />
       <TabNav activeTab={activeTab} onTabChange={setActiveTab} counts={counts} />
 

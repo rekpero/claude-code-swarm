@@ -792,10 +792,37 @@ async def update_issue_status(issue_number: int, req: UpdateIssueStatusRequest, 
     return {"ok": True, "issue_number": issue_number, "status": req.status}
 
 
+@app.post("/api/rate-limit/check")
+async def check_rate_limit():
+    """Manually probe Claude and wake the swarm if the limit has cleared.
+
+    Complements the background watcher: lets a user force an immediate check
+    instead of waiting for the next automatic poll.  The probe runs a real
+    ``claude -p`` call (up to ~60s), so run it off the event loop.
+    """
+    if not _agent_pool:
+        return JSONResponse(content={"error": "Agent pool not available"}, status_code=503)
+    try:
+        result = await asyncio.to_thread(_agent_pool.manual_probe)
+        return result
+    except Exception as e:
+        return JSONResponse(content={"error": str(e)}, status_code=500)
+
+
 @app.get("/api/metrics")
 async def get_metrics(workspace_id: str | None = Query(None)):
     """Aggregate stats, optionally filtered by workspace."""
     metrics = db.get_metrics(workspace_id=workspace_id)
+    # Hibernation is a swarm-wide state (not per-workspace): when the swarm hits
+    # a Claude rate limit every agent is paused, so surface it on all views so
+    # the UI can explain why nothing is being worked on.
+    if _agent_pool is not None:
+        try:
+            metrics["hibernation"] = _agent_pool.hibernation_status()
+        except Exception:
+            metrics["hibernation"] = {"hibernating": False, "since": None, "reason": None}
+    else:
+        metrics["hibernation"] = {"hibernating": False, "since": None, "reason": None}
     return metrics
 
 
