@@ -1,5 +1,6 @@
 import { Settings, Plus, Check, AlertTriangle, LogOut } from 'lucide-react'
 import { WorkspaceSwitcher } from './WorkspaceSwitcher'
+import { PauseControl } from './PauseControl'
 import { useMetrics } from '../../hooks/useMetrics'
 import { useGitSync } from '../../hooks/useGitSync'
 import { useWorkspaceContext } from '../../context/WorkspaceContext'
@@ -52,6 +53,7 @@ export function Header({ onAddWorkspace, onOpenSettings, onOpenPlanner }) {
         <WorkspaceSwitcher onAddWorkspace={onAddWorkspace} />
         <img src="/logo.svg" alt="SwarmOps" className="h-7 w-auto" />
         <SyncIndicator wsId={selectedWorkspaceId} />
+        <PauseControl wsId={selectedWorkspaceId} />
       </div>
       <div className="flex items-center gap-2.5">
         {lastUpdated && (

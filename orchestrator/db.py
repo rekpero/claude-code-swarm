@@ -18,6 +18,7 @@ CREATE TABLE IF NOT EXISTS workspaces (
     local_path TEXT NOT NULL,
     base_branch TEXT DEFAULT 'main',
     status TEXT DEFAULT 'active',
+    paused_until TIMESTAMP DEFAULT NULL,
     is_monorepo INTEGER DEFAULT 0,
     structure_json TEXT DEFAULT '{}',
     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
@@ -182,6 +183,10 @@ def init_db():
     # Manual-PR tracking: marks issue rows that are synthetic placeholders for
     # PRs created without an associated issue (so PRMonitor can watch them).
     _migrate_add_column(conn, "issues", "is_manual_pr", "INTEGER DEFAULT 0")
+    # Per-workspace pause: when set to a future timestamp, the workspace is
+    # excluded from all automation (issue dispatch, PR/conflict monitors) until
+    # it elapses. NULL = not paused.
+    _migrate_add_column(conn, "workspaces", "paused_until", "TIMESTAMP")
     conn.commit()
 
 
@@ -273,10 +278,36 @@ def get_all_workspaces() -> list[dict]:
     return [dict(r) for r in rows]
 
 
-def get_active_workspaces() -> list[dict]:
+def get_active_workspaces(include_paused: bool = False) -> list[dict]:
+    """Workspaces eligible for automation.
+
+    By default, workspaces paused until a future time are excluded so every
+    automation loop (issue dispatch, PR monitor, conflict monitor) skips them
+    in one place. Pass include_paused=True to ignore the pause filter.
+    """
     conn = _get_connection()
-    rows = conn.execute("SELECT * FROM workspaces WHERE status = 'active' ORDER BY created_at").fetchall()
+    if include_paused:
+        rows = conn.execute(
+            "SELECT * FROM workspaces WHERE status = 'active' ORDER BY created_at"
+        ).fetchall()
+    else:
+        rows = conn.execute(
+            """SELECT * FROM workspaces
+               WHERE status = 'active' AND (paused_until IS NULL OR paused_until <= ?)
+               ORDER BY created_at""",
+            (_now(),),
+        ).fetchall()
     return [dict(r) for r in rows]
+
+
+def pause_workspace(workspace_id: str, paused_until: str):
+    """Pause a workspace until the given ISO timestamp (excludes it from automation)."""
+    update_workspace(workspace_id, paused_until=paused_until)
+
+
+def resume_workspace(workspace_id: str):
+    """Clear a workspace pause so automation resumes immediately."""
+    update_workspace(workspace_id, paused_until=None)
 
 
 def update_workspace(workspace_id: str, **kwargs):

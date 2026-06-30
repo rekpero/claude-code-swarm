@@ -6,6 +6,18 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 
+## [1.6.0] - 2026-06-30
+
+### Added
+- **Per-workspace pause for automation** — a workspace can now be paused on its own, independent of the swarm-wide hibernation path, so an operator can take a single workspace out of the automation loop to test against it manually without touching the rest of the swarm. A new `paused_until` timestamp column on `workspaces` (NULL = not paused) drives it; when set to a future time the workspace is excluded from *all* automation. Because the issue dispatcher (`main._poll_and_dispatch`), `PRMonitor`, and `ConflictMonitor` all source their work from `db.get_active_workspaces()`, the pause is enforced in that one query — `get_active_workspaces()` now filters out workspaces whose `paused_until` is still in the future (`WHERE status = 'active' AND (paused_until IS NULL OR paused_until <= now)`), with an `include_paused=True` escape hatch. New `db.pause_workspace(id, paused_until)` / `db.resume_workspace(id)` helpers
+- **Pause/resume API endpoints** — `POST /api/workspaces/{id}/pause` (body `{minutes}`; a positive integer pauses for that many minutes, `null`/omitted pauses indefinitely via a far-future `9999-12-31` sentinel that never elapses on its own) and `POST /api/workspaces/{id}/resume` (clears `paused_until`). The timed pause auto-expires server-side because the filter is purely time-based — no background job needed to un-pause
+- **Header pause control** — a new `PauseControl` component (`frontend/src/components/layout/PauseControl.jsx`) sits beside the sync indicator in the header and is shown only when a single workspace is selected. It offers preset durations (15 minutes / 1 hour / 3 hours / Until I resume); once paused it flips to an amber "Paused · MM:SS left" pill with a live one-second countdown and a Resume button, matching the existing sync-pill visual language. The pill reverts to the Pause affordance automatically when the timer elapses (the countdown is derived from `paused_until` vs. live now, so no refetch is required). Server timestamps are parsed explicitly as UTC (the backend stores naive `datetime.utcnow().isoformat()` with no `Z`, which JS `Date` would otherwise read as local time and skew the countdown). Wired through `client.js` (`pauseWorkspace` / `resumeWorkspace`) and React Query mutations (`usePauseWorkspace` / `useResumeWorkspace` in `useWorkspaces.js`)
+
+### Changed
+- **Pause is deliberately gentler than hibernation** — unlike the rate-limit hibernation path, pausing a workspace does *not* kill in-flight agents. The check gates only *new* dispatch, so running agents finish their work to completion and only new agent creation (and the PR/conflict monitors for that workspace) is held until the pause clears
+
+---
+
 ## [1.5.1] - 2026-06-29
 
 ### Added

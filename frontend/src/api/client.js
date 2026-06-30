@@ -84,6 +84,17 @@ export const updateWorkspace = (id, data) =>
 export const deleteWorkspace = (id) =>
   apiFetch(`/api/workspaces/${id}`, { method: 'DELETE' })
 
+// Pause / resume automation for a single workspace.
+// minutes = null pauses indefinitely (until resumed).
+export const pauseWorkspace = (id, minutes = null) =>
+  apiFetch(`/api/workspaces/${id}/pause`, {
+    method: 'POST',
+    body: JSON.stringify({ minutes }),
+  })
+
+export const resumeWorkspace = (id) =>
+  apiFetch(`/api/workspaces/${id}/resume`, { method: 'POST' })
+
 export const getWorkspaceStructure = (wsId) =>
   apiFetch(`/api/workspaces/${wsId}/structure`)
 

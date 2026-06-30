@@ -82,9 +82,20 @@ class UpdateWorkspaceRequest(BaseModel):
     base_branch: str | None = None
 
 
+class PauseWorkspaceRequest(BaseModel):
+    # Minutes to pause automation for this workspace. null/omitted = pause
+    # indefinitely (until manually resumed).
+    minutes: int | None = None
+
+
 class SaveEnvRequest(BaseModel):
     vars: dict[str, str]
     env_file: str = ".env"
+
+
+# Far-future sentinel used for an indefinite pause: paused_until never elapses
+# on its own, so the workspace stays paused until the user resumes it.
+INDEFINITE_PAUSE_UNTIL = "9999-12-31T00:00:00"
 
 
 # === Dashboard HTML ===
@@ -176,6 +187,36 @@ async def update_workspace(workspace_id: str, req: UpdateWorkspaceRequest):
     if not workspace:
         return JSONResponse(content={"error": "Workspace not found"}, status_code=404)
     return {"workspace": workspace}
+
+
+@app.post("/api/workspaces/{workspace_id}/pause")
+async def pause_workspace(workspace_id: str, req: PauseWorkspaceRequest):
+    """Pause all automation for a workspace temporarily.
+
+    Holds new agent dispatch and the PR/conflict monitors for this workspace
+    so you can test against it manually. In-flight agents keep running.
+    """
+    workspace = db.get_workspace(workspace_id)
+    if not workspace:
+        return JSONResponse(content={"error": "Workspace not found"}, status_code=404)
+    if req.minutes is not None and req.minutes <= 0:
+        return JSONResponse(content={"error": "minutes must be positive"}, status_code=400)
+    if req.minutes is None:
+        paused_until = INDEFINITE_PAUSE_UNTIL
+    else:
+        paused_until = (datetime.utcnow() + timedelta(minutes=req.minutes)).isoformat()
+    db.pause_workspace(workspace_id, paused_until)
+    return {"workspace": db.get_workspace(workspace_id)}
+
+
+@app.post("/api/workspaces/{workspace_id}/resume")
+async def resume_workspace(workspace_id: str):
+    """Resume automation for a paused workspace immediately."""
+    workspace = db.get_workspace(workspace_id)
+    if not workspace:
+        return JSONResponse(content={"error": "Workspace not found"}, status_code=404)
+    db.resume_workspace(workspace_id)
+    return {"workspace": db.get_workspace(workspace_id)}
 
 
 @app.delete("/api/workspaces/{workspace_id}")
