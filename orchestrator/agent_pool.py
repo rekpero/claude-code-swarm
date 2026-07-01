@@ -17,7 +17,6 @@ from orchestrator.config import (
     AGENT_MAX_TURNS_FIX,
     AGENT_MAX_TURNS_IMPLEMENT,
     AGENT_TIMEOUT_SECONDS,
-    CLAUDE_CODE_OAUTH_TOKEN,
     GH_TOKEN,
     GIT_AUTHOR_EMAIL,
     GIT_AUTHOR_NAME,
@@ -27,6 +26,9 @@ from orchestrator.config import (
     SKILLS_ENABLED,
     WORKSPACES_DIR,
 )
+from orchestrator.container import get_container
+from orchestrator.credentials.base import CredentialProvider, MissingCredentialError
+from orchestrator.tenancy import resolve_org_id
 
 AGENT_LOGS_DIR = WORKSPACES_DIR / ".agent-logs"
 from orchestrator.prompts import (
@@ -76,9 +78,14 @@ def _probe_claude_available(timeout: int = 60) -> bool:
     Both stdout and stderr are scanned because the CLI may print the limit
     message to either stream in ``-p`` mode (scanning only one risks a premature
     wake / flapping loop).
+
+    TODO(port): under BYO-key, rate limits are per-org, not global. This probe
+    currently uses the default org's credential; make it per-org-aware (probe
+    the specific org whose agent is waiting) when the auth slice lands.
     """
     try:
-        env = {**os.environ, "CLAUDE_CODE_OAUTH_TOKEN": CLAUDE_CODE_OAUTH_TOKEN}
+        creds = get_container().credential_provider.for_org(resolve_org_id())
+        env = {**os.environ, **creds.env}
         result = subprocess.run(
             ["claude", "-p", "Reply with just the word OK", "--max-turns", "1"],
             capture_output=True,
@@ -101,6 +108,9 @@ def _probe_claude_available(timeout: int = 60) -> bool:
         return True
     except subprocess.TimeoutExpired:
         logger.debug("Claude probe timed out — assuming still rate-limited")
+        return False
+    except MissingCredentialError:
+        logger.debug("No Anthropic credential connected — cannot probe; treating as unavailable")
         return False
     except Exception as e:
         logger.debug("Claude probe failed: %s", e)
@@ -276,7 +286,13 @@ class AgentProcess:
 class AgentPool:
     """Manages the lifecycle of Claude Code agent subprocesses."""
 
-    def __init__(self):
+    def __init__(self, credential_provider: "CredentialProvider | None" = None):
+        # CredentialProvider resolves each org's agent credentials (BYO Anthropic
+        # API key in v2). Injected for testability; defaults to the container's
+        # configured provider. Replaces the shared CLAUDE_CODE_OAUTH_TOKEN.
+        self._credentials: "CredentialProvider" = (
+            credential_provider or get_container().credential_provider
+        )
         self._agents: dict[str, AgentProcess] = {}
         self._lock = threading.Lock()
         self._on_agent_complete: Callable[[AgentProcess], None] | None = None
@@ -583,6 +599,17 @@ class AgentPool:
 
         return agent_id
 
+    def _agent_credential_env(self, workspace_id: str | None) -> dict[str, str]:
+        """Resolve the per-org credential env for an agent run.
+
+        Replaces the shared CLAUDE_CODE_OAUTH_TOKEN with the owning org's
+        credentials (BYO Anthropic API key in v2). Raises MissingCredentialError
+        if the org has not connected a credential — callers surface this rather
+        than spawning an agent that would immediately fail.
+        """
+        org_id = resolve_org_id(workspace_id)
+        return dict(self._credentials.for_org(org_id).env)
+
     def _spawn_agent(
         self,
         agent_id: str,
@@ -607,14 +634,22 @@ class AgentPool:
             "--verbose",
         ]
 
+        try:
+            credential_env = self._agent_credential_env(workspace_id)
+        except MissingCredentialError as e:
+            logger.error("Cannot spawn agent %s: %s", agent_id, e)
+            raise
+
         env = {
             **os.environ,
-            "CLAUDE_CODE_OAUTH_TOKEN": CLAUDE_CODE_OAUTH_TOKEN,
+            **credential_env,  # per-org ANTHROPIC_API_KEY
             "GH_TOKEN": GH_TOKEN,
         }
 
         # Set git author identity so commits are attributed to a real GitHub user
         # (avoids Vercel / deploy rejections for unknown commit authors).
+        # TODO(github-app): replace this with the GitHub App bot identity +
+        # installation token once the App slice lands.
         if GIT_AUTHOR_NAME:
             env["GIT_AUTHOR_NAME"] = GIT_AUTHOR_NAME
             env["GIT_COMMITTER_NAME"] = GIT_AUTHOR_NAME
@@ -1394,9 +1429,19 @@ class AgentPool:
             "--verbose",
         ]
 
+        try:
+            credential_env = self._agent_credential_env(workspace_id)
+        except MissingCredentialError as e:
+            logger.error("Cannot resume agent %s: %s", old_agent_id, e)
+            db.finish_agent(old_agent_id, status="failed", error_message=str(e))
+            if agent_type == "implement":
+                db.update_issue(issue_number, workspace_id=workspace_id, status="pending")
+            cleanup_worktree(worktree_path, repo_path=repo_path)
+            return None
+
         env = {
             **os.environ,
-            "CLAUDE_CODE_OAUTH_TOKEN": CLAUDE_CODE_OAUTH_TOKEN,
+            **credential_env,  # per-org ANTHROPIC_API_KEY
             "GH_TOKEN": GH_TOKEN,
         }
 
